@@ -1,0 +1,431 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ──────────────────────────────────────────────────────────────
+   Design tokens
+   Vyapaar — GST billing. Light-first (invoices get printed),
+   with a full dark set so every surface stays legible if enabled.
+   ────────────────────────────────────────────────────────────── */
+@layer base {
+  :root {
+    --background: 220 24% 97%;
+    --foreground: 222 26% 14%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 26% 14%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 26% 14%;
+
+    /* Indigo — the brand anchor: primary actions, active states, links */
+    --primary: 234 62% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 18% 94%;
+    --secondary-foreground: 222 26% 20%;
+
+    --muted: 220 18% 95%;
+    --muted-foreground: 220 10% 46%;
+
+    --accent: 234 60% 96%;
+    --accent-foreground: 234 62% 38%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Ledger semantics: debit reads positive, credit reads negative */
+    --success: 158 64% 32%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 45%;
+    --warning-foreground: 30 60% 12%;
+
+    --border: 220 16% 88%;
+    --input: 220 16% 86%;
+    --ring: 234 62% 50%;
+
+    --chart-1: 234 62% 50%;
+    --chart-2: 158 64% 38%;
+    --chart-3: 38 92% 50%;
+    --chart-4: 280 55% 55%;
+    --chart-5: 0 72% 55%;
+
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: 224 24% 8%;
+    --foreground: 220 18% 94%;
+
+    --card: 224 22% 11%;
+    --card-foreground: 220 18% 94%;
+
+    --popover: 224 22% 11%;
+    --popover-foreground: 220 18% 94%;
+
+    --primary: 234 78% 68%;
+    --primary-foreground: 224 40% 10%;
+
+    --secondary: 224 18% 18%;
+    --secondary-foreground: 220 18% 94%;
+
+    --muted: 224 18% 16%;
+    --muted-foreground: 220 12% 62%;
+
+    --accent: 234 40% 22%;
+    --accent-foreground: 234 80% 82%;
+
+    --destructive: 0 62% 52%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 158 54% 46%;
+    --success-foreground: 224 40% 10%;
+    --warning: 38 85% 58%;
+    --warning-foreground: 30 60% 10%;
+
+    --border: 224 16% 22%;
+    --input: 224 16% 26%;
+    --ring: 234 78% 68%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply tracking-tight;
+  }
+
+  ::selection {
+    @apply bg-primary/15 text-foreground;
+  }
+
+  /* Keyboard focus is always visible; the mouse never gets a ring it did not ask for */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring/60 ring-offset-2 ring-offset-background;
+  }
+
+  /* Money fields are typed, not spun */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full border-[3px] border-solid border-transparent bg-border bg-clip-content;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40 bg-clip-content;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Component layer — the vocabulary every page is built from
+   ────────────────────────────────────────────────────────────── */
+@layer components {
+  /* Page scaffolding */
+  .page-shell {
+    @apply mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:py-8;
+  }
+  .page-shell-wide {
+    @apply mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:py-8;
+  }
+  .page-header {
+    @apply mb-6 flex flex-wrap items-end justify-between gap-4;
+  }
+  .page-title {
+    @apply text-2xl font-semibold text-foreground sm:text-3xl;
+  }
+  .page-subtitle {
+    @apply mt-1 text-sm text-muted-foreground;
+  }
+  .section-title {
+    @apply text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground;
+  }
+
+  /* Panels — the default surface for a group of controls */
+  .panel {
+    @apply rounded-xl border border-border bg-card text-card-foreground shadow-sm;
+  }
+  .panel-head {
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3.5;
+  }
+  .panel-title {
+    @apply text-sm font-semibold text-foreground;
+  }
+  .panel-body {
+    @apply p-5;
+  }
+
+  /* Form fields */
+  .field {
+    @apply flex flex-col gap-1.5;
+  }
+  .field-label {
+    @apply text-xs font-medium uppercase tracking-wide text-muted-foreground;
+  }
+  .field-input {
+    @apply h-10 w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground shadow-sm transition-colors
+           placeholder:text-muted-foreground/70
+           hover:border-muted-foreground/40
+           focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20
+           disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .field-input[readonly] {
+    @apply bg-muted text-muted-foreground shadow-none hover:border-input focus:ring-0;
+  }
+  .field-input-sm {
+    @apply h-8 rounded-md px-2 text-sm;
+  }
+  .field-select {
+    @apply h-10 w-full appearance-none rounded-lg border border-input bg-card bg-no-repeat px-3 pr-9 text-sm text-foreground shadow-sm transition-colors
+           hover:border-muted-foreground/40
+           focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 20 20%27 fill=%27none%27 stroke=%27%236b7280%27 stroke-width=%271.6%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27m6 8 4 4 4-4%27/%3E%3C/svg%3E");
+    background-position: right 0.6rem center;
+    background-size: 1.15rem;
+  }
+  .field-check {
+    @apply h-[18px] w-[18px] cursor-pointer rounded border-input accent-[hsl(var(--primary))];
+  }
+  .field-hint {
+    @apply text-xs text-muted-foreground;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex h-10 select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg px-4 text-sm font-medium
+           transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2
+           focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 active:bg-primary/95;
+  }
+  .btn-secondary {
+    @apply border border-border bg-card text-foreground shadow-sm hover:bg-secondary;
+  }
+  .btn-ghost {
+    @apply text-muted-foreground hover:bg-secondary hover:text-foreground;
+  }
+  .btn-success {
+    @apply bg-success text-success-foreground shadow-sm hover:bg-success/90;
+  }
+  .btn-danger {
+    @apply bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90;
+  }
+  .btn-sm {
+    @apply h-8 gap-1.5 rounded-md px-3 text-xs;
+  }
+  .btn-icon {
+    @apply inline-flex h-10 w-10 items-center justify-center rounded-lg text-foreground/70 transition-colors
+           hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2
+           focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  /* Data tables — one look for every grid in the app */
+  .table-wrap {
+    @apply overflow-x-auto rounded-xl border border-border bg-card shadow-sm;
+  }
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+  .data-table thead th {
+    @apply whitespace-nowrap border-b border-border bg-muted/70 px-3 py-2.5 text-left text-xs font-semibold
+           uppercase tracking-wide text-muted-foreground;
+  }
+  .data-table tbody td {
+    @apply border-b border-border/70 px-3 py-2.5 align-middle text-foreground;
+  }
+  .data-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+  .data-table tbody tr:hover td {
+    @apply bg-muted/40;
+  }
+  .data-table tfoot td {
+    @apply border-t border-border bg-muted/60 px-3 py-2.5 font-semibold text-foreground;
+  }
+  .data-table .row-opening td {
+    @apply bg-warning/10 font-medium;
+  }
+  .data-table .row-opening:hover td {
+    @apply bg-warning/10;
+  }
+
+  /* Numeric alignment — every figure in the app lines up on the decimal */
+  .num {
+    @apply text-right tabular-nums;
+  }
+  .money-dr {
+    @apply text-right font-medium tabular-nums text-success;
+  }
+  .money-cr {
+    @apply text-right font-medium tabular-nums text-destructive;
+  }
+
+  /* Report sheets (ledger, stock ledger, voucher register) */
+  .doc-sheet {
+    @apply mx-auto w-full max-w-6xl rounded-xl border border-border bg-card p-5 shadow-sm sm:p-7;
+  }
+  .doc-head {
+    @apply mb-7 border-b border-border pb-5 text-center;
+  }
+  .doc-org {
+    @apply text-xl font-semibold uppercase tracking-[0.12em] text-foreground sm:text-2xl;
+  }
+  .doc-meta {
+    @apply mt-1 text-xs text-muted-foreground;
+  }
+  .doc-kind {
+    @apply mt-3 inline-flex items-center rounded-full bg-accent px-3 py-1 text-sm font-semibold text-accent-foreground;
+  }
+
+  /* Modals built without Radix (the sale/purchase prompts) */
+  .modal-overlay {
+    @apply fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-foreground/40 p-4 backdrop-blur-sm;
+  }
+  /* A prompt opened on a phone with the keyboard up has less than 300px of
+     height to live in, so the card scrolls rather than running off-screen. */
+  .modal-card {
+    @apply max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-xl border border-border bg-card p-5 shadow-xl sm:p-6;
+  }
+  .modal-title {
+    @apply text-base font-semibold text-foreground;
+  }
+
+  /* Home navigation */
+  .nav-tile {
+    @apply flex w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left text-sm font-medium
+           text-foreground shadow-sm transition-all hover:-translate-y-px hover:border-primary/40 hover:shadow-md
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2;
+  }
+  .nav-tile-icon {
+    @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground;
+  }
+  .stat-card {
+    @apply rounded-xl border border-border bg-card p-4 shadow-sm;
+  }
+  .stat-label {
+    @apply text-xs font-medium uppercase tracking-wide text-muted-foreground;
+  }
+  .stat-value {
+    @apply mt-1 text-xl font-semibold tabular-nums text-foreground;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground;
+  }
+  .empty-state {
+    @apply rounded-xl border border-dashed border-border bg-muted/40 px-6 py-10 text-center text-sm text-muted-foreground;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Print — invoices and ledgers go on paper
+   ────────────────────────────────────────────────────────────── */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+  .panel,
+  .doc-sheet,
+  .table-wrap {
+    border-color: #d4d4d8 !important;
+    box-shadow: none !important;
+  }
+  .page-shell,
+  .page-shell-wide,
+  .doc-sheet {
+    max-width: none;
+    padding: 0;
+  }
+  table {
+    break-inside: auto;
+  }
+  tr {
+    break-inside: avoid;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Invoice document — one sheet, three renderings
+
+   On screen the bill is fluid and its wide tables scroll sideways on a phone
+   rather than crushing seven columns into 360px. Paper has no such problem, so
+   for print and for the html2canvas capture the scrollers are unwrapped again.
+   ────────────────────────────────────────────────────────────── */
+.pdf-export .inv-scroll {
+  overflow: visible !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+.pdf-export .inv-table {
+  min-width: 0 !important;
+}
+
+/* A bill downloaded from a phone has to be the same sheet as one downloaded
+   from a desktop, so the node is pinned to its paper width for the capture.
+   Roll stationary keeps its own narrow width and only gets the rules above. */
+.pdf-export-wide {
+  width: 768px !important;
+  max-width: none !important;
+  padding: 2rem !important;
+  font-size: 14px !important;
+}
+
+@media print {
+  .invoice-doc {
+    max-width: none !important;
+    border: 0 !important;
+    padding: 0 !important;
+  }
+  .inv-scroll {
+    overflow: visible !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+  .inv-table {
+    min-width: 0 !important;
+  }
+}
+
+/* Dynamic viewport units where they exist: on a phone the browser chrome
+   collapses as you scroll, and 100vh would otherwise overshoot the screen. */
+@supports (height: 100dvh) {
+  .modal-card {
+    max-height: calc(100dvh - 2rem);
+  }
+}
+
+/* Date-range printing: every invoice starts on a fresh sheet. */
+@media print {
+  .invoice-print-page {
+    break-after: page;
+  }
+  .invoice-print-page:last-child {
+    break-after: auto;
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "name": "vyapaar",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "electron": "electron-builder",
+    "start": "next start",
+    "lint": "next lint",
+    "email": "email dev",
+    "export": "next export",
+    "migrate:balances": "node scripts/migrate-balances.mjs",
+    "migrate:balances:apply": "node scripts/migrate-balances.mjs --apply",
+    "test": "node scripts/auth.test.mjs && node scripts/tenant-scope.test.mjs && node scripts/migrate-balances.test.mjs && node scripts/voucher-ledger.test.mjs && node scripts/rebuild-voucher-ledger.test.mjs && node scripts/backfill-hsn-totals.test.mjs && node scripts/invoice-posting.test.mjs && node scripts/posting-consistency.test.mjs && node scripts/posting-invariants.test.mjs && node scripts/price-list.test.mjs && node scripts/clear-zero-units.test.mjs && node scripts/phone-to-string.test.mjs && node scripts/blank-zeros.test.mjs && node scripts/customer-groups.test.mjs && node scripts/states.test.mjs && node scripts/party-balance.test.mjs && node scripts/item-stock.test.mjs && node scripts/clear-transactions.test.mjs && node scripts/uqc.test.mjs && node scripts/secret-box.test.mjs && node scripts/einvoice-credentials.test.mjs && node scripts/einvoice-payload.test.mjs && node scripts/place-of-supply.test.mjs && node scripts/todays-orders.test.mjs && node scripts/orders.test.mjs && node scripts/index-audit.test.mjs && node scripts/buyer-snapshot.test.mjs && node scripts/company-profile.test.mjs && node scripts/einvoice-lock.test.mjs",
+    "rebuild:voucher-ledger": "node scripts/rebuild-voucher-ledger.mjs",
+    "rebuild:voucher-ledger:apply": "node scripts/rebuild-voucher-ledger.mjs --apply",
+    "backfill:hsn-totals": "node scripts/backfill-hsn-totals.mjs",
+    "backfill:hsn-totals:apply": "node scripts/backfill-hsn-totals.mjs --apply",
+    "reset:data": "node scripts/reset-data.mjs",
+    "reset:data:apply": "node scripts/reset-data.mjs --apply",
+    "clear:zero-units": "node scripts/clear-zero-units.mjs",
+    "migrate:phone": "node scripts/phone-to-string.mjs",
+    "migrate:phone:apply": "node scripts/phone-to-string.mjs --apply",
+    "clear:zero-units:apply": "node scripts/clear-zero-units.mjs --apply",
+    "blank:zeros": "node scripts/blank-zeros.mjs",
+    "blank:zeros:apply": "node scripts/blank-zeros.mjs --apply",
+    "seed:groups": "node scripts/seed-customer-groups.mjs",
+    "seed:groups:apply": "node scripts/seed-customer-groups.mjs --apply",
+    "seed:states": "node scripts/seed-states.mjs",
+    "seed:states:apply": "node scripts/seed-states.mjs --apply",
+    "sync:indexes": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/sync-indexes.mjs",
+    "sync:indexes:apply": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/sync-indexes.mjs --apply",
+    "adopt:tenant": "node scripts/adopt-tenant.mjs",
+    "adopt:tenant:apply": "node scripts/adopt-tenant.mjs --apply"
+  },
+  "dependencies": {
+    "@capacitor/cli": "^7.4.4",
+    "@capacitor/core": "^7.4.4",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@mui/icons-material": "^6.2.0",
+    "@mui/material": "^6.2.0",
+    "@radix-ui/react-accordion": "^1.2.2",
+    "@radix-ui/react-dialog": "^1.1.4",
+    "@radix-ui/react-dropdown-menu": "^2.1.4",
+    "@radix-ui/react-label": "^2.1.1",
+    "@radix-ui/react-popover": "^1.1.4",
+    "@radix-ui/react-slot": "^1.1.1",
+    "@radix-ui/react-tabs": "^1.1.2",
+    "@react-email/components": "0.0.31",
+    "axios": "^1.7.9",
+    "class-variance-authority": "^0.7.1",
+    "cloudinary": "^2.5.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.0.4",
+    "html2canvas": "^1.4.1",
+    "html2pdf.js": "^0.10.2",
+    "lucide-react": "^0.468.0",
+    "mongodb": "^6.12.0",
+    "mongoose": "^8.9.2",
+    "next": "^16.2.4",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "resend": "^4.0.1",
+    "tailwind-merge": "^2.5.5",
+    "tailwindcss-animate": "^1.0.7",
+    "twilio": "^5.4.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "eslint": "^9",
+    "eslint-config-next": "15.1.0",
+    "postcss": "^8",
+    "react-email": "3.0.4",
+    "tailwindcss": "^3.4.1"
+  },
+  "build": {
+    "appId": "com.vyapaar.app",
+    "productName": "Vyapaar",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": "dmg"
+    }
+  }
+}
