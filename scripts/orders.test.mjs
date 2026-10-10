@@ -887,4 +887,119 @@ test("the stored status is always recomputed, never taken from the client", () =
   }
 });
 
+console.log("\n--- every import resolves ---");
+
+/**
+ * Resolve every relative and aliased import in the app's own source, against
+ * the filesystem.
+ *
+ * THE BUG THIS EXISTS FOR
+ * -----------------------
+ * order-add and order-alter shipped with `../../../../models/custModel` --
+ * four levels up from app/api/<route>/, where the repo root is three. Six
+ * "Module not found" errors on the Vercel build, and NOTHING in this project
+ * caught it first: `node --check` parses a file without resolving what it
+ * imports, and the route assertions below only grep for text. A test suite
+ * that reads a route's source and never resolves its imports will miss an
+ * off-by-one path every time.
+ *
+ * NOTE: this sweeps the files that are actually on disk. Run against a
+ * partial copy of the repo it will report misses that are really just files
+ * nobody checked out -- the same caveat tenant-scope.test.mjs carries.
+ */
+const ROOT = new URL("../", import.meta.url);
+const exists = (rel) => {
+  try {
+    return fs.statSync(new URL(rel, ROOT)).isFile();
+  } catch {
+    return false;
+  }
+};
+const isDir = (rel) => {
+  try {
+    return fs.statSync(new URL(rel, ROOT)).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** Every source file under these, as repo-relative posix paths. */
+const sourceFiles = () => {
+  const out = [];
+  const walk = (dir) => {
+    if (!isDir(dir)) return;
+    for (const entry of fs.readdirSync(new URL(dir, ROOT), { withFileTypes: true })) {
+      const rel = `${dir}${entry.name}`;
+      if (entry.isDirectory()) walk(`${rel}/`);
+      else if (/\.(js|mjs|jsx)$/.test(entry.name)) out.push(rel);
+    }
+  };
+  for (const dir of ["app/", "lib/", "models/", "components/", "context/"]) walk(dir);
+  return out;
+};
+
+/** The extensions Next resolves, plus the directory-index forms. */
+const CANDIDATES = ["", ".js", ".mjs", ".jsx", ".ts", ".tsx", "/index.js", "/index.mjs", "/index.jsx"];
+
+const resolves = (target) => CANDIDATES.some((ext) => exists(target + ext));
+
+const files = sourceFiles();
+
+test("there are source files to sweep at all", () => {
+  // Guards the guard: a walk that silently finds nothing would make every
+  // check below pass without testing anything.
+  assert.ok(files.length > 20, `only found ${files.length} source files`);
+});
+
+test("every relative import points at a file that exists", () => {
+  const misses = [];
+  for (const file of files) {
+    const src = fs.readFileSync(new URL(file, ROOT), "utf8");
+    const dir = file.replace(/[^/]+$/, "");
+    for (const m of src.matchAll(/(?:from|import)\s*\(?\s*["'](\.[^"']+)["']/g)) {
+      // Join and normalise .. segments by hand -- these are posix repo paths,
+      // not host paths, so node:path would be wrong on Windows.
+      const parts = (dir + m[1]).split("/");
+      const stack = [];
+      for (const part of parts) {
+        if (part === "." || part === "") continue;
+        if (part === "..") stack.pop();
+        else stack.push(part);
+      }
+      const target = stack.join("/");
+      if (!resolves(target)) misses.push(`${file} -> ${m[1]}`);
+    }
+  }
+  assert.deepEqual(misses, [], `unresolved imports:\n  ${misses.join("\n  ")}`);
+});
+
+test("every @/ import points at a file that exists", () => {
+  // `@/*` maps to the repo root (jsconfig.json). An alias cannot be off by a
+  // level, which is why the order routes now use it for the models.
+  const misses = [];
+  for (const file of files) {
+    const src = fs.readFileSync(new URL(file, ROOT), "utf8");
+    for (const m of src.matchAll(/(?:from|import)\s*\(?\s*["']@\/([^"']+)["']/g)) {
+      if (!resolves(m[1])) misses.push(`${file} -> @/${m[1]}`);
+    }
+  }
+  assert.deepEqual(misses, [], `unresolved aliased imports:\n  ${misses.join("\n  ")}`);
+});
+
+test("the alias really is the repo root", () => {
+  // If jsconfig stops mapping @/* to ".", every aliased import above is
+  // being resolved against the wrong base and these checks mean nothing.
+  const cfg = JSON.parse(fs.readFileSync(new URL("jsconfig.json", ROOT), "utf8"));
+  assert.deepEqual(cfg.compilerOptions?.paths?.["@/*"], ["./*"]);
+});
+
+test("no route reaches above the repo root", () => {
+  // The specific shape of the shipped bug: from app/api/<name>/ the root is
+  // three levels up, so a fourth leaves the project entirely.
+  const offenders = files
+    .filter((f) => /^app\/api\/[^/]+\/route\.js$/.test(f))
+    .filter((f) => /["']\.\.\/\.\.\/\.\.\/\.\.\//.test(fs.readFileSync(new URL(f, ROOT), "utf8")));
+  assert.deepEqual(offenders, []);
+});
+
 console.log(`\n${passed} checks passed.`);

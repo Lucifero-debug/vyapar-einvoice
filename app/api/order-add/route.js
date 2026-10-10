@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import Order from "@/models/orderModel";
-import Customer from "../../../../models/custModel";
-import Item from "../../../../models/itemModel";
-import State from "../../../../models/stateModel";
+import Customer from "@/models/custModel";
+import Item from "@/models/itemModel";
+import State from "@/models/stateModel";
 import { getNextOrderNo, raiseOrderCounter } from "@/lib/getNextOrderNo";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
