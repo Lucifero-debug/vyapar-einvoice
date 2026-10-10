@@ -114,13 +114,22 @@ function OrderRegister() {
             Orders carry no tax — the GST is worked out when they are billed.
           </p>
         </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => router.push(`/orderadd?type=${encodeURIComponent(type)}`)}
-        >
-          New {type} order
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => router.push(`/order-report?type=${encodeURIComponent(type)}`)}
+          >
+            Reports
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => router.push(`/orderadd?type=${encodeURIComponent(type)}`)}
+          >
+            New {type} order
+          </button>
+        </div>
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">

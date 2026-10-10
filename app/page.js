@@ -845,6 +845,18 @@ const Page = () => {
               </span>
             </button>
 
+            <button type="button" className="nav-tile" onClick={() => router.push('/order-report')}>
+              <span className="nav-tile-icon">
+                <ClipboardList className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Order Reports
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Register, and pending orders party-wise or item-wise
+                </span>
+              </span>
+            </button>
+
             <button type="button" className="nav-tile" onClick={() => router.push('/voucher')}>
               <span className="nav-tile-icon">
                 <ScrollText className="h-[18px] w-[18px]" />

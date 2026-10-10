@@ -21,9 +21,12 @@
  *   4. FLOAT DUST. 0.1 + 0.2 quantities that never compare equal to zero, so
  *      an order that is fully billed still shows as pending.
  *
- * The arithmetic is modelled on Sigfa's SPORDER1 (QTY / CanQty / INVQTY) with
- * the back-reference on their invoice line (ORDERNO + OREFNO). What is NOT
- * copied is tax: an order stores none, so there is nothing here about GST.
+ * The back-reference on the invoice line is Sigfa's (ORDERNO + OMKEY +
+ * OREFNO, populated on 9,260 of their 12,413 invoice lines). The running
+ * `invoicedQty` is NOT theirs -- their INVQTY mirrors QTY and they derive
+ * pending by joining instead; see the note atop lib/orderStatus.mjs. What is
+ * also not copied is tax: an order stores none, so there is nothing here
+ * about GST.
  */
 
 import assert from "node:assert/strict";

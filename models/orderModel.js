@@ -15,8 +15,15 @@ import { tenantPlugin } from "../lib/tenantPlugin.mjs";
  *     line, and it is recomputed from the lines on every write.
  *
  *   - THE LINE CARRIES THREE QUANTITIES, not a "remaining" one. Ordered,
- *     cancelled, invoiced; pending is always the subtraction. Sigfa's QTY,
- *     CanQty and INVQTY. Storing the remainder instead is how it drifts.
+ *     cancelled, invoiced; pending is always the subtraction. Storing the
+ *     remainder instead is how it drifts.
+ *
+ *     This is NOT copied from Sigfa, despite their SPORDER1 having similarly
+ *     named columns: in their live file INVQTY mirrors QTY on all 702 lines
+ *     (it is the invoicing-unit quantity) and DESPQTY is filled on one. They
+ *     derive pending by joining invoices back to orders instead. The note at
+ *     the top of lib/orderStatus.mjs explains why this keeps a counter
+ *     anyway, and which report guards it.
  *
  * Every field is declared in full, because Mongoose strict mode silently
  * drops what is not -- the mistake that has cost this project five separate
