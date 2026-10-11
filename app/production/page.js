@@ -279,9 +279,10 @@ function ProductionScreen() {
 
           <div className="field">
             {/* Sigfa's "With Sub Formula". */}
-            <label className="field-check mt-7">
+            <label className="mt-7 flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                className="field-check"
                 checked={form.nested}
                 onChange={(e) => {
                   setForm({ ...form, nested: e.target.checked });

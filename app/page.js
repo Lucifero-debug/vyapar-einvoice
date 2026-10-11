@@ -821,38 +821,44 @@ const Page = () => {
               onPick: (id) => router.push(`/item-ledger?itemId=${id}`),
             })}
 
-            <button type="button" className="nav-tile" onClick={() => router.push('/order?type=Sale')}>
+            <button type="button" className="nav-tile" onClick={() => router.push('/financials')}>
               <span className="nav-tile-icon">
-                <ClipboardList className="h-[18px] w-[18px]" />
+                <BookOpenText className="h-[18px] w-[18px]" />
               </span>
               <span className="flex-1">
-                Sales Orders
+                Trial Balance &amp; Final Accounts
                 <span className="block text-xs font-normal text-muted-foreground">
-                  What customers have ordered and not yet been billed
+                  Trial balance, trading, profit &amp; loss and balance sheet
                 </span>
               </span>
             </button>
 
-            <button type="button" className="nav-tile" onClick={() => router.push('/order?type=Purchase')}>
+            <button type="button" className="nav-tile" onClick={() => router.push('/account-book')}>
               <span className="nav-tile-icon">
-                <ClipboardList className="h-[18px] w-[18px]" />
+                <BookOpenText className="h-[18px] w-[18px]" />
               </span>
               <span className="flex-1">
-                Purchase Orders
+                Cash / Bank Book, A/C Ledger
                 <span className="block text-xs font-normal text-muted-foreground">
-                  What is on order from suppliers and still to come
+                  Any account&apos;s book for a date range, with its opening and closing
                 </span>
               </span>
             </button>
 
-            <button type="button" className="nav-tile" onClick={() => router.push('/order-report')}>
+            {/* ONE tile for both books. The register itself has a Sale /
+                Purchase switch, so a second tile only chose which tab opened
+                first -- and it did that by sending ?type=Purchase, which the
+                page then lets the user change anyway. No type is passed now:
+                the register opens on its own default and the switch does the
+                rest. */}
+            <button type="button" className="nav-tile" onClick={() => router.push('/order')}>
               <span className="nav-tile-icon">
                 <ClipboardList className="h-[18px] w-[18px]" />
               </span>
               <span className="flex-1">
-                Order Reports
+                Sale / Purchase Orders
                 <span className="block text-xs font-normal text-muted-foreground">
-                  Register, and pending orders party-wise or item-wise
+                  What has been ordered either way, and the pending reports
                 </span>
               </span>
             </button>

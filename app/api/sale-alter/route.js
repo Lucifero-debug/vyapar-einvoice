@@ -4,9 +4,12 @@ import Customer from "../../../models/custModel";
 import Ledger from "../../../models/ledgerModel";
 import Item from "../../../models/itemModel";
 import State from "../../../models/stateModel";
-import { applyDelta, toDisplay } from "@/lib/balance.mjs";
-import { resolveCashAccount } from "@/lib/cashAccount.mjs";
+import { applyDelta, balancePipeline, toDisplay } from "@/lib/balance.mjs";
+import { resolvePaymentAccount } from "@/lib/cashAccount.mjs";
+import { glDeltas } from "@/lib/invoiceGl.mjs";
+import { resolveGlAccounts } from "@/lib/glAccounts.mjs";
 import {
+  balanceMovesFromRows,
   buildInvoiceLedgerRows,
   invoicePostingDeltas,
 } from "@/lib/invoicePosting.mjs";
@@ -220,33 +223,86 @@ async function handlePOST(req, auth) {
       applyDelta(target, after.partyDelta);
       await target.save({ session });
 
-      // ---- cash ------------------------------------------------------------
-      let cashAccount = null;
-      if (before.cashDelta !== 0 || after.cashDelta !== 0) {
-        cashAccount = await resolveCashAccount(session);
-        applyDelta(cashAccount, -before.cashDelta + after.cashDelta);
-        await cashAccount.save({ session });
+      // ---- reverse everything else by WHAT WAS ACTUALLY POSTED ------------
+      //
+      // The cash account and the contra heads, read off the rows this invoice
+      // wrote rather than re-derived. The same principle `delete-invoice`
+      // already applies, and it is what makes this correct in three cases the
+      // old code got wrong:
+      //
+      //   the money went somewhere else   the rows name the account it
+      //                                   actually landed in, so a cheque
+      //                                   invoice is not reversed out of the
+      //                                   cash till
+      //   the invoice predates a leg      an invoice with no contra rows has
+      //                                   no contra reversed, instead of
+      //                                   being credited with heads it never
+      //                                   touched
+      //   the payment type was edited     the reversal follows the old rows,
+      //                                   the re-post follows the new type
+      //
+      // The PARTY stays on the derived `before`/`after` above, which is
+      // deliberate: that path works for every invoice in the book, including
+      // any whose rows were lost.
+      const oldRows = await Ledger.find(
+        { voucherId: updatedInvoice._id },
+        { customerName: 1, debit: 1, credit: 1 },
+        { session }
+      ).lean();
+
+      const reverse = balanceMovesFromRows(oldRows);
+      reverse.delete(previousName);
+      for (const [name, posted] of reverse) {
+        await Customer.findOneAndUpdate({ name }, balancePipeline(-posted), { session });
       }
 
       // ---- rewrite the rows -------------------------------------------------
       // The ledger was never touched here at all, so an edited invoice left its
       // original rows in place and the report drifted from the balance forever.
-      await Ledger.deleteMany({ voucherId: updatedInvoice._id }, { session });
-      await Ledger.create(
-        buildInvoiceLedgerRows({
-          type: invoiceData.type,
-          customerName: invoiceData.customer.name,
-          cashAccountName: cashAccount?.name,
-          invoiceNo: updatedInvoice.invoiceNo,
-          date: updatedInvoice.date || new Date(),
-          paymentType: invoiceData.paymentType,
-          voucherId: updatedInvoice._id,
-          deltas: after,
-          partyBalance: target.lastBal,
-          cashBalance: cashAccount?.lastBal ?? 0,
-        }),
-        { session }
+      //
+      // The payment account now follows the invoice's own payment type, as
+      // save-invoice does. It used to be `resolveCashAccount`, which always
+      // answers "Cash" -- so editing a cheque invoice moved the money into the
+      // till, and the two routes disagreed about where the same bill settled.
+      let payAccount = null;
+      if (after.cashDelta !== 0) {
+        payAccount = await resolvePaymentAccount(invoiceData.paymentType, session);
+      }
+
+      const stored = await resolveGlAccounts(
+        glDeltas(invoiceData)
+          .moves.map((m) => m.account)
+          .filter((n) => n !== invoiceData.customer.name),
+        session
       );
+
+      const rows = buildInvoiceLedgerRows({
+        type: invoiceData.type,
+        customerName: invoiceData.customer.name,
+        cashAccountName: payAccount?.name,
+        invoiceNo: updatedInvoice.invoiceNo,
+        date: updatedInvoice.date || new Date(),
+        paymentType: invoiceData.paymentType,
+        voucherId: updatedInvoice._id,
+        deltas: after,
+        partyBalance: 0,
+        cashBalance: 0,
+        invoice: { ...invoiceData, invoiceNo: updatedInvoice.invoiceNo },
+      }).map((row) => ({
+        ...row,
+        customerName: stored.get(row.customerName) || row.customerName,
+      }));
+
+      // Apply the new side from the rows, party excluded -- it was already
+      // moved by `after.partyDelta` above.
+      const apply = balanceMovesFromRows(rows);
+      apply.delete(invoiceData.customer.name);
+      for (const [name, delta] of apply) {
+        await Customer.findOneAndUpdate({ name }, balancePipeline(delta), { session });
+      }
+
+      await Ledger.deleteMany({ voucherId: updatedInvoice._id }, { session });
+      await Ledger.create(rows, { session });
 
       // Stock was not maintained here either: changing a quantity left the old
       // one in the stock ledger. Clear the old number's rows too, in case the
@@ -274,7 +330,15 @@ async function handlePOST(req, auth) {
       });
 
       await recomputeLedgerBalances(
-        [previousName, invoiceData.customer.name, cashAccount?.name],
+        [
+          previousName,
+          invoiceData.customer.name,
+          // Every account either side touched, so a head that was posted to
+          // before the edit and not after still gets its running column
+          // rewritten.
+          ...reverse.keys(),
+          ...apply.keys(),
+        ],
         session
       );
       await recomputeItemBalances(

@@ -263,9 +263,10 @@ function BomForm() {
           </div>
 
           <div className="field">
-            <label className="field-check mt-7">
+            <label className="mt-7 flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                className="field-check"
                 checked={form.hold}
                 onChange={(e) => setForm({ ...form, hold: e.target.checked })}
               />

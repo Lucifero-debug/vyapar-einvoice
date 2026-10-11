@@ -8,9 +8,12 @@ import Ledger from "../../../models/ledgerModel";
 import { balancePipeline, round2 } from "@/lib/balance.mjs";
 import { resolvePaymentAccount } from "@/lib/cashAccount.mjs";
 import {
+  balanceMovesFromRows,
   buildInvoiceLedgerRows,
   invoicePostingDeltas,
 } from "@/lib/invoicePosting.mjs";
+import { glDeltas } from "@/lib/invoiceGl.mjs";
+import { resolveGlAccounts } from "@/lib/glAccounts.mjs";
 import { writeItemLedgerRows } from "@/lib/itemLedger.mjs";
 import {
   recomputeItemBalances,
@@ -149,44 +152,66 @@ async function handlePOST(req, auth) {
         payAccountName = payAccount.name;
       }
 
-      // Accumulate by ACCOUNT NAME before writing. A cash sale billed to the
-      // cash account itself names the same document twice; loading it twice
-      // and saving both copies meant the second write discarded the first.
-      const moves = new Map();
-      const move = (name, delta) => {
-        if (!name || !delta) return;
-        moves.set(name, round2((moves.get(name) || 0) + delta));
-      };
-      move(customer.name, deltas.partyDelta);
-      move(payAccountName, deltas.cashDelta);
+      // === The contra side ===
+      //
+      // Sales or Purchase, the GST heads and the round-off. Until this was
+      // added, "Sales Account" existed only as text in the contra column of
+      // the party's row and GST was not posted at all, so a trial balance
+      // drawn from this ledger was short by exactly sales plus tax --
+      // silently, because every report read one account at a time.
+      // lib/invoiceGl.mjs derives it from the LINES, not from the totals the
+      // client sent.
+      //
+      // The heads are found or created first, so the rows below name whatever
+      // spelling is actually stored: a head saved as "Round off" must not be
+      // posted to as "Round Off" and split in two.
+      const contra = glDeltas({ ...body, finalAmount, customer: buyer });
+      const stored = await resolveGlAccounts(
+        contra.moves.map((m) => m.account).filter((n) => n !== customer.name),
+        session
+      );
 
-      const balances = new Map();
+      // ROWS FIRST, then the balances they imply. The `partyBalance` and
+      // `cashBalance` passed in are the running figures printed on the rows,
+      // and `recomputeLedgerBalances` below rewrites every one of them end to
+      // end -- so building with zeros and recomputing lands in exactly the
+      // same place, and lets the balance moves come from the rows themselves.
+      const rows = buildInvoiceLedgerRows({
+        type: body.type,
+        customerName: customer.name,
+        cashAccountName: payAccountName,
+        invoiceNo,
+        date: invoice.date || new Date(),
+        paymentType: body.paymentType,
+        voucherId: invoice._id,
+        deltas,
+        partyBalance: 0,
+        cashBalance: 0,
+        invoice: { ...body, finalAmount, customer: buyer, invoiceNo },
+      }).map((row) => ({
+        ...row,
+        customerName: stored.get(row.customerName) || row.customerName,
+      }));
+
+      // ONE source of truth for the balance updates: what the rows say.
+      // `delete-invoice` already reverses by reading these rows back, so
+      // deriving the posting from the same place is what stops the two
+      // drifting -- the bug that was found when deleting reversed by the
+      // stored `balanceDue` while posting moved the party by
+      // finalAmount - received. The party's own rows still sum to
+      // `deltas.partyDelta`, so no party balance shifts because of this.
+      const moves = balanceMovesFromRows(rows);
+
       for (const [name, delta] of moves) {
         // Pipeline update: the increment and the Dr/Cr refresh land in one
         // round trip and cannot interleave with a concurrent write.
-        const updated = await Customer.findOneAndUpdate(
-          { name },
-          balancePipeline(delta),
-          { new: true, session }
-        );
-        if (updated) balances.set(name, updated.lastBal);
+        await Customer.findOneAndUpdate({ name }, balancePipeline(delta), {
+          new: true,
+          session,
+        });
       }
 
-      await Ledger.create(
-        buildInvoiceLedgerRows({
-          type: body.type,
-          customerName: customer.name,
-          cashAccountName: payAccountName,
-          invoiceNo,
-          date: invoice.date || new Date(),
-          paymentType: body.paymentType,
-          voucherId: invoice._id,
-          deltas,
-          partyBalance: balances.get(customer.name) ?? 0,
-          cashBalance: balances.get(payAccountName) ?? 0,
-        }),
-        { session }
-      );
+      await Ledger.create(rows, { session });
 
       // ITEM LEDGER LOGIC (always runs)
       await writeItemLedgerRows({
@@ -201,7 +226,9 @@ async function handlePOST(req, auth) {
 
       // The stored running figures only stay true if the whole account or item
       // is rewritten in order -- a back-dated entry changes everything after it.
-      await recomputeLedgerBalances([customer.name, payAccountName], session);
+      // Every account the rows touched, not just the party and the cash
+      // account: the contra heads have a running column too.
+      await recomputeLedgerBalances([...moves.keys()], session);
       await recomputeItemBalances((body.items || []).map((i) => i?.name), session);
 
       // === Settle the orders this bill fulfils ===
