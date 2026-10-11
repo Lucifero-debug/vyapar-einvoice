@@ -805,6 +805,51 @@ test("the four reports plus reconcile are the whole set", () => {
   assert.deepEqual(REPORTS, ["register", "party-pending", "item-pending", "reconcile"]);
 });
 
+console.log("\n--- the views have different row shapes ---");
+
+test("THE REGISTER AND THE PENDING VIEWS RETURN DIFFERENT SHAPES", () => {
+  // This is the hazard behind the crash. `view` changes the instant a tab is
+  // clicked; `rows` only changes when the fetch returns. For the render in
+  // between, the grouped branch ran against register rows and reached into
+  // `r.lines`, which a register row has no such field -- hence
+  // "Cannot read properties of undefined (reading 'map')".
+  const orders = [order()];
+  const [reg] = registerRows(orders, NOW);
+  const [grp] = partyPending(orders, NOW);
+
+  assert.equal(reg.lines, undefined, "a register row carries no lines array");
+  assert.ok(Array.isArray(grp.lines), "a grouped row does");
+  assert.equal(grp.orderNo, undefined, "and carries no order number");
+  assert.ok(Number.isFinite(reg.orderNo), "which a register row does");
+});
+
+test("the report page renders rows only for the view they were loaded for", () => {
+  // The fix is not a `|| []` on each access -- that would hide the mismatch
+  // while still rendering one view's branch against another view's data. The
+  // rows carry the view they were fetched for, and the body is gated on it.
+  const page = read("../app/order-report/page.js");
+  assert.match(page, /loadedView/, "the page must remember which view its rows are for");
+  assert.match(page, /loadedView !== view/, "and gate the body on it");
+  assert.match(page, /loadedView === view \? rows : \[\]/, "and show nothing when they disagree");
+
+  // No bare `rows.` read may survive in the table body.
+  const body = page.slice(page.indexOf("the report \u2500"));
+  assert.ok(body.length > 0, "found the table section");
+  assert.ok(
+    !/\brows\.(map|length|reduce)\b/.test(body),
+    "the body must read the gated rows, not the raw state"
+  );
+});
+
+test("every load path stamps the view, including the failures", () => {
+  // A failed fetch that left the previous view's rows in place, still
+  // claiming to be this view's, would reopen the same hole.
+  const page = read("../app/order-report/page.js");
+  const stamps = (page.match(/setLoadedView\(view\)/g) || []).length;
+  assert.ok(stamps >= 4, `expected a stamp on both successes and both failures, found ${stamps}`);
+});
+
+
 console.log("\n--- the wiring ---");
 
 

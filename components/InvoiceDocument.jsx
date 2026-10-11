@@ -1,5 +1,10 @@
 'use client'
 import React, { forwardRef } from 'react'
+import {
+  orderRefsLabel,
+  orderRefsText,
+  printableOrderRefs,
+} from '@/lib/orderStatus.mjs';
 import { splitGst } from '@/lib/gst.mjs';
 import { buildHsnSummary, hsnGrandTotal, lineTaxable } from '@/lib/hsnTotals.mjs';
 import { addressLines, has } from '@/lib/company.mjs';
@@ -41,8 +46,18 @@ const InvoiceDocument = forwardRef(({ invoice, isRollStationary }, ref) => {
   const weight = invoice?.weight || '';
   const ewayBillNo = invoice?.ewayBillNo || '';
   const ewayBillDate = invoice?.ewayBillDate ? new Date(invoice.ewayBillDate).toLocaleDateString('en-IN') : '';
-  const orderNo = invoice?.orderNo || '';
-  const orderDate = invoice?.orderDate ? new Date(invoice.orderDate).toLocaleDateString('en-IN') : '';
+  // Every order this bill draws on, with its date.
+  //
+  // A bill can draw on more than one order -- the item-wise picker on the
+  // billing form makes that routine -- and a single orderNo/orderDate pair
+  // can only ever name the last of them. The list is derived from the lines,
+  // each of which carries its own order's number and date, and falls back to
+  // the header pair for bills raised before that existed or where the clerk
+  // typed the customer's own order number by hand.
+  const orderRefs = printableOrderRefs(invoice);
+  const orderRefsLine = orderRefsText(orderRefs, (d) =>
+    new Date(d).toLocaleDateString('en-IN')
+  );
 
 // Compute total taxable amount and GST totals. `lineTaxable` lives in
 // lib/hsnTotals.mjs so the summary below, and the backfill script, apply the
@@ -159,7 +174,7 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
         </section>
 
         {/* Transport Details */}
-{(transport || grNo || grDate || pvtMark || caseDetails || freight || weight || ewayBillNo || ewayBillDate || orderNo || orderDate) && (
+{(transport || grNo || grDate || pvtMark || caseDetails || freight || weight || ewayBillNo || ewayBillDate || orderRefsLine) && (
   <section className="mb-6 rounded-md border border-gray-300 bg-gray-50 p-3 sm:p-4">
     <h3 className="text-md font-semibold text-gray-700 mb-3">Order Details</h3>
     <div className="grid grid-cols-1 gap-2 text-[13px] text-gray-700 sm:grid-cols-3 sm:gap-3 sm:text-sm">
@@ -190,11 +205,10 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
       {ewayBillDate && (
         <div className="break-words"><span className="font-medium">E-Way Bill Date:</span> {ewayBillDate}</div>
       )}
-            {orderNo && (
-        <div className="break-words"><span className="font-medium">Order No:</span> {orderNo}</div>
-      )}
-            {orderDate && (
-        <div className="break-words"><span className="font-medium">Order Date:</span> {orderDate}</div>
+      {orderRefsLine && (
+        <div className="break-words sm:col-span-3">
+          <span className="font-medium">{orderRefsLabel(orderRefs)}:</span> {orderRefsLine}
+        </div>
       )}
     </div>
   </section>

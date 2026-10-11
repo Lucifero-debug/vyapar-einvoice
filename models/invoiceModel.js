@@ -35,7 +35,15 @@ const itemSchema = new mongoose.Schema({
   // order permanently pending with no way to find out why.
   orderNo:{type:Number},
   orderType:{type:String},
-  orderLineId:{type:String}
+  orderLineId:{type:String},
+  // The order's OWN date, copied onto the line.
+  //
+  // Denormalised deliberately, like `uqc` and the buyer block: a printed bill
+  // has to keep saying what it said, and an order whose date is corrected next
+  // year must not change the date on an invoice already issued. It also means
+  // the print can list every order a bill draws on -- with its date -- from
+  // the lines alone, with no second query and no header array to keep in step.
+  orderDate:{type:Date}
 });
 
 const partyTaxSchema = new mongoose.Schema({

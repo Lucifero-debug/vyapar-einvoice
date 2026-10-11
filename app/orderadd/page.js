@@ -19,7 +19,7 @@ import {
 export const dynamic = 'force-dynamic';
 
 /**
- * Take or amend a sales or purchase order.
+ * Take or edit a sales or purchase order.
  *
  * ONE PAGE, NOT FOUR
  * ------------------
@@ -116,7 +116,7 @@ function OrderForm() {
       .catch(() => {});
   }, [paramsRead, type, editingNo]);
 
-  // ── loading an order to amend ───────────────────────────────────────────
+  // ── loading an order to edit ───────────────────────────────────────────
   useEffect(() => {
     if (!paramsRead || !editingNo) return;
     fetch(`/api/get-order?orderNo=${editingNo}&type=${encodeURIComponent(type)}`)
@@ -208,7 +208,7 @@ function OrderForm() {
    * subtraction the user would otherwise do in their head, and get wrong on a
    * part-billed line, because it is ordered MINUS billed MINUS what is
    * already cancelled. Takes effect when the order is saved, like every other
-   * edit on this form; the register's "Cancel rest" writes immediately and
+   * edit on this form; the register's "Cancel order" writes immediately and
    * records a reason.
    */
   const cancelRest = (index) => {
@@ -283,7 +283,7 @@ function OrderForm() {
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="page-title text-xl font-semibold">
-            {editingNo ? `Amend ${type} Order ${editingNo}` : `New ${type} Order`}
+            {editingNo ? `Edit ${type} Order ${editingNo}` : `New ${type} Order`}
           </h1>
           <p className="page-subtitle">
             A commitment to supply. No tax is recorded on an order — the GST is
@@ -573,9 +573,9 @@ function OrderForm() {
                         type="button"
                         className="btn btn-sm btn-secondary"
                         onClick={() => cancelRest(i)}
-                        title={`Call off the ${trim(cancellableQty(row))} still pending`}
+                        title={`Call off the ${trim(cancellableQty(row))} still pending on this line`}
                       >
-                        Cancel rest
+                        Cancel this line
                       </button>
                     )}
                     <button

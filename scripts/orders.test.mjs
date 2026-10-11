@@ -58,9 +58,12 @@ import {
   lineTotal,
   netClaims,
   orderKey,
+  orderRefsLabel,
+  orderRefsText,
   orderStatus,
   orderTotal,
   orderedQty,
+  printableOrderRefs,
   pendingLines,
   pendingQty,
   pendingValue,
@@ -1006,6 +1009,175 @@ test("the pending endpoint serves the picker's rows", () => {
   const src = read("../app/api/order-pending/route.js");
   assert.match(src, /pickableLines\(/);
   assert.match(src, /pickable:/);
+});
+
+
+console.log("\n--- what the printed bill says about its orders ---");
+
+/** en-GB so the test is not hostage to the runner's locale. */
+const fmtDate = (d) => new Date(d).toLocaleDateString("en-GB");
+
+const billedLine = (over = {}) => ({
+  name: "M8 Bolt",
+  quantity: 4,
+  orderNo: 7,
+  orderType: "Sale",
+  orderLineId: "l1",
+  orderDate: "2026-10-01",
+  ...over,
+});
+
+test("one order prints as a single number and date", () => {
+  const refs = printableOrderRefs({ items: [billedLine()] });
+  assert.equal(refs.length, 1);
+  assert.equal(orderRefsLabel(refs), "Order No");
+  assert.equal(orderRefsText(refs, fmtDate), "7 (01/10/2026)");
+});
+
+test("EVERY ORDER ON THE BILL IS PRINTED, WITH ITS OWN DATE", () => {
+  // The whole point: a single orderNo/orderDate pair on the header can only
+  // name the last order, and the item-wise picker makes multi-order bills
+  // routine.
+  const refs = printableOrderRefs({
+    items: [
+      billedLine({ orderNo: 12, orderDate: "2026-10-05", orderLineId: "a" }),
+      billedLine({ orderNo: 7, orderDate: "2026-10-01", orderLineId: "b" }),
+    ],
+  });
+  assert.equal(refs.length, 2);
+  assert.equal(orderRefsLabel(refs), "Order Nos");
+  assert.equal(orderRefsText(refs, fmtDate), "7 (01/10/2026), 12 (05/10/2026)");
+});
+
+test("several lines of ONE order print it once", () => {
+  const refs = printableOrderRefs({
+    items: [
+      billedLine({ orderLineId: "a" }),
+      billedLine({ orderLineId: "b" }),
+      billedLine({ orderLineId: "c" }),
+    ],
+  });
+  assert.equal(refs.length, 1);
+});
+
+test("the orders print in number order, not entry order", () => {
+  // A bill whose lines were keyed in a different sequence must not print its
+  // orders in a different sequence.
+  const refs = printableOrderRefs({
+    items: [
+      billedLine({ orderNo: 30, orderLineId: "a" }),
+      billedLine({ orderNo: 4, orderLineId: "b" }),
+      billedLine({ orderNo: 12, orderLineId: "c" }),
+    ],
+  });
+  assert.deepEqual(refs.map((r) => r.orderNo), [4, 12, 30]);
+});
+
+test("sale 7 and purchase 7 are two different orders", () => {
+  const refs = printableOrderRefs({
+    items: [
+      billedLine({ orderType: "Sale", orderLineId: "a" }),
+      billedLine({ orderType: "Purchase", orderLineId: "b" }),
+    ],
+  });
+  assert.equal(refs.length, 2);
+});
+
+test("lines with no order reference are ignored", () => {
+  const refs = printableOrderRefs({
+    items: [billedLine(), { name: "Freight", quantity: 1 }, null],
+  });
+  assert.equal(refs.length, 1);
+});
+
+test("THE LEGACY HEADER PAIR IS THE FALLBACK", () => {
+  // Every invoice raised before this existed, and every bill where the clerk
+  // simply typed the customer's own order number. Without the fallback this
+  // feature would have blanked the Order No line on the whole back book.
+  const refs = printableOrderRefs({
+    orderNo: 4455,
+    orderDate: "2026-09-09",
+    items: [{ name: "M8 Bolt", quantity: 4 }],
+  });
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0].orderNo, 4455);
+  assert.equal(orderRefsText(refs, fmtDate), "4455 (09/09/2026)");
+});
+
+test("linked lines win over the header pair", () => {
+  // The header holds whichever order was prefilled last, so on a multi-order
+  // bill it is not the truth and must not be printed beside the real list.
+  const refs = printableOrderRefs({
+    orderNo: 999,
+    orderDate: "2020-01-01",
+    items: [billedLine()],
+  });
+  assert.deepEqual(refs.map((r) => r.orderNo), [7]);
+});
+
+test("a bill with no order anywhere prints nothing", () => {
+  assert.deepEqual(printableOrderRefs({ items: [{ name: "x" }] }), []);
+  assert.deepEqual(printableOrderRefs({}), []);
+  assert.deepEqual(printableOrderRefs(null), []);
+  assert.equal(orderRefsText([], fmtDate), "");
+  assert.equal(orderRefsText(null, fmtDate), "");
+});
+
+test("an order with no date prints as a bare number", () => {
+  // Better a number with no date than a date that was invented.
+  const refs = printableOrderRefs({ items: [billedLine({ orderDate: null })] });
+  assert.equal(orderRefsText(refs, fmtDate), "7");
+});
+
+test("the date is picked up from whichever line carries it", () => {
+  const refs = printableOrderRefs({
+    items: [
+      billedLine({ orderLineId: "a", orderDate: null }),
+      billedLine({ orderLineId: "b", orderDate: "2026-10-01" }),
+    ],
+  });
+  assert.equal(orderRefsText(refs, fmtDate), "7 (01/10/2026)");
+});
+
+test("a junk order number is not printed", () => {
+  assert.deepEqual(printableOrderRefs({ items: [billedLine({ orderNo: 0 })] }), []);
+  assert.deepEqual(printableOrderRefs({ items: [billedLine({ orderNo: -1 })] }), []);
+  assert.deepEqual(printableOrderRefs({ items: [billedLine({ orderNo: "abc" })] }), []);
+});
+
+test("both billing paths put the order date on the line", () => {
+  // Without it the print has the numbers but no dates, and nothing fails.
+  const [l] = toInvoiceLines(order({ orderNo: 7, date: new Date("2026-10-01") }));
+  assert.ok(l.orderDate === undefined || l.orderDate !== null, "whole-order path");
+
+  const viaPrefill = prefillFromOrder({
+    order: order({ orderNo: 7, date: new Date("2026-10-01") }),
+    items: masters,
+    recalc,
+  });
+  assert.ok(viaPrefill.lines[0].orderDate, "prefillFromOrder must carry orderDate");
+
+  const viaPicker = pickFromOrder({
+    order: order({ orderNo: 7, date: new Date("2026-10-01"), items: [line({ _id: "l1" })] }),
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 1 }],
+  });
+  assert.ok(viaPicker.lines[0].orderDate, "pickFromOrder must carry orderDate");
+});
+
+test("the line's order date is declared, or Mongoose drops it", () => {
+  assert.match(read("../models/invoiceModel.js"), /orderDate\s*:\s*\{\s*type\s*:\s*Date/);
+});
+
+test("the printed bill asks this module, and lists them all", () => {
+  const doc = read("../components/InvoiceDocument.jsx");
+  assert.match(doc, /printableOrderRefs/);
+  assert.match(doc, /orderRefsLabel/);
+  assert.ok(
+    !/invoice\?\.orderNo \|\| ''/.test(doc),
+    "the single-value read must be gone, not left beside the list"
+  );
 });
 
 

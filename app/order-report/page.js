@@ -85,6 +85,20 @@ function OrderReports() {
   const [item, setItem] = useState('');
 
   const [rows, setRows] = useState([]);
+  // WHICH VIEW THESE ROWS BELONG TO.
+  //
+  // `view` changes the instant a tab is clicked, but `rows` only changes when
+  // the fetch comes back. For the render in between, the branch below was
+  // chosen by the NEW view while the data was still the OLD view's -- and the
+  // branches read different fields. The grouped views reach into `r.lines`,
+  // which a register row does not have, so that one render threw
+  // "Cannot read properties of undefined (reading 'map')".
+  //
+  // Guarding each access with `|| []` would only have hidden it: the real
+  // fault is rendering one view's branch against another view's data. So the
+  // rows carry the view they were loaded for, and nothing is rendered until
+  // the two agree.
+  const [loadedView, setLoadedView] = useState(null);
   const [summary, setSummary] = useState(null);
   const [checked, setChecked] = useState(null);
   const [detail, setDetail] = useState([]);
@@ -128,11 +142,16 @@ function OrderReports() {
         .then((d) => {
           if (!d.success) throw new Error(d.error || 'Could not reconcile.');
           setRows(d.rows || []);
+          setLoadedView(view);
           setChecked(d.checked || null);
           setSummary(null);
           setDetail([]);
         })
-        .catch((e) => setError(e.message))
+        .catch((e) => {
+          setRows([]);
+          setLoadedView(view);
+          setError(e.message);
+        })
         .finally(() => setLoading(false));
       return;
     }
@@ -161,11 +180,16 @@ function OrderReports() {
       .then(([d, l]) => {
         if (!d.success) throw new Error(d.error || 'Could not build the report.');
         setRows(d.rows || []);
+        setLoadedView(view);
         setSummary(d.summary || null);
         setChecked(null);
         setDetail(l.rows || []);
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        setRows([]);
+        setLoadedView(view);
+        setError(e.message);
+      })
       .finally(() => setLoading(false));
   }, [view, type, from, to, party, item, isPending, isReconcile]);
 
@@ -181,6 +205,11 @@ function OrderReports() {
     const data = useDetail ? detail : rows;
     downloadCsv(csvFilename(useDetail ? `${view}-lines` : view, type), toCsv(columns, data));
   };
+
+  // The two gates the table body uses. `busy` covers the render after a tab
+  // click, before the new rows have arrived.
+  const busy = loading || loadedView !== view;
+  const shown = loadedView === view ? rows : [];
 
   const title = useMemo(() => reportTitle(view, type), [view, type]);
   const groupKey = view === 'item-pending' ? 'item' : 'party';
@@ -316,7 +345,7 @@ function OrderReports() {
         )}
 
         {/* ── the totals strip ─────────────────────────────────────── */}
-        {summary && isPending && !loading && (
+        {summary && isPending && !busy && (
           <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <div className="stat-card">
               <div className="stat-label">Still to bill</div>
@@ -346,7 +375,7 @@ function OrderReports() {
           </div>
         )}
 
-        {summary && isPending && !loading && summary.lines > 0 && (
+        {summary && isPending && !busy && summary.lines > 0 && (
           <div className="mb-5 table-wrap">
             <table className="data-table">
               <thead>
@@ -376,15 +405,15 @@ function OrderReports() {
         )}
 
         {/* ── reconciliation verdict ───────────────────────────────── */}
-        {isReconcile && !loading && !error && (
+        {isReconcile && !busy && !error && (
           <div
             className={`mb-5 rounded-lg border px-4 py-3 text-sm ${
-              rows.length === 0
+              shown.length === 0
                 ? 'border-success/40 bg-success/10'
                 : 'border-destructive/40 bg-destructive/10 text-destructive'
             }`}
           >
-            {rows.length === 0 ? (
+            {shown.length === 0 ? (
               <>
                 Every order line agrees with the invoices raised against it.
                 {checked && (
@@ -396,7 +425,7 @@ function OrderReports() {
               </>
             ) : (
               <>
-                {rows.length} order line{rows.length === 1 ? '' : 's'} disagree with the
+                {shown.length} order line{shown.length === 1 ? '' : 's'} disagree with the
                 invoices. Each row below shows what the order records as billed against
                 what the invoices actually account for.
               </>
@@ -449,7 +478,7 @@ function OrderReports() {
             )}
 
             <tbody>
-              {loading && (
+              {busy && (
                 <tr>
                   <td colSpan={9}>
                     <div className="empty-state">Loading…</div>
@@ -457,7 +486,7 @@ function OrderReports() {
                 </tr>
               )}
 
-              {!loading && rows.length === 0 && !isReconcile && (
+              {!busy && shown.length === 0 && !isReconcile && (
                 <tr>
                   <td colSpan={9}>
                     <div className="empty-state">
@@ -467,9 +496,9 @@ function OrderReports() {
                 </tr>
               )}
 
-              {!loading &&
+              {!busy &&
                 view === 'register' &&
-                rows.map((r) => (
+                shown.map((r) => (
                   <tr key={`${r.type}-${r.orderNo}`}>
                     <td className="font-medium">{r.orderNo}</td>
                     <td>{asDate(r.date)}</td>
@@ -490,9 +519,9 @@ function OrderReports() {
                   </tr>
                 ))}
 
-              {!loading &&
+              {!busy &&
                 isPending &&
-                rows.map((r) => {
+                shown.map((r) => {
                   const key = String(r[groupKey]);
                   const open = expanded === key;
                   return (
@@ -545,9 +574,9 @@ function OrderReports() {
                   );
                 })}
 
-              {!loading &&
+              {!busy &&
                 isReconcile &&
-                rows.map((r, i) => (
+                shown.map((r, i) => (
                   <tr key={`${r.type}-${r.orderNo}-${r.lineId}-${i}`}>
                     <td className="font-medium">
                       {r.type} {r.orderNo}
@@ -564,29 +593,29 @@ function OrderReports() {
                 ))}
             </tbody>
 
-            {!loading && view === 'register' && rows.length > 0 && (
+            {!busy && view === 'register' && shown.length > 0 && (
               <tfoot>
                 <tr>
-                  <td colSpan={6}>{rows.length} orders</td>
+                  <td colSpan={6}>{shown.length} orders</td>
                   <td className="num">
-                    {fmt(rows.reduce((s, r) => s + r.orderValue, 0))}
+                    {fmt(shown.reduce((s, r) => s + r.orderValue, 0))}
                   </td>
                   <td className="num">
-                    {fmt(rows.reduce((s, r) => s + r.pendingValue, 0))}
+                    {fmt(shown.reduce((s, r) => s + r.pendingValue, 0))}
                   </td>
                   <td />
                 </tr>
               </tfoot>
             )}
 
-            {!loading && isPending && rows.length > 0 && (
+            {!busy && isPending && shown.length > 0 && (
               <tfoot>
                 <tr>
                   <td colSpan={4}>
-                    {rows.length} {view === 'item-pending' ? 'items' : 'parties'}
+                    {shown.length} {view === 'item-pending' ? 'items' : 'parties'}
                   </td>
                   <td className="num">
-                    {fmt(rows.reduce((s, r) => s + r.pendingValue, 0))}
+                    {fmt(shown.reduce((s, r) => s + r.pendingValue, 0))}
                   </td>
                   <td colSpan={2} />
                 </tr>

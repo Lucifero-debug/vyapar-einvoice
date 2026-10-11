@@ -325,7 +325,7 @@ function OrderRegister() {
                               )
                             }
                           >
-                            Amend
+                            Edit
                           </button>
                           {!cancelBlockedReason(order) && (
                             <button
@@ -335,9 +335,9 @@ function OrderRegister() {
                                 setReason('');
                                 setCancelling(order);
                               }}
-                              title="Call off whatever is still unbilled"
+                              title="Call off whatever is still unbilled on this order"
                             >
-                              Cancel rest
+                              Cancel order
                             </button>
                           )}
                           {!restoreBlockedReason(order) && (
