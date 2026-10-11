@@ -64,6 +64,13 @@ const MODELS = Object.fromEntries(
       ["ledgers", "ledgerModel"],
       ["itemledgers", "itemLedgerModel"],
       ["counters", "counterModel"],
+      // Bills of material and the production entries made from them. Listed
+      // here as well as in clearData's lists because COLLECTIONS below is
+      // derived from those, and a collection present there but absent here
+      // gets audited for obsolete indexes while nothing checks that its
+      // per-firm replacements exist.
+      ["boms", "bomModel"],
+      ["productions", "productionModel"],
     ].map(async ([collection, file]) => [
       collection,
       (await import(`../models/${file}.js`)).default,

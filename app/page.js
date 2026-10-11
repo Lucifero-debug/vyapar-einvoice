@@ -857,6 +857,30 @@ const Page = () => {
               </span>
             </button>
 
+            <button type="button" className="nav-tile" onClick={() => router.push('/bom')}>
+              <span className="nav-tile-icon">
+                <Package className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Bills of Material
+                <span className="block text-xs font-normal text-muted-foreground">
+                  What each item is made of, and what a batch costs
+                </span>
+              </span>
+            </button>
+
+            <button type="button" className="nav-tile" onClick={() => router.push('/production')}>
+              <span className="nav-tile-icon">
+                <Package className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Production
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Issue the materials and receive the finished item
+                </span>
+              </span>
+            </button>
+
             <button type="button" className="nav-tile" onClick={() => router.push('/voucher')}>
               <span className="nav-tile-icon">
                 <ScrollText className="h-[18px] w-[18px]" />

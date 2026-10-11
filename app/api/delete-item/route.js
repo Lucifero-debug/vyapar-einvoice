@@ -4,7 +4,9 @@ import { connect } from "../../../lib/mongodb";
 import Item from "@/models/itemModel";
 import Invoice from "../../../models/invoiceModel";
 import ItemLedger from "../../../models/itemLedgerModel";
+import Bom from "@/models/bomModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import { itemDeleteBlockedReason } from "@/lib/bom.mjs";
 
 async function handlePOST(req, auth) {
   try {
@@ -60,6 +62,32 @@ async function handlePOST(req, auth) {
         },
         { status: 409 }
       );
+    }
+
+    // Bills of material name their items the same way -- by name -- so the
+    // same reasoning applies a third time. Sigfa runs this very check: its
+    // item-delete path reads "Check From Salpur1,Sporder1,Quot1,Fmast,PrList,
+    // Itmast", and Fmast is its formula master.
+    //
+    // An item deleted while a formula still names it leaves a formula that
+    // makes or consumes something which does not exist, and the explosion then
+    // issues nothing for it -- a production entry quietly short of a component,
+    // with no error anywhere.
+    //
+    // Only the formulas that could match are fetched, not the whole book: one
+    // query answering both halves of the question (does a formula MAKE this,
+    // does one USE it), against the indexes bomModel declares for exactly
+    // these two lookups.
+    const relatedBoms = await Bom.find(
+      { $or: [{ outputItem: item.name }, { "lines.itemName": item.name }] },
+      { name: 1, outputItem: 1, lines: 1 }
+    )
+      .collation({ locale: "en", strength: 2 })
+      .lean();
+
+    const bomReason = itemDeleteBlockedReason(item.name, relatedBoms);
+    if (bomReason) {
+      return NextResponse.json({ success: false, message: bomReason }, { status: 409 });
     }
 
     const deletedItem = await Item.findByIdAndDelete(id);
