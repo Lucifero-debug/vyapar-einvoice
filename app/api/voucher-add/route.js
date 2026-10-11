@@ -8,6 +8,7 @@ import {
   buildVoucherLedgerRows,
 } from "@/lib/voucherLedger.mjs";
 import { recomputeLedgerBalances } from "@/lib/runningBalances.mjs";
+import { validateAllocations } from "@/lib/openBillsFor.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 
@@ -25,6 +26,21 @@ async function handlePOST(req, auth) {
 
     // Voucher, its ledger rows and the party balances commit together.
     const newVoucher = await withTransaction(async (session) => {
+      // === Bills this voucher settles ===
+      //
+      // Sigfa's "Against Bill". Checked INSIDE the transaction, against the
+      // outstanding figure as it stands now: two people settling the same
+      // bill at once would each be allowed by a snapshot taken before the
+      // other committed. lib/billAdjust.mjs carries the rules.
+      const { customers: lines, problems } = await validateAllocations({
+        customers,
+        session,
+      });
+
+      if (problems.length) {
+        throw new AbortTransaction({ error: problems[0], problems }, 400);
+      }
+
       const [voucher] = await Voucher.create(
         [
           {
@@ -34,7 +50,7 @@ async function handlePOST(req, auth) {
             acType,
             paymentType,
             narration, // ✅ main narration stored
-            customers,
+            customers: lines,
             createdAt: new Date(),
           },
         ],

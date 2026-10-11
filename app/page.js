@@ -875,6 +875,18 @@ const Page = () => {
               </span>
             </button>
 
+            <button type="button" className="nav-tile" onClick={() => router.push('/production-plan')}>
+              <span className="nav-tile-icon">
+                <Package className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Production Plan
+                <span className="block text-xs font-normal text-muted-foreground">
+                  What to make for the open orders, and what is short to make it
+                </span>
+              </span>
+            </button>
+
             <button type="button" className="nav-tile" onClick={() => router.push('/production')}>
               <span className="nav-tile-icon">
                 <Package className="h-[18px] w-[18px]" />

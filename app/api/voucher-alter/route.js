@@ -9,6 +9,7 @@ import {
   buildVoucherLedgerRows,
 } from '@/lib/voucherLedger.mjs';
 import { recomputeLedgerBalances } from '@/lib/runningBalances.mjs';
+import { validateAllocations } from '@/lib/openBillsFor.mjs';
 import { withTransaction, AbortTransaction } from '@/lib/withTransaction.mjs';
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 
@@ -51,10 +52,27 @@ async function handlePOST(req, auth) {
     // Remove old ledger entries for this voucher
     await Ledger.deleteMany({ voucherId: id }, { session });
 
+    // === Bills this voucher settles ===
+    //
+    // Checked inside the transaction, against the outstanding as it stands
+    // now -- and with THIS voucher left out of what counts as settled.
+    // Without that exclusion, re-saving a voucher without touching its
+    // adjustment refuses itself, for the same reason re-saving a customer
+    // collided with its own name before findNameClash took an excludeId.
+    const { customers: lines, problems } = await validateAllocations({
+      customers,
+      excludeVoucherId: id,
+      session,
+    });
+
+    if (problems.length) {
+      throw new AbortTransaction({ error: problems[0], problems }, 400);
+    }
+
     // 3. Update the voucher document
     const updatedVoucher = await Voucher.findByIdAndUpdate(
       id,
-      { acName, date, againstBill, acType, paymentType, narration, customers },
+      { acName, date, againstBill, acType, paymentType, narration, customers: lines },
       { new: true, session }
     );
 

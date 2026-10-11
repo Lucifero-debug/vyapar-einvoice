@@ -1,14 +1,18 @@
 import { NextResponse } from "next/server";
 import { connect } from "../../../lib/mongodb";
+import Item from "@/models/itemModel";
+import ItemLedger from "@/models/itemLedgerModel";
 import Order from "@/models/orderModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { isOrderType } from "@/lib/orderStatus.mjs";
+import { buildStockIndex, stockOf } from "@/lib/itemStock.mjs";
 import {
   itemPendingFrom,
   partyPendingFrom,
   pendingLineRows,
   pendingSummary,
   registerRows,
+  withStock,
 } from "@/lib/orderReports.mjs";
 
 /**
@@ -80,9 +84,42 @@ async function handleGET(req, auth) {
       case "party-pending":
         payload = { rows: partyPendingFrom(filtered) };
         break;
-      case "item-pending":
-        payload = { rows: itemPendingFrom(filtered) };
+      case "item-pending": {
+        // The stock beside the pending quantity, which is the other half of
+        // the question this view is asked: "we owe 400, have we got them?"
+        //
+        // Summed from the stock ledger in the database rather than shipped
+        // row by row -- that collection is the biggest in the app -- and
+        // through buildStockIndex, so the figure is the one the stock report
+        // shows rather than a second count that can disagree with it.
+        //
+        // Fetched only for THIS view: the register and the party-wise list
+        // have no use for it, and loading the item master for them would be
+        // paid on every report and used on one.
+        const [items, movements] = await Promise.all([
+          Item.find({}, { name: 1, openingQuantity: 1, unit: 1 }).lean(),
+          ItemLedger.aggregate([
+            {
+              $group: {
+                _id: "$itemName",
+                received: { $sum: "$receiptQuantity" },
+                issued: { $sum: "$issueQuantity" },
+              },
+            },
+          ]),
+        ]);
+        const index = buildStockIndex({ items, movements });
+        payload = {
+          rows: withStock(itemPendingFrom(filtered), (name) => {
+            const entry = stockOf(index, name);
+            // null, not 0: "not in the item master" and "none left" are
+            // different facts, and the first is usually a name mismatch
+            // between the order and the master.
+            return entry ? entry.quantity : null;
+          }),
+        };
         break;
+      }
       case "detail":
         payload = { rows: filtered };
         break;

@@ -213,6 +213,11 @@ function OrderReports() {
 
   const title = useMemo(() => reportTitle(view, type), [view, type]);
   const groupKey = view === 'item-pending' ? 'item' : 'party';
+  // The item-wise view carries two extra columns -- stock and shortfall -- so
+  // every colSpan under this table has to follow the view rather than be
+  // written as a constant. A mismatched colSpan does not throw; it just
+  // leaves a row short and the grid drifts out of line below it.
+  const isItemView = view === 'item-pending';
 
   return (
     <>
@@ -454,10 +459,12 @@ function OrderReports() {
             {isPending && (
               <thead>
                 <tr>
-                  <th>{view === 'item-pending' ? 'Item' : type === 'Purchase' ? 'Supplier' : 'Customer'}</th>
+                  <th>{isItemView ? 'Item' : type === 'Purchase' ? 'Supplier' : 'Customer'}</th>
                   <th className="num">Orders</th>
                   <th className="num">Lines</th>
                   <th className="num">Pending qty</th>
+                  {isItemView && <th className="num">In stock</th>}
+                  {isItemView && <th className="num">Short by</th>}
                   <th className="num">Pending value</th>
                   <th className="num">Overdue lines</th>
                   <th className="num">Oldest</th>
@@ -480,7 +487,7 @@ function OrderReports() {
             <tbody>
               {busy && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={isItemView ? 11 : 9}>
                     <div className="empty-state">Loading…</div>
                   </td>
                 </tr>
@@ -488,7 +495,7 @@ function OrderReports() {
 
               {!busy && shown.length === 0 && !isReconcile && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={isItemView ? 11 : 9}>
                     <div className="empty-state">
                       Nothing to show for this filter.
                     </div>
@@ -542,6 +549,20 @@ function OrderReports() {
                         <td className="num">{r.orderCount}</td>
                         <td className="num">{r.lineCount}</td>
                         <td className="num">{trim(r.pendingQty)}</td>
+                        {isItemView && (
+                          <td className="num">
+                            {/* "not in the master" is a different fact from
+                                "none left", and on this report it usually
+                                means the name on the order does not match
+                                the name on the item. */}
+                            {r.known ? trim(r.stock) : <span title="No such item in the master">—</span>}
+                          </td>
+                        )}
+                        {isItemView && (
+                          <td className={`num ${r.shortBy > 0 ? 'font-medium text-destructive' : ''}`}>
+                            {r.shortBy > 0 ? trim(r.shortBy) : '—'}
+                          </td>
+                        )}
                         <td className="num font-medium">{fmt(r.pendingValue)}</td>
                         <td className="num">{r.overdueLines || '—'}</td>
                         <td className="num">
@@ -563,6 +584,8 @@ function OrderReports() {
                               {trim(l.billed)}/{trim(l.ordered)}
                             </td>
                             <td className="num text-sm">{trim(l.pending)}</td>
+                            {isItemView && <td />}
+                            {isItemView && <td />}
                             <td className="num text-sm">{fmt(l.value)}</td>
                             <td className="num text-sm">
                               {l.overdueDays > 0 ? `${l.overdueDays} d` : '—'}
@@ -612,8 +635,14 @@ function OrderReports() {
               <tfoot>
                 <tr>
                   <td colSpan={4}>
-                    {shown.length} {view === 'item-pending' ? 'items' : 'parties'}
+                    {shown.length} {isItemView ? 'items' : 'parties'}
                   </td>
+                  {isItemView && <td />}
+                  {isItemView && (
+                    <td className="num font-medium">
+                      {trim(shown.reduce((s, r) => s + (r.shortBy || 0), 0))}
+                    </td>
+                  )}
                   <td className="num">
                     {fmt(shown.reduce((s, r) => s + r.pendingValue, 0))}
                   </td>

@@ -3,6 +3,8 @@
 import React, { Suspense, useEffect, useState } from "react";
 import VoucherSearchParams from "@/components/VoucherSearchparams";
 import PartyBalance from "@/components/PartyBalance";
+import BillAdjust from "@/components/BillAdjust";
+import { allocatedTotal, billTypeFor, lineAmount } from "@/lib/billAdjust.mjs";
 
 const AddVoucher = () => {
   const [voucherParams, setVoucherParams] = useState({ type: "", value: "" });
@@ -16,10 +18,14 @@ const AddVoucher = () => {
   });
 
   const [entries, setEntries] = useState([
-    { name: "", debit: "", credit: "", custId: "", narration: "" }, // 🔹 Added narration
+    { name: "", debit: "", credit: "", custId: "", narration: "", allocations: [] },
   ]);
 
   const [customers, setCustomers] = useState([]);
+
+  // Which line's bill picker is open, by index. Sigfa's "Against Bill" is a
+  // per-line thing: one voucher can settle two parties' bills at once.
+  const [adjusting, setAdjusting] = useState(null);
 
   // --- existing fetch logic unchanged ---
   useEffect(() => {
@@ -71,8 +77,11 @@ const AddVoucher = () => {
                 credit: custEntry.credit?.toString() || "",
                 custId: found?._id || "",
                 narration: custEntry.narration || "", // 🔹 load customer narration
+                // What this line already settles, so reopening a voucher
+                // does not quietly drop its adjustment on the next save.
+                allocations: custEntry.allocations || [],
               };
-            }) || [{ name: "", debit: "", credit: "", custId: "", narration: "" }]
+            }) || [{ name: "", debit: "", credit: "", custId: "", narration: "", allocations: [] }]
           );
         } catch (err) {
           console.error("Failed to fetch voucher:", err);
@@ -102,11 +111,25 @@ const AddVoucher = () => {
 
         if (name === "name") {
           const selectedCust = customers.find((c) => c.name === value);
+          // The party changed, so whatever was adjusted belongs to somebody
+          // else's bills. Kept, it would be saved against invoices this party
+          // never raised -- and the server would refuse the whole voucher.
           return {
             ...entry,
             name: value,
             custId: selectedCust?._id || "",
+            allocations: [],
           };
+        }
+
+        // Changing the amount does not clear the adjustment -- the server
+        // refuses an over-allocation and the picker shows it in red first --
+        // but the direction decides WHICH bills are eligible, so flipping a
+        // debit to a credit does invalidate it.
+        if (name === "debit" || name === "credit") {
+          const next = { ...entry, [name]: value };
+          const flipped = billTypeFor(next) !== billTypeFor(entry);
+          return flipped ? { ...next, allocations: [] } : next;
         }
 
         return { ...entry, [name]: value };
@@ -117,7 +140,7 @@ const AddVoucher = () => {
   const addEntry = () => {
     setEntries((prev) => [
       ...prev,
-      { name: "", debit: "", credit: "", custId: "", narration: "" },
+      { name: "", debit: "", credit: "", custId: "", narration: "", allocations: [] },
     ]);
   };
 
@@ -152,12 +175,18 @@ const AddVoucher = () => {
             credit: parseFloat(entry.credit) || 0,
             custId: entry.custId,
             narration: entry.narration, // 🔹 send customer narration
+            allocations: entry.allocations || [],
           })),
           ...(voucherParams.value && { id: voucherParams.value }),
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to save voucher");
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // The server's own words. It names the bill and the figure -- "Failed
+        // to save voucher" tells the user nothing they can act on.
+        throw new Error(result.error || "Failed to save voucher");
+      }
 
       alert(
         voucherParams.value
@@ -173,7 +202,7 @@ const AddVoucher = () => {
         narration: "",
       });
 
-      setEntries([{ name: "", debit: "", credit: "", custId: "", narration: "" }]);
+      setEntries([{ name: "", debit: "", credit: "", custId: "", narration: "", allocations: [] }]);
       setVoucherParams({ type: "", value: "" });
     } catch (error) {
       alert(error.message);
@@ -285,13 +314,44 @@ const AddVoucher = () => {
                       />
                     </td>
                     <td className="text-center">
-                      <button
-                        type="button"
-                        onClick={() => removeEntry(index)}
-                        className="btn btn-ghost btn-sm text-destructive hover:text-destructive"
-                      >
-                        Remove
-                      </button>
+                      <div className="flex items-center justify-center gap-1">
+                        {/* Sigfa's "Against Bill", per line. Offered only
+                            once the line can actually be adjusted: a party
+                            and a direction are both needed to know which
+                            bills are eligible. */}
+                        {form.againstBill && (
+                          <button
+                            type="button"
+                            onClick={() => setAdjusting(index)}
+                            disabled={!entry.name || !billTypeFor(entry)}
+                            className="btn btn-ghost btn-sm"
+                            title={
+                              !entry.name
+                                ? "Pick a party first"
+                                : !billTypeFor(entry)
+                                  ? "Enter a debit or a credit first"
+                                  : "Adjust against bills"
+                            }
+                          >
+                            {(entry.allocations || []).length
+                              ? `${entry.allocations.length} bill${entry.allocations.length === 1 ? "" : "s"}`
+                              : "Adjust"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeEntry(index)}
+                          className="btn btn-ghost btn-sm text-destructive hover:text-destructive"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      {form.againstBill && (entry.allocations || []).length > 0 && (
+                        <span className="field-hint block">
+                          {allocatedTotal(entry.allocations).toFixed(2)} of{" "}
+                          {lineAmount(entry).toFixed(2)} adjusted
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -389,6 +449,22 @@ const AddVoucher = () => {
             {voucherParams.value ? "Update Voucher" : "Add Voucher"}
           </button>
         </form>
+
+        {/* One picker, for whichever line asked for it. Mounted outside the
+            table so the modal is not a descendant of a <td>. */}
+        {adjusting !== null && entries[adjusting] && (
+          <BillAdjust
+            open
+            line={entries[adjusting]}
+            voucherId={voucherParams.value || ""}
+            onClose={() => setAdjusting(null)}
+            onApply={(allocations) =>
+              setEntries((prev) =>
+                prev.map((entry, i) => (i === adjusting ? { ...entry, allocations } : entry))
+              )
+            }
+          />
+        )}
       </div>
     </>
   );
