@@ -7,6 +7,13 @@ import { companyAddress } from '@/lib/company.mjs';
 import { ORDER_TYPES } from '@/lib/orderStatus.mjs';
 import {
   AGEING_BUCKETS,
+  CONSOLIDATION_LABEL,
+  SIGFA_ITEM_HEADERS,
+  STOCK_HEADER,
+  TOTAL_LABEL,
+  sigfaItemTitle,
+  sigfaItemTotals,
+  sigfaPeriodLine,
   CSV_COLUMNS,
   csvFilename,
   reportTitle,
@@ -219,6 +226,14 @@ function OrderReports() {
   // leaves a row short and the grid drifts out of line below it.
   const isItemView = view === 'item-pending';
 
+  // Sigfa's totals row. Computed over what is SHOWN, not over everything
+  // fetched, so the row under a filtered sheet totals the sheet in front of
+  // you rather than one you cannot see.
+  const itemTotals = useMemo(
+    () => (isItemView ? sigfaItemTotals(shown) : { orderQty: 0, despQty: 0, balance: 0 }),
+    [isItemView, shown]
+  );
+
   return (
     <>
       <Suspense fallback={null}>
@@ -229,13 +244,31 @@ function OrderReports() {
         <div className="doc-head">
           <h2 className="doc-org">{company?.name || ''}</h2>
           <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
-          <p className="doc-kind">{title.toUpperCase()}</p>
+          {/* The item-wise sheet is headed the way Sigfa heads it, because
+              that is the sheet this one is read against:
+
+                  ITEM WISE SALES PENDING ORDERS
+                      (SUPER CONSOLIDATED)
+                  FOR THE PERIOD FROM  01-04-2026 TO 31-03-2027
+
+              "Super consolidated" is Sigfa's name for a sheet that totals an
+              item across every order and party rather than listing it per
+              order, which is exactly what this view does. */}
+          <p className="doc-kind">
+            {isItemView ? sigfaItemTitle(type) : title.toUpperCase()}
+          </p>
+          {isItemView && <p className="doc-meta mt-1">{CONSOLIDATION_LABEL}</p>}
+          {isItemView && sigfaPeriodLine(from, to) && (
+            <p className="doc-meta mt-1">{sigfaPeriodLine(from, to)}</p>
+          )}
           {view === 'register' && (
             <p className="doc-meta mt-1">
               {asDate(from)} to {asDate(to)}
             </p>
           )}
-          {isPending && <p className="doc-meta mt-1">Position as at {asDate(todayISO())}</p>}
+          {isPending && !isItemView && (
+            <p className="doc-meta mt-1">Position as at {asDate(todayISO())}</p>
+          )}
         </div>
 
         {/* ── controls ─────────────────────────────────────────────── */}
@@ -456,15 +489,36 @@ function OrderReports() {
                 </tr>
               </thead>
             )}
-            {isPending && (
+            {/* THE ITEM-WISE SHEET CARRIES SIGFA'S OWN HEADINGS, spelled as
+                its printed output spells them -- the full stops in
+                "ORDER.QTY" and "DESP QTY." included. The shop reads this
+                screen with the old sheet beside it, so a tidied-up wording
+                would be a worse heading, not a better one. CURRENT STOCK is
+                the single addition.
+
+                Pending value and the overdue counts have not gone: they are
+                under the table and in the download, so the header row can
+                match the paper exactly. */}
+            {isPending && isItemView && (
               <thead>
                 <tr>
-                  <th>{isItemView ? 'Item' : type === 'Purchase' ? 'Supplier' : 'Customer'}</th>
+                  {SIGFA_ITEM_HEADERS.map((heading, i) => (
+                    <th key={heading} className={i === 0 ? undefined : 'num'}>
+                      {heading}
+                    </th>
+                  ))}
+                  <th className="num">{STOCK_HEADER}</th>
+                </tr>
+              </thead>
+            )}
+
+            {isPending && !isItemView && (
+              <thead>
+                <tr>
+                  <th>{type === 'Purchase' ? 'Supplier' : 'Customer'}</th>
                   <th className="num">Orders</th>
                   <th className="num">Lines</th>
                   <th className="num">Pending qty</th>
-                  {isItemView && <th className="num">In stock</th>}
-                  {isItemView && <th className="num">Short by</th>}
                   <th className="num">Pending value</th>
                   <th className="num">Overdue lines</th>
                   <th className="num">Oldest</th>
@@ -487,7 +541,7 @@ function OrderReports() {
             <tbody>
               {busy && (
                 <tr>
-                  <td colSpan={isItemView ? 11 : 9}>
+                  <td colSpan={isItemView ? 6 : 9}>
                     <div className="empty-state">Loading…</div>
                   </td>
                 </tr>
@@ -495,7 +549,7 @@ function OrderReports() {
 
               {!busy && shown.length === 0 && !isReconcile && (
                 <tr>
-                  <td colSpan={isItemView ? 11 : 9}>
+                  <td colSpan={isItemView ? 6 : 9}>
                     <div className="empty-state">
                       Nothing to show for this filter.
                     </div>
@@ -546,28 +600,52 @@ function OrderReports() {
                             <span className="chip ml-2">{r.onHold} on hold</span>
                           )}
                         </td>
-                        <td className="num">{r.orderCount}</td>
-                        <td className="num">{r.lineCount}</td>
-                        <td className="num">{trim(r.pendingQty)}</td>
-                        {isItemView && (
-                          <td className="num">
-                            {/* "not in the master" is a different fact from
-                                "none left", and on this report it usually
-                                means the name on the order does not match
-                                the name on the item. */}
-                            {r.known ? trim(r.stock) : <span title="No such item in the master">—</span>}
-                          </td>
+                        {isItemView ? (
+                          <>
+                            <td className="num">{r.unit || '—'}</td>
+                            {/* ORDER.QTY is net of anything cancelled, so
+                                ORDER.QTY - DESP QTY. equals BALANCE on every
+                                row -- see the note in lib/orderReports.mjs. */}
+                            <td className="num">{trim(r.orderQty)}</td>
+                            <td className="num">{trim(r.despQty)}</td>
+                            <td className="num font-medium">{trim(r.balance)}</td>
+                            <td className="num">
+                              {/* "not in the master" is a different fact from
+                                  "none left", and on this report it usually
+                                  means the name on the order does not match
+                                  the name on the item. */}
+                              {r.known ? (
+                                trim(r.stock)
+                              ) : (
+                                <span title="No such item in the master">—</span>
+                              )}
+                              {/* The shortfall is an annotation rather than a
+                                  column of its own, so the header row still
+                                  matches Sigfa's exactly. */}
+                              {r.shortBy > 0 && (
+                                <span className="field-hint block text-destructive">
+                                  short by {trim(r.shortBy)}
+                                </span>
+                              )}
+                              {r.cancelledQty > 0 && (
+                                <span className="field-hint block">
+                                  {trim(r.cancelledQty)} cancelled
+                                </span>
+                              )}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="num">{r.orderCount}</td>
+                            <td className="num">{r.lineCount}</td>
+                            <td className="num">{trim(r.pendingQty)}</td>
+                            <td className="num font-medium">{fmt(r.pendingValue)}</td>
+                            <td className="num">{r.overdueLines || '—'}</td>
+                            <td className="num">
+                              {r.oldestOverdue > 0 ? `${r.oldestOverdue} d` : '—'}
+                            </td>
+                          </>
                         )}
-                        {isItemView && (
-                          <td className={`num ${r.shortBy > 0 ? 'font-medium text-destructive' : ''}`}>
-                            {r.shortBy > 0 ? trim(r.shortBy) : '—'}
-                          </td>
-                        )}
-                        <td className="num font-medium">{fmt(r.pendingValue)}</td>
-                        <td className="num">{r.overdueLines || '—'}</td>
-                        <td className="num">
-                          {r.oldestOverdue > 0 ? `${r.oldestOverdue} d` : '—'}
-                        </td>
                       </tr>
                       {open &&
                         r.lines.map((l, i) => (
@@ -579,18 +657,35 @@ function OrderReports() {
                                 {l.promised ? ` · promised ${asDate(l.promised)}` : ''}
                               </span>
                             </td>
-                            <td className="num text-sm">{l.orderNo}</td>
-                            <td className="num text-sm">
-                              {trim(l.billed)}/{trim(l.ordered)}
-                            </td>
-                            <td className="num text-sm">{trim(l.pending)}</td>
-                            {isItemView && <td />}
-                            {isItemView && <td />}
-                            <td className="num text-sm">{fmt(l.value)}</td>
-                            <td className="num text-sm">
-                              {l.overdueDays > 0 ? `${l.overdueDays} d` : '—'}
-                            </td>
-                            <td className="num text-sm">{l.ageing}</td>
+                            {isItemView ? (
+                              <>
+                                <td className="num text-sm">{l.uqc || '—'}</td>
+                                <td className="num text-sm">
+                                  {trim(l.ordered - l.cancelled)}
+                                </td>
+                                <td className="num text-sm">{trim(l.billed)}</td>
+                                <td className="num text-sm">{trim(l.pending)}</td>
+                                <td className="num text-sm">
+                                  {fmt(l.value)}
+                                  <span className="field-hint block">
+                                    {l.overdueDays > 0 ? `${l.overdueDays} d overdue` : l.ageing}
+                                  </span>
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="num text-sm">{l.orderNo}</td>
+                                <td className="num text-sm">
+                                  {trim(l.billed)}/{trim(l.ordered)}
+                                </td>
+                                <td className="num text-sm">{trim(l.pending)}</td>
+                                <td className="num text-sm">{fmt(l.value)}</td>
+                                <td className="num text-sm">
+                                  {l.overdueDays > 0 ? `${l.overdueDays} d` : '—'}
+                                </td>
+                                <td className="num text-sm">{l.ageing}</td>
+                              </>
+                            )}
                           </tr>
                         ))}
                     </React.Fragment>
@@ -631,18 +726,27 @@ function OrderReports() {
               </tfoot>
             )}
 
-            {!busy && isPending && shown.length > 0 && (
+            {!busy && isPending && isItemView && shown.length > 0 && (
               <tfoot>
                 <tr>
-                  <td colSpan={4}>
-                    {shown.length} {isItemView ? 'items' : 'parties'}
-                  </td>
-                  {isItemView && <td />}
-                  {isItemView && (
-                    <td className="num font-medium">
-                      {trim(shown.reduce((s, r) => s + (r.shortBy || 0), 0))}
-                    </td>
-                  )}
+                  {/* Sigfa prints its totals row as "TOTAL  :-", with the
+                      quantity columns added and the stock column left
+                      blank -- adding a tonne of steel to four hundred washers
+                      gives a number that answers nothing. */}
+                  <td className="font-medium">{TOTAL_LABEL}</td>
+                  <td />
+                  <td className="num font-medium">{trim(itemTotals.orderQty)}</td>
+                  <td className="num font-medium">{trim(itemTotals.despQty)}</td>
+                  <td className="num font-medium">{trim(itemTotals.balance)}</td>
+                  <td />
+                </tr>
+              </tfoot>
+            )}
+
+            {!busy && isPending && !isItemView && shown.length > 0 && (
+              <tfoot>
+                <tr>
+                  <td colSpan={4}>{shown.length} parties</td>
                   <td className="num">
                     {fmt(shown.reduce((s, r) => s + r.pendingValue, 0))}
                   </td>
@@ -652,6 +756,20 @@ function OrderReports() {
             )}
           </table>
         </div>
+
+        {/* Pending value and the overdue counts moved off the header row so it
+            could match Sigfa's exactly. They are here and in the download --
+            nothing was dropped, only relocated. */}
+        {!busy && isItemView && shown.length > 0 && (
+          <p className="field-hint mt-3">
+            {shown.length} item{shown.length === 1 ? '' : 's'} · pending value{' '}
+            {fmt(shown.reduce((s, r) => s + r.pendingValue, 0))}
+            {shown.reduce((s, r) => s + (r.overdueLines || 0), 0) > 0 &&
+              ` · ${shown.reduce((s, r) => s + (r.overdueLines || 0), 0)} overdue line(s)`}
+            {shown.reduce((s, r) => s + (r.shortBy || 0), 0) > 0 &&
+              ` · short on ${shown.filter((r) => r.shortBy > 0).length} item(s)`}
+          </p>
+        )}
       </div>
     </>
   );

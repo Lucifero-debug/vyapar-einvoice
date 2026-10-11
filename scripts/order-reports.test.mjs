@@ -47,6 +47,13 @@ import {
   registerRows,
   reportTitle,
   toCsv,
+  CONSOLIDATION_LABEL,
+  SIGFA_ITEM_HEADERS,
+  STOCK_HEADER,
+  TOTAL_LABEL,
+  sigfaItemTitle,
+  sigfaItemTotals,
+  sigfaPeriodLine,
 } from "../lib/orderReports.mjs";
 
 let passed = 0;
@@ -770,7 +777,9 @@ test("a column may compute its own cell", () => {
 test("an empty report still produces its header", () => {
   const csv = toCsv(CSV_COLUMNS["item-pending"], []);
   assert.equal(csv.split("\r\n").length, 1);
-  assert.match(csv, /^Item,/);
+  // "ITEM NAME", not "Item": the item-wise sheet now carries Sigfa's own
+  // headings so it can be read against its printed output.
+  assert.match(csv, /^ITEM NAME,/);
 });
 
 test("every report has a column set", () => {
@@ -894,6 +903,257 @@ test("the printed sheet uses the app's report styling", () => {
   const page = read("../app/order-report/page.js");
   assert.match(page, /doc-sheet/);
   assert.match(page, /no-print/);
+});
+
+console.log("\n--- the item-wise sheet, headed as Sigfa heads it ---");
+
+const sigfaOrder = (over = {}) => ({
+  orderNo: 1,
+  type: "Sale",
+  date: "2026-06-01",
+  customer: { name: "MCS Fasteners" },
+  items: [],
+  ...over,
+});
+const sigfaLine = (over = {}) => ({
+  name: "FINISHED GOODS NO.1",
+  uqc: "PCS",
+  quantity: 500,
+  invoicedQty: 200,
+  cancelledQty: 0,
+  cost: 10,
+  ...over,
+});
+
+test("the headings are Sigfa's own, spelled its way", () => {
+  // Read off its printed sheet. The full stops are where Sigfa puts them --
+  // "ORDER.QTY" with one in the middle, "DESP QTY." with one at the end --
+  // and "DESP" is not spelled out. The shop reads this screen with that
+  // paper beside it, so a tidier wording would be a worse heading.
+  assert.deepEqual(SIGFA_ITEM_HEADERS, [
+    "ITEM NAME",
+    "UNIT",
+    "ORDER.QTY",
+    "DESP QTY.",
+    "BALANCE",
+  ]);
+  assert.equal(STOCK_HEADER, "CURRENT STOCK");
+  assert.equal(CONSOLIDATION_LABEL, "(SUPER CONSOLIDATED)");
+  assert.equal(TOTAL_LABEL, "TOTAL  :-");
+});
+
+test("the title names the side the orders are on", () => {
+  assert.equal(sigfaItemTitle("Sale"), "ITEM WISE SALES PENDING ORDERS");
+  assert.equal(sigfaItemTitle("Purchase"), "ITEM WISE PURCHASE PENDING ORDERS");
+  // SALES, not SALE -- Sigfa's own plural.
+  assert.match(sigfaItemTitle("Sale"), /SALES/);
+});
+
+test("the period line is dated the way Sigfa dates it", () => {
+  assert.equal(
+    sigfaPeriodLine("2026-04-01", "2027-03-31"),
+    "FOR THE PERIOD FROM  01-04-2026 TO 31-03-2027"
+  );
+  // Two spaces after FROM, as on the sheet.
+  assert.match(sigfaPeriodLine("2026-04-01", "2027-03-31"), /FROM {2}01-04-2026/);
+});
+
+test("a half-set period says what it knows, and no period says nothing", () => {
+  // A sheet claiming a period it does not have is worse than one claiming
+  // none, so the line is left off entirely rather than printed with blanks.
+  assert.equal(sigfaPeriodLine("", ""), "");
+  assert.equal(sigfaPeriodLine(null, undefined), "");
+  assert.equal(sigfaPeriodLine("2026-04-01", ""), "FOR THE PERIOD FROM  01-04-2026");
+  assert.equal(sigfaPeriodLine("", "2027-03-31"), "UP TO  31-03-2027");
+  assert.equal(sigfaPeriodLine("nonsense", "rubbish"), "");
+});
+
+test("the figures match Sigfa's own sheet, line for line", () => {
+  // Straight off the screenshot: FINISHED GOODS NO.1, PCS., 500 ordered,
+  // 200 despatched, 300 balance.
+  const rows = itemPending([sigfaOrder({ items: [sigfaLine()] })]);
+  assert.equal(rows.length, 1);
+  const r = rows[0];
+  assert.equal(r.item, "FINISHED GOODS NO.1");
+  assert.equal(r.unit, "PCS");
+  assert.equal(r.orderQty, 500);
+  assert.equal(r.despQty, 200);
+  assert.equal(r.balance, 300);
+});
+
+test("ORDER.QTY minus DESP QTY. equals BALANCE, always", () => {
+  // THE IDENTITY THE WHOLE COLUMN SET RESTS ON. Sigfa prints BALANCE as that
+  // subtraction, and its cancellation amends the order quantity itself. Here
+  // a cancellation is held separately, so printing the ORIGINAL ordered
+  // figure would give rows where 500 - 200 came to 250 with nothing on the
+  // page to explain the gap. Netting it into ORDER.QTY restores the identity.
+  for (const [ordered, billed, cancelled] of [
+    [500, 200, 0],
+    [500, 200, 50],
+    [100, 0, 0],
+    [100, 0, 99],
+    [10.5, 2.25, 1.25],
+  ]) {
+    const rows = itemPending([
+      sigfaOrder({
+        items: [sigfaLine({ quantity: ordered, invoicedQty: billed, cancelledQty: cancelled })],
+      }),
+    ]);
+    if (!rows.length) continue;
+    const r = rows[0];
+    // Compared with a tolerance rather than by re-rounding: the point is
+    // that the printed row adds up, not that two roundings agree.
+    assert.ok(
+      Math.abs(r.orderQty - r.despQty - r.balance) < 1e-9,
+      `${ordered} ordered, ${billed} billed, ${cancelled} cancelled`
+    );
+  }
+});
+
+test("BALANCE is the pending quantity under another name", () => {
+  // Named twice on purpose, so the sheet can carry Sigfa's heading without
+  // anything downstream having to learn that the two are one thing. If they
+  // ever diverge, the report and the order register disagree.
+  const rows = itemPending([
+    sigfaOrder({ items: [sigfaLine(), sigfaLine({ name: "WASHER", quantity: 20, invoicedQty: 5 })] }),
+  ]);
+  for (const r of rows) assert.equal(r.balance, r.pendingQty, r.item);
+});
+
+test("a cancelled quantity is reported, not hidden", () => {
+  // It comes off ORDER.QTY, so without this the sheet would silently show a
+  // smaller order than was placed.
+  const rows = itemPending([
+    sigfaOrder({ items: [sigfaLine({ cancelledQty: 50 })] }),
+  ]);
+  assert.equal(rows[0].cancelledQty, 50);
+  assert.equal(rows[0].orderQty, 450, "net of the cancellation");
+});
+
+test("quantities are totalled across every order and party", () => {
+  // Sigfa calls this "SUPER CONSOLIDATED": one row per item, however many
+  // orders and parties it appears on.
+  const rows = itemPending([
+    sigfaOrder({ orderNo: 1, items: [sigfaLine({ quantity: 500, invoicedQty: 200 })] }),
+    sigfaOrder({ orderNo: 2, customer: { name: "Other" }, items: [sigfaLine({ quantity: 100, invoicedQty: 0 })] }),
+  ]);
+  assert.equal(rows.length, 1, "one row for the item, not one per order");
+  assert.equal(rows[0].orderQty, 600);
+  assert.equal(rows[0].despQty, 200);
+  assert.equal(rows[0].balance, 400);
+  assert.equal(rows[0].orderCount, 2);
+});
+
+test("the unit comes off the lines, and a clash is kept rather than hidden", () => {
+  // invoicedQty reset on the second line: it inherits 200 from the base
+  // fixture otherwise, which leaves 10 - 200 = nothing pending, and
+  // pendingLineRows drops the line before it ever reaches the grouping.
+  const same = itemPending([
+    sigfaOrder({ items: [sigfaLine(), sigfaLine({ quantity: 10, invoicedQty: 0 })] }),
+  ]);
+  assert.equal(same[0].unit, "PCS");
+  assert.deepEqual(same[0].units, ["PCS"]);
+
+  // One item ordered in two units is a master-data problem; the sheet shows
+  // the first but keeps both, so the report can say so rather than picking
+  // one silently.
+  const clash = itemPending([
+    sigfaOrder({ items: [sigfaLine(), sigfaLine({ uqc: "KGS", quantity: 10, invoicedQty: 0 })] }),
+  ]);
+  assert.equal(clash[0].unit, "PCS");
+  assert.deepEqual([...clash[0].units].sort(), ["KGS", "PCS"]);
+});
+
+test("a line with no unit does not blank out one that has one", () => {
+  const rows = itemPending([
+    sigfaOrder({
+      items: [sigfaLine({ uqc: "" }), sigfaLine({ uqc: "PCS", quantity: 10, invoicedQty: 0 })],
+    }),
+  ]);
+  assert.equal(rows[0].unit, "PCS");
+});
+
+test("the totals row adds the quantity columns and leaves stock alone", () => {
+  const totals = sigfaItemTotals([
+    { orderQty: 500, despQty: 200, balance: 300, stock: 40 },
+    { orderQty: 100, despQty: 25, balance: 75, stock: 9000 },
+  ]);
+  assert.equal(totals.orderQty, 600);
+  assert.equal(totals.despQty, 225);
+  assert.equal(totals.balance, 375);
+  // Adding a tonne of steel to four hundred washers gives a number that
+  // answers nothing, so Sigfa leaves its stock columns untotalled too.
+  assert.equal(totals.stock, null);
+});
+
+test("the totals row survives an empty or ragged sheet", () => {
+  assert.deepEqual(sigfaItemTotals([]), { orderQty: 0, despQty: 0, balance: 0, stock: null });
+  assert.deepEqual(sigfaItemTotals(), { orderQty: 0, despQty: 0, balance: 0, stock: null });
+  assert.equal(sigfaItemTotals([{}, { orderQty: "5" }]).orderQty, 5);
+});
+
+test("the download carries Sigfa's headings first, then this app's own", () => {
+  const labels = CSV_COLUMNS["item-pending"].map((c) => c.label);
+  assert.deepEqual(labels.slice(0, 6), [...SIGFA_ITEM_HEADERS, STOCK_HEADER]);
+  // Pending value and the overdue counts came off the header row so it could
+  // match the paper. They must still be IN the download -- relocated, not
+  // dropped.
+  for (const label of ["Pending Value", "Overdue Lines", "Short By"]) {
+    assert.ok(labels.includes(label), `${label} was dropped from the download`);
+  }
+});
+
+test("an item missing from the master exports as words, not as zero", () => {
+  // 0 is falsy, so a truthiness test would turn "none on the shelf" into
+  // "not in master" -- two quite different facts.
+  const column = CSV_COLUMNS["item-pending"].find((c) => c.key === "stock");
+  assert.equal(column.value({ known: true, stock: 0 }), 0);
+  assert.equal(column.value({ known: false, stock: 0 }), "not in master");
+});
+
+console.log("\n--- the sheet on screen matches the column set ---");
+
+test("the item view's header row is built from the shared list", () => {
+  // Not retyped into the JSX, or the screen and the download drift the first
+  // time a heading changes.
+  const src = read("../app/order-report/page.js");
+  assert.ok(/SIGFA_ITEM_HEADERS\.map/.test(src));
+  assert.ok(/\{STOCK_HEADER\}/.test(src));
+  assert.doesNotMatch(src, /<th[^>]*>ORDER\.QTY</, "a heading is hardcoded in the markup");
+});
+
+test("every row in the item view has as many cells as the header", () => {
+  // A mismatched colSpan does not throw. It silently shifts every figure one
+  // column left, which on this sheet means reading a despatched quantity as
+  // an ordered one.
+  const src = read("../app/order-report/page.js");
+  const columns = SIGFA_ITEM_HEADERS.length + 1;
+  assert.equal(columns, 6);
+  // The empty and loading rows span the whole sheet.
+  assert.equal(
+    (src.match(/colSpan=\{isItemView \? 6 : 9\}/g) || []).length,
+    2,
+    "the empty and busy rows must span all six"
+  );
+});
+
+test("the printed sheet carries Sigfa's three heading lines", () => {
+  const src = read("../app/order-report/page.js");
+  assert.ok(/sigfaItemTitle\(type\)/.test(src));
+  assert.ok(/\{CONSOLIDATION_LABEL\}/.test(src));
+  assert.ok(/sigfaPeriodLine\(from, to\)/.test(src));
+  // And the totals row.
+  assert.ok(/\{TOTAL_LABEL\}/.test(src));
+  assert.ok(/itemTotals\.orderQty/.test(src));
+});
+
+test("nothing was dropped when the header row was trimmed", () => {
+  // Pending value and the overdue counts left the header row so it could
+  // match Sigfa's. They have to still be on the page somewhere.
+  const src = read("../app/order-report/page.js");
+  assert.ok(/pending value/i.test(src));
+  assert.ok(/overdue line/i.test(src));
+  assert.ok(/short by \{trim\(r\.shortBy\)\}/.test(src), "the shortfall is still shown");
 });
 
 console.log(`\n${passed} checks passed.`);

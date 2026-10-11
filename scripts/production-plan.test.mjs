@@ -43,7 +43,13 @@ import {
   planFilename,
   productionPlan,
 } from "../lib/productionPlan.mjs";
-import { itemPendingFrom, pendingLineRows, toCsv, withStock } from "../lib/orderReports.mjs";
+import {
+  SIGFA_ITEM_HEADERS,
+  itemPendingFrom,
+  pendingLineRows,
+  toCsv,
+  withStock,
+} from "../lib/orderReports.mjs";
 import { canAccessPath, permissionForPath } from "../lib/roles.mjs";
 
 let passed = 0;
@@ -650,11 +656,21 @@ test("the item-pending route fetches stock only for that view", () => {
 });
 
 test("the report page's colSpans follow the view", () => {
-  // The item view carries two extra columns. A colSpan left as a constant
-  // does not throw -- it leaves a row short and the grid drifts out of line.
+  // A colSpan left as a constant does not throw -- it leaves a row short and
+  // the grid drifts out of line.
+  //
+  // The NUMBER is derived from the header list rather than written here. It
+  // was hard-coded as 11 when the item view carried the party columns plus
+  // stock and shortfall; the view now carries Sigfa's five headings plus
+  // CURRENT STOCK, and a test pinning the old figure failed for the wrong
+  // reason -- the count had changed, not the rule.
   const src = read("../app/order-report/page.js");
+  const itemColumns = SIGFA_ITEM_HEADERS.length + 1;
   assert.ok(/isItemView/.test(src));
-  assert.ok(/colSpan=\{isItemView \? 11 : 9\}/.test(src));
+  assert.ok(
+    new RegExp(`colSpan=\\{isItemView \\? ${itemColumns} : 9\\}`).test(src),
+    `the item view has ${itemColumns} columns, so its colSpan must say so`
+  );
   assert.equal(
     (src.match(/colSpan=\{9\}/g) || []).length,
     0,
