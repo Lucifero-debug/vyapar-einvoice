@@ -11,6 +11,11 @@ import {
   trim,
 } from '@/lib/orderStatus.mjs';
 import { billingSummary } from '@/lib/orderReports.mjs';
+import {
+  cancelBlockedReason,
+  cancellationSummary,
+  restoreBlockedReason,
+} from '@/lib/orderStatus.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +56,12 @@ function OrderRegister() {
   // more than one, so joining invoices for all of them would be paid for
   // every page load and used almost never.
   const [billed, setBilled] = useState({ key: null, invoices: null, error: '' });
+  // The cancel prompt. A reason is required on the way out, so this cannot be
+  // a window.confirm -- and a bare confirm on an action that writes off a
+  // customer's order is too easy to click through anyway.
+  const [cancelling, setCancelling] = useState(null);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -89,6 +100,36 @@ function OrderRegister() {
       return;
     }
     load();
+  };
+
+  /** Call off the unbilled balance, or put a cancellation back. */
+  const sendCancel = async (order, restore) => {
+    setError('');
+    setBusy(true);
+    try {
+      const res = await fetch('/api/order-cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderNo: order.orderNo,
+          type: order.type,
+          reason: restore ? '' : reason,
+          restore,
+        }),
+      });
+      const result = await res.json();
+      if (!result.success) {
+        setError(result.error || 'Could not cancel the order.');
+        return;
+      }
+      setCancelling(null);
+      setReason('');
+      load();
+    } catch (err) {
+      setError(err.message || 'Could not cancel the order.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   /**
@@ -286,6 +327,30 @@ function OrderRegister() {
                           >
                             Amend
                           </button>
+                          {!cancelBlockedReason(order) && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              onClick={() => {
+                                setReason('');
+                                setCancelling(order);
+                              }}
+                              title="Call off whatever is still unbilled"
+                            >
+                              Cancel rest
+                            </button>
+                          )}
+                          {!restoreBlockedReason(order) && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              onClick={() => sendCancel(order, true)}
+                              disabled={busy}
+                              title="Put the cancelled quantity back"
+                            >
+                              Restore
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn btn-sm btn-danger"
@@ -323,6 +388,15 @@ function OrderRegister() {
                               </li>
                             ))}
                           </ul>
+
+                          {cancellationSummary(order) && (
+                            <div className="border-t border-border/60 py-2 text-sm">
+                              <span className="font-medium">Cancellation: </span>
+                              <span className="text-muted-foreground">
+                                {cancellationSummary(order)}
+                              </span>
+                            </div>
+                          )}
 
                           {/* What billed it. The other half of the link:
                               the invoice line knows its order, and now the
@@ -369,6 +443,53 @@ function OrderRegister() {
           </tbody>
         </table>
       </div>
+      {cancelling && (
+        <div className="modal-overlay no-print" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <h2 className="modal-title mb-1">
+              Cancel the rest of {cancelling.type} order {cancelling.orderNo}?
+            </h2>
+            <p className="field-hint mb-4">
+              Whatever is still unbilled on this order is called off. Anything
+              already invoiced stays — the order is short-closed, not deleted,
+              and Restore puts it back.
+            </p>
+            <div className="field mb-4">
+              <label className="field-label">Reason</label>
+              <input
+                className="field-input"
+                autoFocus
+                placeholder="Customer deferred the balance"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+              <span className="field-hint">
+                Kept against the order, with who cancelled it and when.
+              </span>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setCancelling(null);
+                  setReason('');
+                }}
+              >
+                Keep the order
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => sendCancel(cancelling, false)}
+                disabled={busy || !reason.trim()}
+              >
+                {busy ? 'Cancelling…' : 'Cancel the balance'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

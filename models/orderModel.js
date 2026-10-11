@@ -148,6 +148,27 @@ const orderSchema = new mongoose.Schema(
     // and conflating the two loses whichever was set second.
     hold: { type: Boolean, default: false },
 
+    // === Why the order was called off ===
+    //
+    // A LOG, not a single reason field. Two of the three ways to cancel are
+    // partial -- one line, or the balance of a part-billed order -- so a lone
+    // `cancelReason` would be overwritten by the second cancellation and the
+    // first reason lost, which is the one thing it exists to answer.
+    //
+    // The quantities here are a RECORD of what was called off, not the state:
+    // the state is `cancelledQty` on each line, and pending is always derived
+    // from that. Nothing reads these back to compute anything.
+    cancellations: [
+      {
+        at: { type: Date },
+        by: { type: String },
+        reason: { type: String },
+        action: { type: String, enum: ["cancel", "restore"] },
+        quantity: { type: Number },
+        lines: [{ name: { type: String }, quantity: { type: Number } }],
+      },
+    ],
+
     // === Audit, copied from Sigfa and absent from the rest of this app ===
     //
     // LUSER / LUSERE / EDCNT / PRNCNT. An accountant looking at an order that

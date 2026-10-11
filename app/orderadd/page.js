@@ -5,6 +5,7 @@ import OrderSearchParams from '@/components/OrderSearchParams';
 import PartyBalance from '@/components/PartyBalance';
 import {
   ORDER_TYPES,
+  cancellableQty,
   invoicedQty,
   lineStatus,
   lineTotal,
@@ -197,6 +198,28 @@ function OrderForm() {
   const editLine = (index, field, value) => {
     setLines((rows) =>
       rows.map((row, i) => (i === index ? { ...row, [field]: value } : row))
+    );
+  };
+
+  /**
+   * Call off one line's unbilled balance.
+   *
+   * Fills the Cancelled box with exactly what is still pending -- the
+   * subtraction the user would otherwise do in their head, and get wrong on a
+   * part-billed line, because it is ordered MINUS billed MINUS what is
+   * already cancelled. Takes effect when the order is saved, like every other
+   * edit on this form; the register's "Cancel rest" writes immediately and
+   * records a reason.
+   */
+  const cancelRest = (index) => {
+    setError('');
+    setLines((rows) =>
+      rows.map((row, i) => {
+        if (i !== index) return row;
+        const rest = cancellableQty(row);
+        if (rest <= 0) return row;
+        return { ...row, cancelledQty: roundQty(Number(row.cancelledQty || 0) + rest) };
+      })
     );
   };
 
@@ -545,6 +568,16 @@ function OrderForm() {
                 <td>
                   <div className="flex items-center gap-2">
                     <span className="chip">{lineStatus(row)}</span>
+                    {cancellableQty(row) > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => cancelRest(i)}
+                        title={`Call off the ${trim(cancellableQty(row))} still pending`}
+                      >
+                        Cancel rest
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="btn btn-sm btn-danger"

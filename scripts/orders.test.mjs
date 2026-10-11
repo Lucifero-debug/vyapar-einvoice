@@ -34,6 +34,14 @@ import fs from "node:fs";
 import {
   ORDER_STATUSES,
   ORDER_TYPES,
+  applyCancel,
+  applyRestore,
+  cancelBlockedReason,
+  cancellableQty,
+  cancellationEntry,
+  cancellationSummary,
+  nothingToCancel,
+  restoreBlockedReason,
   QTY_EPSILON,
   applyDeltas,
   cancelledQty,
@@ -836,6 +844,298 @@ test("a summary names every quantity that is not zero", () => {
   );
   assert.equal(lineSummary(line({ invoicedQty: 10 })), "10 ordered, 10 billed, nothing pending");
 });
+
+console.log("\n--- cancelling ---");
+
+test("a fresh line can be cancelled in full", () => {
+  assert.equal(cancellableQty(line()), 10);
+});
+
+test("ONLY THE UNBILLED BALANCE CAN BE CANCELLED", () => {
+  // The quantity on an invoice is accounted for; calling it off would leave a
+  // bill against a commitment that no longer covers it.
+  assert.equal(cancellableQty(line({ invoicedQty: 4 })), 6);
+  assert.equal(cancellableQty(line({ invoicedQty: 10 })), 0);
+});
+
+test("an already-cancelled quantity is not cancellable twice", () => {
+  assert.equal(cancellableQty(line({ cancelledQty: 4 })), 6);
+  assert.equal(cancellableQty(line({ invoicedQty: 3, cancelledQty: 3 })), 4);
+});
+
+test("cancelling the whole order calls off every line", () => {
+  const o = order({ items: [line({ _id: "a" }), line({ _id: "b", quantity: 5 })] });
+  const { items, cancelled, problems } = applyCancel(o);
+  assert.deepEqual(problems, []);
+  assert.equal(cancelled.length, 2);
+  assert.equal(items[0].cancelledQty, 10);
+  assert.equal(items[1].cancelledQty, 5);
+  assert.equal(orderStatus({ items }), "cancelled");
+});
+
+test("CANCELLING A PART-BILLED ORDER SHORT-CLOSES IT", () => {
+  // Goods went out, so the honest status is closed, not cancelled.
+  const o = order({ items: [line({ quantity: 10, invoicedQty: 4 })] });
+  const { items, cancelled } = applyCancel(o);
+  assert.equal(cancelled[0].quantity, 6);
+  assert.equal(items[0].invoicedQty, 4, "the billed part is untouched");
+  assert.equal(items[0].cancelledQty, 6);
+  assert.equal(pendingQty(items[0]), 0);
+  assert.equal(orderStatus({ items }), "closed");
+});
+
+test("CANCELLING TOPS UP AN ALREADY PART-CANCELLED LINE", () => {
+  // Every other test here starts from nothing cancelled, where adding to the
+  // existing figure and replacing it give the same answer -- so a cancel that
+  // OVERWROTE the earlier cancellation passed them all. Mutation testing
+  // caught it. Ordered 10, two billed, four already called off: cancelling
+  // the rest must reach 8, not 4.
+  const o = order({ items: [line({ quantity: 10, invoicedQty: 2, cancelledQty: 4 })] });
+  assert.equal(cancellableQty(o.items[0]), 4);
+
+  const { items, cancelled } = applyCancel(o);
+  assert.equal(cancelled[0].quantity, 4, "only what was still pending");
+  assert.equal(items[0].cancelledQty, 8, "4 already off plus the 4 just called off");
+  assert.equal(items[0].invoicedQty, 2);
+  assert.equal(pendingQty(items[0]), 0);
+  assert.equal(orderStatus({ items }), "closed");
+});
+
+test("cancelling twice in a row reaches the same place as cancelling once", () => {
+  const whole = applyCancel(order({ items: [line({ quantity: 10 })] }));
+  const half = applyCancel(order({ items: [line({ quantity: 10, cancelledQty: 6 })] }));
+  assert.equal(whole.items[0].cancelledQty, 10);
+  assert.equal(half.items[0].cancelledQty, 10);
+});
+
+test("cancelling named lines leaves the others alone", () => {
+  const o = order({ items: [line({ _id: "a" }), line({ _id: "b" })] });
+  const { items, cancelled } = applyCancel(o, ["a"]);
+  assert.equal(cancelled.length, 1);
+  assert.equal(items[0].cancelledQty, 10);
+  assert.equal(items[1].cancelledQty, 0);
+  assert.equal(orderStatus({ items }), "partial");
+});
+
+test("a fully billed line is skipped SILENTLY, not refused", () => {
+  // On a forty-line order with three billed out, refusing the whole action
+  // because three lines had nothing to give would be useless.
+  const o = order({
+    items: [line({ _id: "a", invoicedQty: 10 }), line({ _id: "b" })],
+  });
+  const { items, cancelled, problems } = applyCancel(o);
+  assert.deepEqual(problems, []);
+  assert.equal(cancelled.length, 1, "only the line that had something left");
+  assert.equal(items[0].cancelledQty, 0);
+  assert.equal(items[1].cancelledQty, 10);
+});
+
+test("naming a line that is not on the order is refused", () => {
+  const { problems } = applyCancel(order(), ["gone"]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /not on this order/);
+});
+
+test("the order passed in is never mutated", () => {
+  const o = order();
+  applyCancel(o);
+  assert.equal(o.items[0].cancelledQty, 0, "applyCancel must return a new array");
+});
+
+test("nothing left to cancel is reported, with the right sentence", () => {
+  assert.equal(cancelBlockedReason(order()), null);
+  assert.match(
+    cancelBlockedReason(order({ items: [line({ invoicedQty: 10 })] })),
+    /every line is either billed or already cancelled/
+  );
+  assert.match(
+    cancelBlockedReason(order({ items: [line({ cancelledQty: 10 })] })),
+    /already cancelled/
+  );
+  assert.match(cancelBlockedReason(order({ items: [] })), /no items to cancel/);
+  assert.equal(cancelBlockedReason(null), null, "so the route can 404 instead");
+});
+
+test("a part-billed order can still be cancelled", () => {
+  assert.equal(cancelBlockedReason(order({ items: [line({ invoicedQty: 4 })] })), null);
+});
+
+test("nothingToCancel reads the whole order, not one line", () => {
+  assert.equal(nothingToCancel(order({ items: [line({ invoicedQty: 10 }), line()] })), false);
+  assert.equal(
+    nothingToCancel(order({ items: [line({ invoicedQty: 10 }), line({ cancelledQty: 10 })] })),
+    true
+  );
+});
+
+console.log("\n--- restoring ---");
+
+test("restoring puts the cancelled quantity back", () => {
+  const o = order({ items: [line({ cancelledQty: 6, invoicedQty: 4 })] });
+  const { items, restored } = applyRestore(o);
+  assert.equal(restored[0].quantity, 6);
+  assert.equal(items[0].cancelledQty, 0);
+  assert.equal(items[0].invoicedQty, 4, "the billed part is untouched");
+  assert.equal(pendingQty(items[0]), 6);
+  assert.equal(orderStatus({ items }), "partial");
+});
+
+test("RESTORING CANNOT EXCEED WHAT WAS ORDERED", () => {
+  // The guard that matters: a part-billed, part-cancelled line must come back
+  // to "part billed, rest pending" -- never to more than was ordered.
+  const o = order({ items: [line({ quantity: 10, invoicedQty: 7, cancelledQty: 3 })] });
+  const { items } = applyRestore(o);
+  assert.equal(pendingQty(items[0]), 3);
+  assert.equal(orderedQty(items[0]), 10);
+  assert.ok(invoicedQty(items[0]) + pendingQty(items[0]) <= orderedQty(items[0]));
+});
+
+test("restoring named lines leaves the others cancelled", () => {
+  const o = order({
+    items: [line({ _id: "a", cancelledQty: 10 }), line({ _id: "b", cancelledQty: 10 })],
+  });
+  const { items, restored } = applyRestore(o, ["a"]);
+  assert.equal(restored.length, 1);
+  assert.equal(items[0].cancelledQty, 0);
+  assert.equal(items[1].cancelledQty, 10);
+});
+
+test("restoring an order with nothing cancelled moves nothing", () => {
+  const { restored } = applyRestore(order());
+  assert.deepEqual(restored, []);
+  assert.match(restoreBlockedReason(order()), /Nothing on this order is cancelled/);
+  assert.equal(restoreBlockedReason(order({ items: [line({ cancelledQty: 1 })] })), null);
+  assert.equal(restoreBlockedReason(null), null);
+});
+
+test("cancel then restore returns the line exactly as it was", () => {
+  const before = line({ quantity: 10, invoicedQty: 4 });
+  const once = applyCancel({ items: [before] });
+  const back = applyRestore({ items: once.items });
+  assert.equal(back.items[0].cancelledQty, 0);
+  assert.equal(back.items[0].invoicedQty, 4);
+  assert.equal(pendingQty(back.items[0]), pendingQty(before));
+});
+
+console.log("\n--- the cancellation log ---");
+
+test("an entry records what, why, who and when", () => {
+  const at = new Date("2026-10-11T10:00:00Z");
+  const e = cancellationEntry({
+    lines: [{ name: "M8 Bolt", quantity: 6 }],
+    reason: "Customer deferred",
+    by: "Prashant",
+    at,
+  });
+  assert.equal(e.action, "cancel");
+  assert.equal(e.quantity, 6);
+  assert.equal(e.reason, "Customer deferred");
+  assert.equal(e.by, "Prashant");
+  assert.equal(e.at.getTime(), at.getTime());
+  assert.deepEqual(e.lines, [{ name: "M8 Bolt", quantity: 6 }]);
+});
+
+test("a restore is logged as a restore, not as another cancellation", () => {
+  const e = cancellationEntry({ lines: [{ name: "x", quantity: 2 }], restore: true });
+  assert.equal(e.action, "restore");
+});
+
+test("the entry totals every line it covers", () => {
+  const e = cancellationEntry({
+    lines: [{ name: "a", quantity: 6 }, { name: "b", quantity: 4 }],
+    reason: "r",
+  });
+  assert.equal(e.quantity, 10);
+  assert.equal(e.lines.length, 2);
+});
+
+test("a string date is accepted, so a stored entry round-trips", () => {
+  const e = cancellationEntry({ lines: [], at: "2026-10-11T00:00:00Z" });
+  assert.ok(e.at instanceof Date);
+});
+
+test("THE LOG IS A LIST, SO A SECOND CANCELLATION DOES NOT ERASE THE FIRST", () => {
+  // Two of the three ways to cancel are partial. A single reason field would
+  // be overwritten, losing the one thing it exists to answer.
+  const log = [
+    cancellationEntry({ lines: [{ name: "a", quantity: 4 }], reason: "first" }),
+    cancellationEntry({ lines: [{ name: "b", quantity: 2 }], reason: "second" }),
+  ];
+  assert.equal(log.length, 2);
+  assert.equal(log[0].reason, "first");
+  assert.match(cancellationSummary({ cancellations: log }), /2 cancelled -- second/);
+});
+
+test("the summary says RESTORED when that was the last action", () => {
+  // Nothing summarised a log ending in a restore, so a summary hard-coded to
+  // "cancelled" passed. It would have told the user an order was called off
+  // moments after they put it back.
+  const log = [
+    cancellationEntry({ lines: [{ name: "a", quantity: 6 }], reason: "deferred" }),
+    cancellationEntry({ lines: [{ name: "a", quantity: 6 }], reason: "back on", restore: true }),
+  ];
+  assert.match(cancellationSummary({ cancellations: log }), /6 restored -- back on/);
+});
+
+test("the summary is empty when nothing was ever cancelled", () => {
+  assert.equal(cancellationSummary(order()), "");
+  assert.equal(cancellationSummary({ cancellations: [] }), "");
+  assert.equal(cancellationSummary(null), "");
+});
+
+test("a cancellation with no reason still summarises", () => {
+  const log = [cancellationEntry({ lines: [{ name: "a", quantity: 5 }] })];
+  assert.equal(cancellationSummary({ cancellations: log }), "5 cancelled");
+});
+
+console.log("\n--- the cancel wiring ---");
+
+test("the cancel route is a permission-checked write", () => {
+  const roles = read("../lib/roles.mjs");
+  assert.ok(roles.includes('"/api/order-cancel"'));
+  assert.match(roles, /\["\/api\/order-cancel",\s*"invoice:write"\]/);
+});
+
+test("the cancel route is transactional and derives the status", () => {
+  const src = read("../app/api/order-cancel/route.js");
+  assert.match(src, /withTransaction/);
+  assert.match(src, /orderStatus\(/);
+  assert.match(src, /applyCancel|applyRestore/);
+  assert.ok(
+    !/cancelledQty\s*[:=]/.test(src),
+    "the route must not move cancelledQty itself -- use lib/orderStatus.mjs"
+  );
+});
+
+test("a cancellation demands a reason; a restore does not", () => {
+  const src = read("../app/api/order-cancel/route.js");
+  assert.match(src, /!restore && !reason/);
+});
+
+test("the log is declared on the model", () => {
+  // Mongoose strict mode drops what is not declared, and a dropped log is a
+  // cancellation nobody can explain afterwards.
+  const model = read("../models/orderModel.js");
+  assert.match(model, /cancellations:\s*\[/);
+  for (const field of ["reason", "action", "by", "at"]) {
+    assert.ok(new RegExp(`${field}:\\s*\\{`).test(model), `the log must declare ${field}`);
+  }
+});
+
+test("both screens offer the action, and neither does the arithmetic", () => {
+  const register = read("../app/order/page.js");
+  assert.match(register, /order-cancel/);
+  assert.match(register, /cancelBlockedReason/);
+  assert.match(register, /restoreBlockedReason/);
+
+  const form = read("../app/orderadd/page.js");
+  assert.match(form, /cancellableQty/);
+  assert.ok(
+    !/quantity\s*-\s*invoicedQty/.test(form),
+    "the form must not re-derive the cancellable quantity"
+  );
+});
+
 
 console.log("\n--- the wiring ---");
 
