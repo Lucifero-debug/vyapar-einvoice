@@ -1,7 +1,7 @@
 'use client';
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { LINE_KIND_LABELS } from '@/lib/bom.mjs';
+import { LINE_KIND_LABELS, reversalSummary } from '@/lib/bom.mjs';
 
 /**
  * The production entry -- Sigfa's Production voucher (MKEY 'FR').
@@ -62,6 +62,12 @@ function ProductionScreen() {
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // The entry being changed, or null for a new one. An alter rewrites the
+  // stock the entry moved, so it is not a different screen -- it is this one,
+  // loaded with what was recorded.
+  const [editing, setEditing] = useState(null);
+  const [confirming, setConfirming] = useState(null);
+  const [notice, setNotice] = useState('');
 
   const loadBoms = useCallback(async () => {
     try {
@@ -132,10 +138,14 @@ function ProductionScreen() {
     setError('');
     setSaving(true);
     try {
-      const res = await fetch('/api/production-add', {
-        method: 'POST',
+      // The same body either way; the id and the method are what differ.
+      // `docNo` is deliberately not sent on an alter -- the number keys the
+      // stock rows ("PRD-<docNo>"), and the route ignores it for that reason.
+      const res = await fetch(editing ? '/api/production-alter' : '/api/production-add', {
+        method: editing ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          ...(editing ? { id: editing._id } : {}),
           bomName: plan.bom.name,
           outputItem: plan.bom.outputItem,
           quantity: Number(form.quantity),
@@ -158,9 +168,11 @@ function ProductionScreen() {
       });
       const data = await res.json();
       if (!data.success) {
-        setError(data.error || 'Could not save the entry.');
+        setError(data.error || `Could not ${editing ? 'update' : 'save'} the entry.`);
         return;
       }
+      setNotice(data.message || '');
+      setEditing(null);
       setPlan(null);
       setLines([]);
       setForm((f) => ({ ...f, quantity: '', remarks: '' }));
@@ -172,14 +184,118 @@ function ProductionScreen() {
     }
   };
 
-  const deleteEntry = async (entry) => {
+  /**
+   * Load a recorded entry back into the form.
+   *
+   * The register deliberately leaves the lines out of its payload, so this
+   * fetches the entry in full. The lines that come back are the ones that were
+   * SAVED -- not a fresh explosion of the formula, which may have been edited
+   * since. A batch that used a bit more of something should keep saying so.
+   */
+  const loadForEdit = async (row) => {
     setError('');
-    const res = await fetch(`/api/delete-production?id=${encodeURIComponent(entry._id)}`, {
-      method: 'POST',
-    });
-    const data = await res.json();
-    if (data.success) await loadRegister();
-    else setError(data.error || data.message || 'Could not delete the entry.');
+    setNotice('');
+    try {
+      const res = await fetch(`/api/get-production?id=${encodeURIComponent(row._id)}`);
+      const data = await res.json();
+      const entry = data.production || data.entry;
+      if (!data.success || !entry) {
+        setError(data.error || 'Could not open that entry.');
+        return;
+      }
+
+      setEditing(entry);
+      setForm({
+        bomName: entry.bomName || '',
+        quantity: String(entry.outputQuantity ?? ''),
+        date: entry.date ? new Date(entry.date).toISOString().slice(0, 10) : todayIst(),
+        partyName: entry.partyName || '',
+        remarks: entry.remarks || '',
+        nested: true,
+      });
+      setLines(entry.lines || []);
+      // The costing figures come off the ENTRY rather than from a fresh
+      // explode call, for the same reason the lines do: re-exploding would
+      // show the recipe's numbers in place of the batch's.
+      setPlan({
+        bom: { name: entry.bomName || '', outputItem: entry.outputItem },
+        costing: {
+          materialValue: entry.materialValue,
+          wastageValue: entry.wastageValue,
+          byproductValue: entry.byproductValue,
+          netCost: entry.netCost,
+          costPerUnit: entry.costPerUnit,
+          missingCosts: entry.missingCosts || [],
+        },
+        shortfalls: [],
+        warnings: entry.warnings || [],
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      setError(err.message || 'Could not open that entry.');
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setPlan(null);
+    setLines([]);
+    setForm((f) => ({ ...f, quantity: '', remarks: '' }));
+  };
+
+  /**
+   * Ask before deleting, and say what will actually move.
+   *
+   * A production entry moves stock in both directions at once, so a reversal
+   * takes the finished goods back OUT and puts the materials back IN. This
+   * used to be a single unconfirmed click, which silently rewrote inventory
+   * in two directions with nothing on screen to say it had.
+   *
+   * The register leaves the lines out of its payload, so the entry is fetched
+   * in full to list them -- reversalSummary works off what was SAVED, not off
+   * what the formula now says.
+   */
+  const askDelete = async (row) => {
+    setError('');
+    setNotice('');
+    try {
+      const res = await fetch(`/api/get-production?id=${encodeURIComponent(row._id)}`);
+      const data = await res.json();
+      const entry = data.production || row;
+      setConfirming({ entry, reversal: reversalSummary(entry) });
+    } catch {
+      // The dialog still opens: refusing to confirm because a lookup failed
+      // would leave no way to delete the entry at all. It just cannot list
+      // the lines.
+      setConfirming({ entry: row, reversal: reversalSummary(row) });
+    }
+  };
+
+  const doDelete = async () => {
+    if (!confirming) return;
+    setError('');
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `/api/delete-production?id=${encodeURIComponent(confirming.entry._id)}`,
+        { method: 'POST' }
+      );
+      const data = await res.json();
+      if (!data.success) {
+        setError(data.error || data.message || 'Could not delete the entry.');
+        return;
+      }
+      setNotice(data.message || '');
+      // An entry being edited that has just been deleted must not stay in the
+      // form, or saving it would recreate it under a number that is gone.
+      if (editing && editing._id === confirming.entry._id) cancelEdit();
+      await loadRegister();
+    } catch (err) {
+      setError(err.message || 'Could not delete the entry.');
+    } finally {
+      setSaving(false);
+      setConfirming(null);
+    }
   };
 
   const chosen = boms.find((b) => b.name === form.bomName);
@@ -197,6 +313,35 @@ function ProductionScreen() {
           Bills of Material
         </button>
       </div>
+
+      {/* Which entry is being changed. Without this the form looks like a new
+          one, and "Save" on what you believe is a blank form would quietly
+          rewrite a recorded batch. */}
+      {editing && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
+          <span>
+            Editing <span className="font-medium">production {editing.docNo}</span> of{' '}
+            {asDate(editing.date)}. Saving replaces the stock it moved.
+            {editing.editCount > 0 && (
+              <span className="field-hint block">
+                Changed {editing.editCount} time{editing.editCount === 1 ? '' : 's'} already.
+              </span>
+            )}
+          </span>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={cancelEdit}>
+            Cancel edit
+          </button>
+        </div>
+      )}
+
+      {notice && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
+          <span>{notice}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setNotice('')}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -405,12 +550,22 @@ function ProductionScreen() {
             </div>
           )}
 
-          <div className="mb-8 flex justify-end gap-2">
-            <button type="button" className="btn btn-secondary" onClick={() => setPlan(null)}>
-              Start again
+          <div className="mb-8 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={editing ? cancelEdit : () => setPlan(null)}
+            >
+              {editing ? 'Cancel edit' : 'Start again'}
             </button>
             <button type="button" className="btn btn-primary" onClick={save} disabled={saving}>
-              {saving ? 'Saving…' : 'Save production'}
+              {saving
+                ? editing
+                  ? 'Updating…'
+                  : 'Saving…'
+                : editing
+                  ? `Update production ${editing.docNo}`
+                  : 'Save production'}
             </button>
           </div>
         </>
@@ -466,11 +621,18 @@ function ProductionScreen() {
                   </td>
                   <td className="num">₹ {money(entry.costPerUnit)}</td>
                   <td>
-                    <div className="flex justify-end">
+                    <div className="flex flex-wrap justify-end gap-1">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => loadForEdit(entry)}
+                      >
+                        Edit
+                      </button>
                       <button
                         type="button"
                         className="btn btn-sm btn-danger"
-                        onClick={() => deleteEntry(entry)}
+                        onClick={() => askDelete(entry)}
                       >
                         Delete
                       </button>
@@ -483,9 +645,80 @@ function ProductionScreen() {
         </table>
       </div>
       <p className="field-hint mt-2">
-        Deleting an entry removes the stock it moved, in the same transaction. An asterisk
-        beside a cost means some line had no price in the item master when it was saved.
+        Editing an entry replaces the stock it moved; deleting one removes it. Both happen in
+        the same transaction as the change itself. An asterisk beside a cost means some line had
+        no price in the item master when it was saved.
       </p>
+
+      {/* What a reversal actually does, item by item. "Are you sure?" conveys
+          none of it: a production entry moved stock in two directions at once,
+          so undoing it moves stock in two directions again. */}
+      {confirming && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Confirm delete">
+          <div className="modal-card max-w-lg">
+            <div className="modal-title">
+              Delete production {confirming.entry.docNo}?
+              <span className="block text-sm font-normal text-muted-foreground">
+                {confirming.entry.outputItem} &mdash; {asDate(confirming.entry.date)}
+              </span>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <p className="field-label mb-1">Comes back out of stock</p>
+                {confirming.reversal.outOfStock.length === 0 ? (
+                  <p className="field-hint">Nothing.</p>
+                ) : (
+                  <ul className="space-y-1 text-sm">
+                    {confirming.reversal.outOfStock.map((row, i) => (
+                      <li key={`out-${i}`}>
+                        {row.itemName} <span className="num">{qty(row.quantity)}</span>{' '}
+                        {row.unit}
+                        <span className="field-hint"> {row.why}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <p className="field-label mb-1">Goes back into stock</p>
+                {confirming.reversal.backIntoStock.length === 0 ? (
+                  <p className="field-hint">Nothing.</p>
+                ) : (
+                  <ul className="space-y-1 text-sm">
+                    {confirming.reversal.backIntoStock.map((row, i) => (
+                      <li key={`in-${i}`}>
+                        {row.itemName} <span className="num">{qty(row.quantity)}</span>{' '}
+                        {row.unit}
+                        <span className="field-hint"> {row.why}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+
+            <p className="field-hint mt-4">
+              The entry and its stock movements go together, in one transaction. This cannot be
+              undone, but the entry can be recorded again.
+            </p>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setConfirming(null)}
+                disabled={saving}
+              >
+                Cancel
+              </button>
+              <button type="button" className="btn btn-danger" onClick={doDelete} disabled={saving}>
+                {saving ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

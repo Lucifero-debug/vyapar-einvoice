@@ -34,6 +34,14 @@ const userSchema = new mongoose.Schema(
     // has left is actually locked out before their token expires.
     tokenVersion: { type: Number, default: 0 },
     active: { type: Boolean, default: true },
+    // Set on every account an owner creates, and on every password an owner
+    // resets. While it is true, lib/authServer.mjs refuses every route except
+    // the handful needed to change it -- so the owner who typed the first
+    // password cannot keep using it, and never learns the real one.
+    //
+    // Enforced in requireAuth rather than by redirecting the browser: a
+    // client-side gate is a suggestion, and the API is reachable without it.
+    mustChangePassword: { type: Boolean, default: false },
     lastLoginAt: { type: Date },
   },
   { timestamps: true }

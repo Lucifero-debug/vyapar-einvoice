@@ -72,6 +72,7 @@ import {
   stockDirection,
   subBomFor,
   toProductionLines,
+  reversalSummary,
 } from "../lib/bom.mjs";
 import { canAccessPath, permissionForPath } from "../lib/roles.mjs";
 import { MASTER_COLLECTIONS, TRANSACTION_COLLECTIONS } from "../lib/clearData.mjs";
@@ -1326,16 +1327,28 @@ test("the production routes write inside a transaction", () => {
   }
 });
 
-test("production-add never takes a rate from the request", () => {
+test("no production route takes a rate from the request", () => {
   // A client that could post its own rates could post a cost of zero on a
-  // voucher that consumed fifty thousand rupees of steel.
-  const src = read("../app/api/production-add/route.js");
-  assert.ok(/costOf/.test(src), "rates must come from the item master");
-  assert.equal(
-    /rate:\s*(Number\()?\s*(line|body)/.test(src),
-    false,
-    "a rate is being read off the request"
-  );
+  // voucher that consumed fifty thousand rupees of steel -- and on an alter
+  // it could do that to an entry that was costed correctly yesterday.
+  //
+  // The lookup moved into lib/productionSave.mjs when `production-alter` was
+  // added, so that both routes get it from one place. This checks whichever
+  // file holds it, plus that neither route reads a rate off the body.
+  const shared = read("../lib/productionSave.mjs");
+  assert.ok(/costOf/.test(shared), "rates must come from the item master");
+
+  for (const route of [
+    "../app/api/production-add/route.js",
+    "../app/api/production-alter/route.js",
+    "../lib/productionSave.mjs",
+  ]) {
+    assert.equal(
+      /rate:\s*(Number\()?\s*(line|body)/.test(read(route)),
+      false,
+      `${route} reads a rate off the request`
+    );
+  }
 });
 
 test("the formula routes share one validation path", () => {
@@ -1497,6 +1510,245 @@ test("no new route reaches above the repo root", () => {
     .filter((f) => /^app\/api\/[^/]+\/route\.js$/.test(f))
     .filter((f) => /["']\.\.\/\.\.\/\.\.\/\.\.\//.test(fs.readFileSync(new URL(f, ROOT), "utf8")));
   assert.deepEqual(offenders, []);
+});
+
+console.log("\n--- what reversing a production entry moves ---");
+
+const ENTRY = {
+  docNo: 12,
+  date: new Date("2026-10-01"),
+  outputItem: "Bracket",
+  outputQuantity: 10,
+  outputUnit: "NOS",
+  lines: [
+    { itemName: "Plate", kind: "material", quantity: 20, unit: "KG" },
+    { itemName: "Scrap", kind: "wastage", quantity: 2, unit: "KG" },
+    { itemName: "Offcut", kind: "byproduct", quantity: 1, unit: "KG" },
+  ],
+};
+
+test("a reversal is the opposite of the movement, in both directions", () => {
+  // The whole point of showing this before a delete: an entry moved stock in
+  // two directions at once, so undoing it moves stock in two directions
+  // again. What was RECEIVED comes out; what was ISSUED goes back in.
+  const { outOfStock, backIntoStock } = reversalSummary(ENTRY);
+  assert.deepEqual(
+    outOfStock.map((r) => r.itemName),
+    ["Bracket", "Offcut"],
+    "the finished item and the by-product were received, so they come out"
+  );
+  assert.deepEqual(
+    backIntoStock.map((r) => r.itemName),
+    ["Plate", "Scrap"],
+    "the material and the wastage were issued, so they go back"
+  );
+});
+
+test("a by-product never goes back INTO stock", () => {
+  // The direction this function got wrong first time, by comparing the kind
+  // string by hand instead of asking `consumes`. A by-product listed as going
+  // back in would tell somebody a delete ADDS stock it actually removes.
+  const { outOfStock, backIntoStock } = reversalSummary(ENTRY);
+  assert.ok(outOfStock.some((r) => r.itemName === "Offcut"));
+  assert.ok(!backIntoStock.some((r) => r.itemName === "Offcut"));
+  // And the direction is decided by the shared rule, not a local comparison.
+  for (const row of [...outOfStock, ...backIntoStock]) {
+    assert.ok(row.why, `${row.itemName} has no reason given`);
+  }
+});
+
+test("the direction agrees with the ledger's own rule for every kind", () => {
+  // stockDirection is what writeProductionLedgerRows uses. A reversal that
+  // disagreed with it would describe the wrong thing on screen while the
+  // server did the right thing -- worse than no dialog at all.
+  for (const kind of LINE_KINDS) {
+    const { outOfStock, backIntoStock } = reversalSummary({
+      outputItem: "",
+      lines: [{ itemName: "X", kind, quantity: 1, unit: "KG" }],
+    });
+    const wentIn = backIntoStock.some((r) => r.itemName === "X");
+    const cameOut = outOfStock.some((r) => r.itemName === "X");
+    assert.notEqual(wentIn, cameOut, `${kind} must move exactly one way`);
+    assert.equal(
+      wentIn,
+      stockDirection(kind) === "issue",
+      `${kind} issues on save, so a reversal must put it back`
+    );
+  }
+});
+
+test("an unknown kind reverses as a material, as it posts", () => {
+  const { backIntoStock } = reversalSummary({
+    outputItem: "",
+    lines: [{ itemName: "Mystery", quantity: 3, unit: "KG" }],
+  });
+  assert.deepEqual(backIntoStock.map((r) => r.itemName), ["Mystery"]);
+});
+
+test("blank and zero lines are left out", () => {
+  // A dialog listing "0 KG of nothing" reads as a bug.
+  const { backIntoStock } = reversalSummary({
+    outputItem: "",
+    lines: [
+      { itemName: "", quantity: 5 },
+      { itemName: "Zero", quantity: 0 },
+      { itemName: "Real", quantity: 1 },
+    ],
+  });
+  assert.deepEqual(backIntoStock.map((r) => r.itemName), ["Real"]);
+});
+
+test("no entry at all is an empty summary, not a crash", () => {
+  assert.deepEqual(reversalSummary(null), { outOfStock: [], backIntoStock: [] });
+  assert.deepEqual(reversalSummary({}), { outOfStock: [], backIntoStock: [] });
+});
+
+test("quantities are rounded by the project's one rule", () => {
+  const { outOfStock } = reversalSummary({ outputItem: "A", outputQuantity: 1 / 3, lines: [] });
+  assert.equal(outOfStock[0].quantity, roundQty(1 / 3));
+});
+
+console.log("\n--- altering and deleting a production entry ---");
+
+test("there is a route to alter an entry, and it is a PATCH", () => {
+  const src = read("../app/api/production-alter/route.js");
+  assert.match(src, /export const PATCH = tenantRoute\(/);
+  assert.doesNotMatch(src, /^export\s+async\s+function\s+PATCH\b/m, "it must be wrapped");
+});
+
+test("the alter route never changes the document number", () => {
+  // The stock rows are keyed "PRD-<docNo>" and the writer deletes by that key
+  // before writing. Rewriting under the entry's OWN number replaces its
+  // movements exactly. Let the number change and the new rows land under a new
+  // key while the old ones sit under the old one forever, counted by the stock
+  // report and attached to a voucher that no longer exists.
+  const src = read("../app/api/production-alter/route.js");
+  assert.ok(/docNo: existing\.docNo/.test(src), "the stored number must win");
+  assert.doesNotMatch(src, /docNo: Number\(body\.docNo\)|docNo = requested/, "it honours the request");
+  assert.ok(/getNextProductionNo/.test(src) === false, "an alter allocates nothing");
+});
+
+test("the alter writes the entry and its stock in one transaction", () => {
+  const src = read("../app/api/production-alter/route.js");
+  assert.ok(/withTransaction/.test(src));
+  const body = src.slice(src.indexOf("withTransaction"));
+  assert.ok(/findOneAndUpdate/.test(body), "the entry is updated inside it");
+  assert.ok(/writeProductionLedgerRows/.test(body), "and the stock with it");
+  assert.ok(/session,/.test(body), "the session has to reach the writer");
+});
+
+test("the alter and the add share one pipeline", () => {
+  // The same item lookup, the same choice between the form's lines and a
+  // fresh explosion, the same validation and the same rate freezing. Two
+  // copies is two chances for an alter to value a batch differently from the
+  // way the original save valued it -- which is how customer-add and
+  // customer-alter ended up with different duplicate-name rules.
+  for (const route of ["../app/api/production-add/route.js", "../app/api/production-alter/route.js"]) {
+    const src = read(route);
+    assert.ok(/buildProductionEntry/.test(src), `${route} rolls its own`);
+    assert.ok(/@\/lib\/productionSave\.mjs/.test(src), `${route} does not import the shared one`);
+  }
+  // And neither route re-implements the validation it used to hold inline.
+  const add = read("../app/api/production-add/route.js");
+  assert.doesNotMatch(add, /productionProblems/, "the add still validates for itself");
+  assert.doesNotMatch(add, /toProductionLines/, "the add still freezes rates for itself");
+});
+
+test("rates are read from the master on an alter too", () => {
+  // A client that could post its own rates could zero the cost of an entry
+  // that was costed correctly yesterday.
+  const src = read("../lib/productionSave.mjs");
+  assert.ok(/toProductionLines\(\{ lines, costOf \}\)/.test(src));
+  assert.ok(/costOf = \(itemName\) =>/.test(src), "cost comes from the item index");
+});
+
+test("who raised the entry survives an edit", () => {
+  // Sigfa keeps both: LUSER for who made it, LUSERE for who last touched it.
+  // The schema already carried both columns, so there was nothing to invent.
+  const src = read("../app/api/production-alter/route.js");
+  assert.ok(/createdBy: existing\.createdBy/.test(src), "createdBy must not be overwritten");
+  assert.ok(/updatedBy: auth\?\.name/.test(src));
+  assert.ok(/\$inc: \{ editCount: 1 \}/.test(src), "Sigfa counts edits on a voucher");
+  // Declared on the model, or Mongoose strict mode drops it in silence.
+  const model = read("../models/productionModel.js");
+  assert.ok(/updatedBy: \{ type: String \}/.test(model));
+  assert.ok(/editCount: \{ type: Number/.test(model));
+});
+
+test("altering an entry is a voucher write, and a biller cannot", () => {
+  assert.equal(permissionForPath("/api/production-alter"), "voucher:write");
+  assert.equal(canAccessPath("owner", "/api/production-alter"), true);
+  assert.equal(canAccessPath("accountant", "/api/production-alter"), true);
+  assert.equal(canAccessPath("biller", "/api/production-alter"), false);
+  // Listed in its own right: a prefix rule matches an exact path or one
+  // followed by "/", so "/api/production-alter" does NOT match
+  // "/api/production" -- which demands only voucher:read.
+  assert.ok(read("../lib/roles.mjs").includes('["/api/production-alter", "voucher:write"]'));
+});
+
+test("the screen can open a recorded entry, and says which one", () => {
+  const src = read("../app/production/page.js");
+  assert.ok(/loadForEdit/.test(src));
+  assert.ok(/get-production\?id=/.test(src), "the register leaves the lines out, so it refetches");
+  // Without the banner the form looks like a new entry, and Save on what
+  // somebody believes is a blank form would quietly rewrite a recorded batch.
+  assert.ok(/Editing <span className="font-medium">production \{editing\.docNo\}/.test(src));
+  assert.ok(/Cancel edit/.test(src));
+  assert.ok(/Update production \$\{editing\.docNo\}/.test(src));
+});
+
+test("an edit loads what was saved, not a fresh explosion", () => {
+  // A formula edited since the batch was made must not retroactively rewrite
+  // what that batch consumed. The screen's own note: a batch that actually
+  // used a bit more of something should be recorded as it happened.
+  const src = read("../app/production/page.js");
+  const loader = src.slice(src.indexOf("const loadForEdit"), src.indexOf("const cancelEdit"));
+  assert.ok(/setLines\(entry\.lines \|\| \[\]\)/.test(loader), "the stored lines");
+  assert.doesNotMatch(loader, /bom-explode/, "it must not re-explode the formula");
+  // The costing comes off the entry for the same reason.
+  assert.ok(/materialValue: entry\.materialValue/.test(loader));
+});
+
+test("the screen sends an alter to the alter route", () => {
+  const src = read("../app/production/page.js");
+  assert.ok(/editing \? '\/api\/production-alter' : '\/api\/production-add'/.test(src));
+  assert.ok(/editing \? 'PATCH' : 'POST'/.test(src));
+  assert.ok(/editing \? \{ id: editing\._id \} : \{\}/.test(src));
+  // Still not sending rates, on either path.
+  const save = src.slice(src.indexOf("const save = async"));
+  assert.doesNotMatch(save.slice(0, 1800), /rate:|amount:/);
+});
+
+test("deleting an entry is confirmed, and the dialog lists both directions", () => {
+  // It used to be a single unconfirmed click that silently rewrote inventory
+  // in two directions.
+  const src = read("../app/production/page.js");
+  assert.ok(/askDelete/.test(src) && /doDelete/.test(src));
+  assert.ok(/reversalSummary/.test(src), "the dialog must use the shared rule");
+  assert.ok(/Comes back out of stock/.test(src));
+  assert.ok(/Goes back into stock/.test(src));
+  assert.ok(/role="dialog"/.test(src) && /aria-modal="true"/.test(src));
+  // And nothing deletes without going through it.
+  assert.doesNotMatch(src, /onClick=\{\(\) => deleteEntry\(/, "a direct delete button remains");
+});
+
+test("deleting the entry being edited clears the form", () => {
+  // Otherwise saving it afterwards would recreate it under a number that is
+  // gone, and the unique index would turn that into a failed save nobody
+  // could explain.
+  const src = read("../app/production/page.js");
+  assert.ok(/if \(editing && editing\._id === confirming\.entry\._id\) cancelEdit\(\)/.test(src));
+});
+
+test("the formula register already offers both, and still does", () => {
+  // BOM alter and delete were built with the master itself. Asserted here so
+  // the production work above cannot be mistaken for having added them.
+  const src = read("../app/bom/page.js");
+  assert.ok(/bomadd\?id=/.test(src), "Edit goes to the form with an id");
+  assert.ok(/delete-bom/.test(src));
+  assert.ok(/askDelete/.test(src) && /doDelete/.test(src), "and it confirms");
+  const form = read("../app/bomadd/page.js");
+  assert.ok(/editingId \? '\/api\/bom-alter' : '\/api\/bom-add'/.test(form));
 });
 
 console.log(`\n${passed} checks passed`);

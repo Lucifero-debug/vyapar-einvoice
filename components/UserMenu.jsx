@@ -19,9 +19,38 @@ export default function UserMenu() {
 
   useEffect(() => {
     let cancelled = false
+    const here = window.location.pathname
+
     fetch('/api/auth/me')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => { if (!cancelled && data?.success) setMe(data) })
+      .then(async (res) => {
+        if (cancelled) return
+
+        // === A session that has died while a page was open ===
+        //
+        // This is the only place the browser finds out. middleware.js runs at
+        // the edge with no database, so it can only check the signature: a
+        // staff member deactivated a minute ago still gets the page shell,
+        // and every request on it fails. Rendering nothing -- what this did
+        // before -- left them sitting on a dead page wondering why no button
+        // worked.
+        if (res.status === 401) {
+          if (here !== '/login') window.location.assign('/login')
+          return
+        }
+
+        const data = res.ok ? await res.json() : null
+        if (cancelled || !data?.success) return
+
+        // An owner-set password that has not been replaced. requireAuth is
+        // already refusing every other route, so sending them here is what
+        // turns a wall of 403s into the one screen that works.
+        if (data.user?.mustChangePassword && here !== '/change-password') {
+          window.location.assign('/change-password')
+          return
+        }
+
+        setMe(data)
+      })
       .catch(() => {})
     return () => { cancelled = true }
   }, [])
@@ -60,10 +89,13 @@ export default function UserMenu() {
           <p className='text-sm font-medium text-foreground'>{me.company?.name}</p>
           <p className='field-hint break-words'>{me.user?.email}</p>
           <p className='field-hint mt-1 capitalize'>{me.user?.role}</p>
+          <a href='/change-password' className='btn btn-secondary btn-sm mt-3 w-full'>
+            Change password
+          </a>
           <button
             type='button'
             onClick={signOut}
-            className='btn btn-secondary btn-sm mt-3 w-full'
+            className='btn btn-secondary btn-sm mt-2 w-full'
           >
             Sign out
           </button>

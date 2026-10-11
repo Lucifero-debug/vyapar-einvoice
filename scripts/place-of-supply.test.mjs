@@ -139,6 +139,24 @@ console.log("\n--- nothing else gets to decide it ---");
 
 const read = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
+/**
+ * The source that actually implements a billing screen.
+ *
+ * The four billing pages are being consolidated into
+ * components/billing/BillingScreen.jsx, one at a time. A page that has been
+ * migrated is a thin wrapper, so checking the page would find none of the
+ * behaviour -- which is what happened the first time the suite ran after
+ * saleadd moved. Following the delegation keeps the assertion pointed at the
+ * code rather than at the file it used to be in, and works whether or not a
+ * given screen has been migrated yet.
+ */
+const billingSource = (page) => {
+  const src = read(`app/${page}/page.js`);
+  return /from '@\/components\/billing\/BillingScreen'/.test(src)
+    ? read("components/billing/BillingScreen.jsx")
+    : src;
+};
+
 test("both invoice routes derive it and ignore what the form sent", () => {
   for (const route of ["app/api/save-invoice/route.js", "app/api/sale-alter/route.js"]) {
     const src = read(route);
@@ -171,7 +189,7 @@ test("the routes ask for the columns the rule reads", () => {
 
 test("the billing pages no longer offer a state to pick", () => {
   for (const page of ["saleadd", "purchaseadd", "salereturn", "purchasereturn"]) {
-    const src = read(`app/${page}/page.js`);
+    const src = billingSource(page);
     assert.match(src, /placeOfSupplyLabel\(place\)/, `${page} does not show the derived state`);
     assert.doesNotMatch(src, /setStateOfSupply\(e\.target\.value\)/, `${page} still has the dropdown`);
     assert.doesNotMatch(src, /<option value={s\.name}/, `${page} still lists the states master`);

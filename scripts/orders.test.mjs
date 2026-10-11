@@ -96,6 +96,21 @@ const test = (name, fn) => {
  */
 const read = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
 
+/**
+ * The source that implements a billing screen.
+ *
+ * The four billing pages are being consolidated into
+ * components/billing/BillingScreen.jsx one at a time, so a migrated page is a
+ * thin wrapper with none of this behaviour in it. Following the delegation
+ * keeps these checks pointed at the code wherever it currently lives.
+ */
+const billingSource = (page) => {
+  const src = read(`../app/${page}/page.js`);
+  return /from '@\/components\/billing\/BillingScreen'/.test(src)
+    ? read("../components/billing/BillingScreen.jsx")
+    : src;
+};
+
 /** An order line. Quantities default to a clean, wholly unbilled 10. */
 const line = (over = {}) => ({
   _id: "l1",
@@ -816,7 +831,7 @@ test("both billing pages set the header, not just the lines", () => {
   // Patched by script across two near-identical pages; one of them being
   // missed is exactly how the last round of manual edits went wrong.
   for (const page of ["saleadd", "purchaseadd"]) {
-    const src = read(`../app/${page}/page.js`);
+    const src = billingSource(page);
     assert.match(src, /skipped, header \} = prefillFromOrder/, `${page} must read header`);
     assert.match(src, /setOrderNo\(header\.orderNo\)/, `${page} must set the order number`);
     assert.match(src, /setOrderDate\(header\.orderDate\)/, `${page} must set the order date`);
@@ -995,7 +1010,7 @@ test("junk picks are ignored rather than throwing", () => {
 
 test("both billing pages offer the picker and neither does the arithmetic", () => {
   for (const page of ["saleadd", "purchaseadd"]) {
-    const src = read(`../app/${page}/page.js`);
+    const src = billingSource(page);
     assert.match(src, /pickFromOrder/, `${page} must use the rule`);
     assert.match(src, /order-pending/, `${page} must fetch the pending lines`);
     assert.ok(

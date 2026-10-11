@@ -6,15 +6,7 @@ import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import { getNextProductionNo, raiseProductionCounter } from "@/lib/getNextProductionNo";
 import { writeProductionLedgerRows } from "@/lib/itemLedger.mjs";
-import {
-  bomCost,
-  byOutputItem,
-  explode,
-  mergeLines,
-  productionProblems,
-  roundQty,
-  toProductionLines,
-} from "@/lib/bom.mjs";
+import { buildProductionEntry } from "@/lib/productionSave.mjs";
 
 /**
  * Save a production entry -- Sigfa's Production voucher, MKEY 'FR'.
@@ -49,111 +41,16 @@ async function handlePOST(req, auth) {
   try {
     const body = await req.json();
 
-    const outputQuantity = Number(body.quantity ?? body.outputQuantity);
-    if (!Number.isFinite(outputQuantity) || outputQuantity <= 0) {
-      return NextResponse.json(
-        { success: false, error: "Enter how much was produced." },
-        { status: 400 }
-      );
-    }
-
-    const date = body.date ? new Date(body.date) : new Date();
-    if (Number.isNaN(date.getTime())) {
-      return NextResponse.json({ success: false, error: "That date is not valid." }, { status: 400 });
-    }
-
+    // The quantity and date checks used to sit here, outside the transaction,
+    // and are now inside buildProductionEntry -- one copy, shared with the
+    // alter route. They throw AbortTransaction, which the catch below already
+    // turns into the same 400 with the same wording.
     const saved = await withTransaction(async (session) => {
-      const items = await Item.find({}, { name: 1, unit: 1, cost: 1 }, { session }).lean();
-      const byName = new Map(items.map((i) => [String(i.name || "").trim().toLowerCase(), i]));
-      const costOf = (itemName) =>
-        Number(byName.get(String(itemName || "").trim().toLowerCase())?.cost) || 0;
-
-      const bomName = String(body.bomName || "").trim();
-      let bom = null;
-      if (bomName) {
-        bom = await Bom.findOne({ name: bomName }, null, { session })
-          .collation({ locale: "en", strength: 2 })
-          .lean();
-        if (!bom) {
-          throw new AbortTransaction(
-            { success: false, error: `No formula named "${bomName}".` },
-            404
-          );
-        }
-      }
-
-      const outputItem = String(body.outputItem || bom?.outputItem || "").trim();
-      const outputMaster = byName.get(outputItem.toLowerCase());
-      if (!outputMaster) {
-        throw new AbortTransaction(
-          { success: false, error: `"${outputItem}" is not in the item master.` },
-          400
-        );
-      }
-
-      // Either the lines the form shows, or a fresh explosion. The explosion
-      // is the same call bom-explode makes, so the figures the user approved
-      // and the figures that get saved come from one implementation.
-      let lines;
-      let warnings = [];
-      if (Array.isArray(body.lines) && body.lines.length) {
-        lines = mergeLines(
-          body.lines.map((line) => ({
-            itemName: String(line?.itemName || "").trim(),
-            kind: line?.kind,
-            quantity: roundQty(line?.quantity),
-            unit: String(line?.unit || "").trim(),
-            depth: Number(line?.depth) || 0,
-            via: String(line?.via || "").trim(),
-            path: line?.source || line?.path,
-          }))
-        );
-      } else {
-        if (!bom) {
-          throw new AbortTransaction(
-            { success: false, error: "Pick a formula, or send the material lines." },
-            400
-          );
-        }
-        const nested = body.nested === undefined ? true : Boolean(body.nested);
-        const allBoms = nested
-          ? await Bom.find({}, { name: 1, outputItem: 1, forQuantity: 1, lines: 1 }, { session }).lean()
-          : [];
-        const result = explode({
-          bom,
-          outputQuantity,
-          index: byOutputItem(allBoms),
-          nested,
-        });
-        lines = mergeLines(result.lines);
-        warnings = result.warnings;
-      }
-
-      // Every line must name a real item, or the stock rows below land under a
-      // name with no master and the stock report counts its opening quantity
-      // as zero.
-      const unknown = [
-        ...new Set(
-          lines
-            .map((l) => l.itemName)
-            .filter((n) => n && !byName.has(n.toLowerCase()))
-        ),
-      ];
-      if (unknown.length) {
-        throw new AbortTransaction(
-          { success: false, error: `Not in the item master: ${unknown.join(", ")}.`, unknown },
-          400
-        );
-      }
-
-      const problems = productionProblems({ date, outputItem, outputQuantity, lines });
-      if (problems.length) {
-        throw new AbortTransaction({ success: false, error: problems[0], problems }, 400);
-      }
-
-      // Rates frozen onto the voucher from the master, never from the request.
-      const frozen = toProductionLines({ lines, costOf });
-      const costing = bomCost({ lines, outputQuantity, costOf });
+      // The item lookup, the lines, the validation and the rate freezing all
+      // live in lib/productionSave.mjs, shared with `production-alter`. Two
+      // copies of this would be two chances for an alter to value a batch
+      // differently from the way the original save valued it.
+      const { fields, frozen, warnings } = await buildProductionEntry({ body, session, auth });
 
       // The number, settled before the write -- the same dance as save-invoice
       // and order-add. The form supplies one from the peek endpoint, which two
@@ -176,24 +73,8 @@ async function handlePOST(req, auth) {
       const [entry] = await Production.create(
         [
           {
+            ...fields,
             docNo,
-            date,
-            bomName: bom?.name || "",
-            outputItem: String(outputMaster.name || "").trim(),
-            outputQuantity: roundQty(outputQuantity),
-            outputUnit: String(outputMaster.unit || "").trim(),
-            lines: frozen,
-            partyName: String(body.partyName || "").trim(),
-            materialValue: costing.materialValue,
-            wastageValue: costing.wastageValue,
-            byproductValue: costing.byproductValue,
-            netCost: costing.netCost,
-            costPerUnit: costing.costPerUnit,
-            missingCosts: costing.missingCosts,
-            warnings,
-            remarks: String(body.remarks || "").trim(),
-            // Sigfa's LUSER.
-            createdBy: auth?.name || auth?.email || "",
             editCount: 0,
             printCount: 0,
           },
@@ -206,12 +87,14 @@ async function handlePOST(req, auth) {
       const rows = await writeProductionLedgerRows({
         session,
         docNo,
-        date,
+        date: fields.date,
         outputItem: entry.outputItem,
         outputQuantity: entry.outputQuantity,
         lines: frozen,
         partyName: entry.partyName,
       });
+
+      void warnings;
 
       return { entry, rows };
     });

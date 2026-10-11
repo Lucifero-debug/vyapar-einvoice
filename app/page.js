@@ -21,6 +21,7 @@ import {
   Trash2,
   Undo2,
   Upload,
+  UserCog,
   Users,
   Wallet,
   X,
@@ -63,6 +64,11 @@ const currency = (n) =>
 
 const Page = () => {
   const router = useRouter();
+  // Only an owner is shown the Staff tile. Tidiness, not security: /staff is
+  // mapped to `user:manage` in lib/roles.mjs, so the edge middleware turns
+  // anybody else away and /api/staff refuses them again. A hidden link is not
+  // a locked door -- it just stops a biller clicking something that bounces.
+  const [myRole, setMyRole] = useState('');
   const [showHsnMaster, setShowHsnMaster] = useState(false);
   const [showGroupMaster, setShowGroupMaster] = useState(false);
   const [showStateMaster, setShowStateMaster] = useState(false);
@@ -91,6 +97,19 @@ const Page = () => {
   const [priceLists, setPriceLists] = useState([]);
   const [showPriceListMaster, setShowPriceListMaster] = useState(false);
   const [selectedPriceList, setSelectedPriceList] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/auth/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.success) setMyRole(data.user?.role || '');
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     /**
@@ -929,6 +948,20 @@ const Page = () => {
                 </span>
               </span>
             </button>
+
+            {myRole === 'owner' && (
+              <button type="button" className="nav-tile" onClick={() => router.push('/staff')}>
+                <span className="nav-tile-icon">
+                  <UserCog className="h-[18px] w-[18px]" />
+                </span>
+                <span className="flex-1">
+                  Staff
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    Who can sign in, and what they may do
+                  </span>
+                </span>
+              </button>
+            )}
           </div>
         </section>
       </div>
