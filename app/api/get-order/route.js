@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { connect } from "../../../lib/mongodb";
 import Order from "@/models/orderModel";
+import Invoice from "@/models/invoiceModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import { billingInvoices } from "@/lib/orderReports.mjs";
 import {
   isOrderType,
   lineStatus,
@@ -45,12 +47,32 @@ async function handleGET(req, auth) {
       );
     }
 
+    // === What has been billed against this order ===
+    //
+    // Without this the link is one-way: an invoice line knows which order it
+    // came from, but the order could not say what had billed it, so a prefill
+    // that silently failed left no trace and the register showed an order as
+    // part-billed with nothing to point at. Served off the per-firm index on
+    // items.orderNo in models/invoiceModel.js.
+    const billing = await Invoice.find(
+      { "items.orderNo": orderNo, "items.orderType": type },
+      { invoiceNo: 1, date: 1, type: 1, return: 1, "items.name": 1, "items.quantity": 1, "items.orderNo": 1, "items.orderType": 1, "items.orderLineId": 1 }
+    )
+      .sort({ invoiceNo: 1 })
+      .lean();
+
+    // The shaping -- which lines belong to this order, how returns are
+    // treated -- lives in lib/orderReports.mjs, where the fixture test can
+    // reach it. The route only fetches.
+    const invoices = billingInvoices(billing, { orderNo, type });
+
     return NextResponse.json({
       success: true,
       order: {
         ...order,
         status: orderStatus(order),
         pendingValue: pendingValue(order),
+        invoices,
         items: (order.items || []).filter(Boolean).map((line) => ({
           ...line,
           pending: pendingQty(line),

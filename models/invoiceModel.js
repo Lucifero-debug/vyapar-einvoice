@@ -175,6 +175,13 @@ invoiceSchema.index({ "items.name": 1 });
 // query to it, and stamps it onto everything created -- see lib/tenantPlugin.mjs.
 invoiceSchema.plugin(tenantPlugin);
 
+// Which invoices billed a given order. Multikey over the items array, led by
+// companyId like every other index here, so get-order answers "what has
+// billed this?" without scanning the book. NOT unique -- one order is
+// routinely billed by several invoices, which is the whole point of tracking
+// a pending quantity.
+invoiceSchema.index({ companyId: 1, "items.orderNo": 1, "items.orderType": 1 });
+
 // Unique per FIRM. Globally unique invoice numbers meant the second firm to
 // open could not write invoice 1.
 invoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });

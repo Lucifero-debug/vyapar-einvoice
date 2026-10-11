@@ -29,6 +29,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   AGEING_BUCKETS,
+  billingInvoices,
+  billingSummary,
   CSV_COLUMNS,
   REPORTS,
   ageingBucket,
@@ -59,6 +61,16 @@ const test = (name, fn) => {
     process.exitCode = 1;
   }
 };
+
+/**
+ * Read a project file, for the wiring checks.
+ *
+ * Declared HERE, with the test helper, rather than beside the first wiring
+ * check that used it -- a `const` is in its temporal dead zone until the line
+ * that declares it runs, so a check added anywhere above threw "Cannot access
+ * 'read' before initialization" instead of asserting anything.
+ */
+const read = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
 
 /** Noon on 10 October 2026, so day arithmetic cannot straddle a boundary. */
 const NOW = Date.parse("2026-10-10T12:00:00Z");
@@ -552,6 +564,149 @@ test("junk input reconciles to nothing rather than throwing", () => {
   assert.deepEqual(reconcileOrders({ orders: [null], invoiceLines: [null] }), []);
 });
 
+console.log("\n--- what billed an order ---");
+
+const bill = (over = {}) => ({
+  invoiceNo: 101,
+  date: day(2),
+  return: false,
+  items: [
+    { name: "M8 Bolt", quantity: 4, orderNo: 7, orderType: "Sale", orderLineId: "l1" },
+  ],
+  ...over,
+});
+
+test("an invoice that billed the order is listed", () => {
+  const rows = billingInvoices([bill()], { orderNo: 7, type: "Sale" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].invoiceNo, 101);
+  assert.equal(rows[0].quantity, 4);
+  assert.equal(rows[0].lines.length, 1);
+});
+
+test("ONLY the lines belonging to this order are counted", () => {
+  // A bill carries freight, counter sales and sometimes a second order.
+  // Reporting its whole value against this order would overstate what the
+  // order accounts for.
+  const rows = billingInvoices(
+    [
+      bill({
+        items: [
+          { name: "M8 Bolt", quantity: 4, orderNo: 7, orderType: "Sale", orderLineId: "l1" },
+          { name: "Freight", quantity: 1 },
+          { name: "M6 Nut", quantity: 9, orderNo: 8, orderType: "Sale", orderLineId: "l9" },
+        ],
+      }),
+    ],
+    { orderNo: 7, type: "Sale" }
+  );
+  assert.equal(rows[0].lines.length, 1);
+  assert.equal(rows[0].quantity, 4);
+});
+
+test("an invoice against a different order is not listed at all", () => {
+  const rows = billingInvoices(
+    [bill({ items: [{ name: "x", quantity: 1, orderNo: 8, orderType: "Sale", orderLineId: "l1" }] })],
+    { orderNo: 7, type: "Sale" }
+  );
+  assert.deepEqual(rows, []);
+});
+
+test("sale 7 and purchase 7 do not show each other's bills", () => {
+  const rows = billingInvoices(
+    [bill({ items: [{ name: "x", quantity: 1, orderNo: 7, orderType: "Purchase", orderLineId: "l1" }] })],
+    { orderNo: 7, type: "Sale" }
+  );
+  assert.deepEqual(rows, []);
+});
+
+test("two lines of one invoice against the same order are summed", () => {
+  const rows = billingInvoices(
+    [
+      bill({
+        items: [
+          { name: "M8 Bolt", quantity: 6, orderNo: 7, orderType: "Sale", orderLineId: "l1" },
+          { name: "M8 Bolt", quantity: 4, orderNo: 7, orderType: "Sale", orderLineId: "l1" },
+        ],
+      }),
+    ],
+    { orderNo: 7, type: "Sale" }
+  );
+  assert.equal(rows[0].quantity, 10);
+  assert.equal(rows[0].lines.length, 2, "both lines are still shown");
+});
+
+test("A RETURN IS FLAGGED, NOT NETTED OFF", () => {
+  // It never moved the order's counter -- orderClaims only acts on the
+  // original sale -- so subtracting it here would make this list disagree
+  // with the pending quantity printed beside it.
+  const rows = billingInvoices(
+    [bill({ invoiceNo: 101 }), bill({ invoiceNo: 102, return: true })],
+    { orderNo: 7, type: "Sale" }
+  );
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((r) => r.invoiceNo === 102).isReturn, true);
+  assert.equal(rows.find((r) => r.invoiceNo === 102).quantity, 4, "not negative");
+});
+
+test("invoices are listed in number order", () => {
+  const rows = billingInvoices(
+    [bill({ invoiceNo: 110 }), bill({ invoiceNo: 102 })],
+    { orderNo: 7, type: "Sale" }
+  );
+  assert.deepEqual(rows.map((r) => r.invoiceNo), [102, 110]);
+});
+
+test("the flag is read from either shape the callers use", () => {
+  // get-order passes raw documents (`return`); the reconcile route flattens
+  // and renames it to `isReturn`.
+  assert.equal(billingInvoices([bill({ return: true })], { orderNo: 7, type: "Sale" })[0].isReturn, true);
+  const flat = bill();
+  delete flat.return;
+  flat.isReturn = true;
+  assert.equal(billingInvoices([flat], { orderNo: 7, type: "Sale" })[0].isReturn, true);
+});
+
+test("junk input lists nothing rather than throwing", () => {
+  assert.deepEqual(billingInvoices(null, { orderNo: 7, type: "Sale" }), []);
+  assert.deepEqual(billingInvoices([null], { orderNo: 7, type: "Sale" }), []);
+  assert.deepEqual(billingInvoices([bill()], {}), []);
+  assert.deepEqual(billingInvoices([{ invoiceNo: 1 }], { orderNo: 7, type: "Sale" }), []);
+});
+
+test("the one-line summary says what happened", () => {
+  assert.equal(billingSummary([]), "Nothing billed against this order yet");
+  assert.equal(billingSummary(null), "Nothing billed against this order yet");
+  assert.equal(billingSummary([{ isReturn: false }]), "Billed by 1 invoice");
+  assert.equal(billingSummary([{ isReturn: false }, { isReturn: false }]), "Billed by 2 invoices");
+  assert.equal(
+    billingSummary([{ isReturn: false }, { isReturn: true }]),
+    "Billed by 1 invoice and 1 return"
+  );
+});
+
+test("get-order hands the shaping to this module, not its own loop", () => {
+  const route = read("../app/api/get-order/route.js");
+  assert.match(route, /billingInvoices\(/);
+  assert.ok(
+    !/\.items \|\| \[\]\)\.filter\(\s*\(l\) => Number\(l\?\.orderNo\)/.test(route),
+    "the route must not re-implement the line matching"
+  );
+});
+
+test("the invoice lookup is indexed per firm", () => {
+  // get-order runs it on every expand. Unindexed it scans the whole book,
+  // and it must be led by companyId like every other index on that schema.
+  const model = read("../models/invoiceModel.js");
+  assert.match(model, /companyId:\s*1,\s*"items\.orderNo":\s*1/);
+});
+
+test("the order register shows what billed each order", () => {
+  const page = read("../app/order/page.js");
+  assert.match(page, /billingSummary/);
+  assert.match(page, /get-order\?orderNo=/);
+});
+
 console.log("\n--- CSV ---");
 
 test("A PARTY NAME WITH A COMMA IS QUOTED", () => {
@@ -652,7 +807,6 @@ test("the four reports plus reconcile are the whole set", () => {
 
 console.log("\n--- the wiring ---");
 
-const read = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
 
 test("every report route is permission-checked and read-only", () => {
   const roles = read("../lib/roles.mjs");

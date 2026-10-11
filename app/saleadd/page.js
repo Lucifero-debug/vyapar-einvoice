@@ -295,7 +295,7 @@ useEffect(() => {
             .then((res) => res.json())
             .then((data) => {
                 if (!data.success) throw new Error(data.error || 'Order not found.');
-                const { lines, customerName, skipped } = prefillFromOrder({
+                const { lines, customerName, skipped, header } = prefillFromOrder({
                     order: data.order,
                     items: item,
                     recalc: recalcItem,
@@ -307,6 +307,12 @@ useEffect(() => {
                 const party = customer.find((c) => c.name === customerName);
                 if (party) setSelectedCustomer(party);
                 setSelectedItem(lines);
+                // The HEADER too, not just the lines. These two already print
+                // on the bill (components/InvoiceDocument.jsx), and leaving
+                // them blank is why a bill raised from an order carried no
+                // visible reference to it.
+                if (header?.orderNo) setOrderNo(header.orderNo);
+                if (header?.orderDate) setOrderDate(header.orderDate);
                 setOrderPrefill({
                     orderNo: fromOrder,
                     orderType,

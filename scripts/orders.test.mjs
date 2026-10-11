@@ -75,6 +75,16 @@ const test = (name, fn) => {
   }
 };
 
+/**
+ * Read a project file, for the wiring checks.
+ *
+ * Declared HERE, with the test helper, rather than beside the first wiring
+ * check that used it -- a `const` is in its temporal dead zone until the line
+ * that declares it runs, so a check added anywhere above threw "Cannot access
+ * 'read' before initialization" instead of asserting anything.
+ */
+const read = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
+
 /** An order line. Quantities default to a clean, wholly unbilled 10. */
 const line = (over = {}) => ({
   _id: "l1",
@@ -772,6 +782,36 @@ test("the party comes across so the bill cannot be raised on the wrong one", () 
   assert.equal(prefillFromOrder({ order: o, items: masters, recalc }).customerName, "Acme Traders");
 });
 
+test("THE BILL CARRIES THE ORDER NUMBER ON ITS HEADER", () => {
+  // components/InvoiceDocument.jsx already prints "Order No" and "Order
+  // Date". They were never filled when a bill came from an order, so the
+  // printed invoice referenced the order nowhere -- which is most of what
+  // "the order module is not linked to invoices" means on paper.
+  const o = order({ orderNo: 7, date: new Date("2026-10-01"), reference: "PO/88" });
+  const { header } = prefillFromOrder({ order: o, items: masters, recalc });
+  assert.equal(header.orderNo, 7);
+  assert.equal(header.orderDate, "2026-10-01");
+  assert.equal(header.reference, "PO/88", "the buyer's own paperwork number, kept apart");
+});
+
+test("the header survives an order with nothing to fill it", () => {
+  const { header } = prefillFromOrder({ order: order({ orderNo: 0, date: null }), items: masters, recalc });
+  assert.equal(header.orderNo, "");
+  assert.equal(header.orderDate, "");
+  assert.equal(header.reference, "");
+});
+
+test("both billing pages set the header, not just the lines", () => {
+  // Patched by script across two near-identical pages; one of them being
+  // missed is exactly how the last round of manual edits went wrong.
+  for (const page of ["saleadd", "purchaseadd"]) {
+    const src = read(`../app/${page}/page.js`);
+    assert.match(src, /skipped, header \} = prefillFromOrder/, `${page} must read header`);
+    assert.match(src, /setOrderNo\(header\.orderNo\)/, `${page} must set the order number`);
+    assert.match(src, /setOrderDate\(header\.orderDate\)/, `${page} must set the order date`);
+  }
+});
+
 test("a missing order or recalc does not throw", () => {
   assert.deepEqual(prefillFromOrder({ order: null, items: masters, recalc }).lines, []);
   const plain = prefillFromOrder({ order: order(), items: masters });
@@ -799,7 +839,6 @@ test("a summary names every quantity that is not zero", () => {
 
 console.log("\n--- the wiring ---");
 
-const read = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
 
 test("the model declares all three quantities and the reference", () => {
   // Mongoose strict mode drops what a schema does not declare, which has

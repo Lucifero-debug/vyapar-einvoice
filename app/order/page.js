@@ -10,6 +10,7 @@ import {
   pendingValue,
   trim,
 } from '@/lib/orderStatus.mjs';
+import { billingSummary } from '@/lib/orderReports.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +46,11 @@ function OrderRegister() {
   const [status, setStatus] = useState('open');
   const [orders, setOrders] = useState([]);
   const [expanded, setExpanded] = useState(null);
+  // What billed the order currently open. Fetched per row rather than with
+  // the list: the register shows up to 200 orders and almost nobody expands
+  // more than one, so joining invoices for all of them would be paid for
+  // every page load and used almost never.
+  const [billed, setBilled] = useState({ key: null, invoices: null, error: '' });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -238,7 +244,25 @@ function OrderRegister() {
                           <button
                             type="button"
                             className="btn btn-sm btn-secondary"
-                            onClick={() => setExpanded(open ? null : key)}
+                            onClick={() => {
+                              if (open) {
+                                setExpanded(null);
+                                return;
+                              }
+                              setExpanded(key);
+                              setBilled({ key, invoices: null, error: '' });
+                              fetch(
+                                `/api/get-order?orderNo=${order.orderNo}&type=${encodeURIComponent(order.type)}`
+                              )
+                                .then((r) => r.json())
+                                .then((d) => {
+                                  if (!d.success) throw new Error(d.error || 'Could not load the order.');
+                                  setBilled({ key, invoices: d.order?.invoices || [], error: '' });
+                                })
+                                .catch((e) =>
+                                  setBilled({ key, invoices: [], error: e.message })
+                                );
+                            }}
                           >
                             {open ? 'Hide' : `${(order.items || []).length} lines`}
                           </button>
@@ -299,6 +323,43 @@ function OrderRegister() {
                               </li>
                             ))}
                           </ul>
+
+                          {/* What billed it. The other half of the link:
+                              the invoice line knows its order, and now the
+                              order can say what billed it. */}
+                          <div className="border-t border-border/60 py-2 text-sm">
+                            {billed.key !== key || billed.invoices === null ? (
+                              <span className="text-muted-foreground">Loading invoices…</span>
+                            ) : billed.error ? (
+                              <span className="text-destructive">{billed.error}</span>
+                            ) : (
+                              <>
+                                <span className="font-medium">
+                                  {billingSummary(billed.invoices)}
+                                </span>
+                                {billed.invoices.length > 0 && (
+                                  <ul className="mt-1 space-y-0.5">
+                                    {billed.invoices.map((inv) => (
+                                      <li key={`${inv.invoiceNo}-${inv.isReturn}`}>
+                                        <button
+                                          type="button"
+                                          className="hover:underline"
+                                          onClick={() =>
+                                            router.push(`/invoice?invoiceNo=${inv.invoiceNo}`)
+                                          }
+                                        >
+                                          {inv.isReturn ? 'Return' : 'Invoice'} {inv.invoiceNo}
+                                        </button>
+                                        <span className="text-muted-foreground">
+                                          {' '}· {asDate(inv.date)} · {trim(inv.quantity)} off this order
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     )}
