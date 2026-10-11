@@ -11,7 +11,8 @@ import PartyBalance from '@/components/PartyBalance';
 import ItemStock from '@/components/ItemStock';
 import EinvoiceLockNotice from '@/components/EinvoiceLockNotice';
 import { editBlockedReason } from '@/lib/einvoiceLock.mjs';
-import { prefillFromOrder } from '@/lib/orderPrefill.mjs';
+import { prefillFromOrder, pickFromOrder } from '@/lib/orderPrefill.mjs';
+import { trim as trimQty } from '@/lib/orderStatus.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -275,7 +276,108 @@ useEffect(() => {
     //
     // Everything downstream then happens by itself: the HSN totals, the GST
     // and the party taxes all recompute off `selectedItem`.
+    const ORDER_DOC = 'Sale';
     const [orderPrefill, setOrderPrefill] = useState(null);
+
+    // ─── The order-item picker ───────────────────────────────────────────────
+    //
+    // Measured on MCSFAST's live order book: 29.8% of order lines are billed
+    // across more than one invoice (one of them across 93), and 64.6% of
+    // bills took only some of their order's lines. So "bill the whole order"
+    // is the wrong default for most real lines, and this lets the clerk pick
+    // the lines AND the quantity of each. Invoices spanning two orders are
+    // 0.1% of theirs, so the picker works within one order at a time.
+    const [showPicker, setShowPicker] = useState(false);
+    const [pickerOrders, setPickerOrders] = useState(null);
+    const [pickerOrderNo, setPickerOrderNo] = useState('');
+    const [picks, setPicks] = useState({});
+    const [pickerError, setPickerError] = useState('');
+
+    const openPicker = () => {
+        setPickerError('');
+        setPicks({});
+        setPickerOrders(null);
+        setShowPicker(true);
+        const qs = new URLSearchParams({ type: ORDER_DOC });
+        // Scoped to the party already chosen, which is what makes the list
+        // short enough to read -- their book has 130 parties with pending
+        // orders. With nobody chosen yet it shows everything.
+        if (selectedCustomer?.name) qs.set('customer', selectedCustomer.name);
+        fetch(`/api/order-pending?${qs.toString()}`)
+            .then((r) => r.json())
+            .then((d) => {
+                if (!d.success) throw new Error(d.error || 'Could not load pending orders.');
+                setPickerOrders(d.orders || []);
+                if ((d.orders || []).length === 1) setPickerOrderNo(String(d.orders[0].orderNo));
+            })
+            .catch((e) => {
+                setPickerOrders([]);
+                setPickerError(e.message);
+            });
+    };
+
+    const pickerOrder = (pickerOrders || []).find(
+        (o) => String(o.orderNo) === String(pickerOrderNo)
+    );
+
+    const applyPicks = () => {
+        setPickerError('');
+        if (!pickerOrder) return setPickerError('Choose an order first.');
+
+        const chosen = Object.entries(picks)
+            .map(([orderLineId, quantity]) => ({ orderLineId, quantity: Number(quantity) }))
+            .filter((p) => p.quantity > 0);
+
+        if (!chosen.length) return setPickerError('Set a quantity on at least one line.');
+
+        // The rule refuses a quantity above what is pending rather than
+        // clamping it: silently billing less than was typed is how a clerk
+        // ends up believing they invoiced 500 when the bill says 300.
+        const { lines, problems, skipped } = pickFromOrder({
+            order: {
+                orderNo: pickerOrder.orderNo,
+                type: pickerOrder.type,
+                date: pickerOrder.date,
+                customer: pickerOrder.customer,
+                // The picker rows carry their own figures; rebuild the shape
+                // the rule expects from them rather than keeping a second copy.
+                items: (pickerOrder.pickable || []).map((r) => ({
+                    _id: r.orderLineId,
+                    name: r.item,
+                    hsn: r.hsn,
+                    uqc: r.uqc,
+                    quantity: r.ordered,
+                    invoicedQty: r.billed,
+                    cancelledQty: r.cancelled,
+                    cost: r.rate,
+                    discount: r.discount,
+                    deliveryDate: r.promised,
+                })),
+            },
+            items: item,
+            recalc: recalcItem,
+            picks: chosen,
+        });
+
+        if (problems.length) return setPickerError(problems.join(' '));
+
+        const party = customer.find((c) => c.name === pickerOrder.customer?.name);
+        if (party) setSelectedCustomer(party);
+        setSelectedItem((prev) => [...prev, ...lines]);
+        if (pickerOrder.orderNo) setOrderNo(pickerOrder.orderNo);
+        if (pickerOrder.date) setOrderDate(formatDate(pickerOrder.date));
+
+        setShowPicker(false);
+        setOrderPrefill({
+            orderNo: pickerOrder.orderNo,
+            orderType: pickerOrder.type,
+            count: lines.length,
+            note: skipped.length
+                ? `Check the GST on: ${skipped.join(', ')} -- no longer in the item master.`
+                : '',
+        });
+    };
+
     useEffect(() => {
         if (typeof window === 'undefined') return;
         if (orderPrefill) return;
@@ -766,6 +868,12 @@ const handleDispatchSave = () => {
                     </div>
                 )}
 
+                <div className="no-print flex justify-end">
+                    <button type="button" className="btn btn-secondary" onClick={openPicker}>
+                        Bill from order
+                    </button>
+                </div>
+
                 {/* Invoice & Date */}
                 <div className='panel panel-body flex flex-wrap gap-5'>
                     <div className='field w-40'>
@@ -1239,6 +1347,147 @@ const handleDispatchSave = () => {
                     )}
                     </div>
                 </section>
+
+                {showPicker && (
+                    <div className="modal-overlay no-print" role="dialog" aria-modal="true">
+                        <div className="modal-card max-w-3xl">
+                            <h2 className="modal-title mb-1">Bill from a pending order</h2>
+                            <p className="field-hint mb-4">
+                                Pick the lines and how much of each to bill now. The rest stays
+                                pending on the order.
+                            </p>
+
+                            {pickerError && (
+                                <div className="mb-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                                    {pickerError}
+                                </div>
+                            )}
+
+                            {pickerOrders === null ? (
+                                <div className="empty-state">Loading pending orders…</div>
+                            ) : pickerOrders.length === 0 ? (
+                                <div className="empty-state">
+                                    No pending {ORDER_DOC.toLowerCase()} orders
+                                    {selectedCustomer?.name ? ` for ${selectedCustomer.name}` : ''}.
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="field mb-3">
+                                        <label className="field-label">Order</label>
+                                        <select
+                                            className="field-select"
+                                            value={pickerOrderNo}
+                                            onChange={(e) => {
+                                                setPickerOrderNo(e.target.value);
+                                                setPicks({});
+                                                setPickerError('');
+                                            }}
+                                        >
+                                            <option value="">Select…</option>
+                                            {pickerOrders.map((o) => (
+                                                <option key={o.orderNo} value={o.orderNo}>
+                                                    {o.orderNo} · {o.customer?.name}
+                                                    {o.reference ? ` · ${o.reference}` : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    {pickerOrder && (
+                                        <div className="table-wrap mb-4">
+                                            <table className="data-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Item</th>
+                                                        <th className="num">Ordered</th>
+                                                        <th className="num">Billed</th>
+                                                        <th className="num">Pending</th>
+                                                        <th className="num">Rate</th>
+                                                        <th className="num">Bill now</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {(pickerOrder.pickable || []).map((r) => (
+                                                        <tr key={r.orderLineId}>
+                                                            <td>{r.item}</td>
+                                                            <td className="num">{trimQty(r.ordered)}</td>
+                                                            <td className="num">{trimQty(r.billed)}</td>
+                                                            <td className="num font-medium">{trimQty(r.pending)}</td>
+                                                            <td className="num">{r.rate}</td>
+                                                            <td className="num">
+                                                                <input
+                                                                    type="number"
+                                                                    step="0.001"
+                                                                    min="0"
+                                                                    max={r.pending}
+                                                                    className="field-input field-input-sm num w-24"
+                                                                    value={picks[r.orderLineId] ?? ''}
+                                                                    placeholder="0"
+                                                                    onChange={(e) =>
+                                                                        setPicks((p) => ({
+                                                                            ...p,
+                                                                            [r.orderLineId]: e.target.value,
+                                                                        }))
+                                                                    }
+                                                                />
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+
+                                    {pickerOrder && (
+                                        <div className="mb-4 flex gap-2">
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm btn-secondary"
+                                                onClick={() =>
+                                                    setPicks(
+                                                        Object.fromEntries(
+                                                            (pickerOrder.pickable || []).map((r) => [
+                                                                r.orderLineId,
+                                                                r.pending,
+                                                            ])
+                                                        )
+                                                    )
+                                                }
+                                            >
+                                                Take everything pending
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-sm btn-ghost"
+                                                onClick={() => setPicks({})}
+                                            >
+                                                Clear
+                                            </button>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+
+                            <div className="flex justify-end gap-2">
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={() => setShowPicker(false)}
+                                >
+                                    Close
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    onClick={applyPicks}
+                                    disabled={!pickerOrder}
+                                >
+                                    Add to the bill
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* Save Button */}
                 <div className='sticky bottom-0 -mx-4 mt-2 flex flex-col border-t border-border bg-card/90 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur sm:-mx-6 sm:px-6'>

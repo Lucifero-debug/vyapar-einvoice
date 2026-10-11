@@ -68,7 +68,7 @@ import {
   toInvoiceLines,
   trim,
 } from "../lib/orderStatus.mjs";
-import { prefillFromOrder } from "../lib/orderPrefill.mjs";
+import { pickFromOrder, pickableLines, prefillFromOrder } from "../lib/orderPrefill.mjs";
 
 let passed = 0;
 const test = (name, fn) => {
@@ -825,6 +825,189 @@ test("a missing order or recalc does not throw", () => {
   const plain = prefillFromOrder({ order: order(), items: masters });
   assert.equal(plain.lines[0].quantity, 10, "no recalc still returns the merged line");
 });
+
+console.log("\n--- billing chosen lines, in chosen quantities ---");
+
+/**
+ * Why this exists at all, from MCSFAST's live order book (9,260 invoice
+ * lines referencing an order line):
+ *
+ *   29.8% of order lines are billed across MORE THAN ONE invoice -- one of
+ *   them across 93. 64.6% of bills took only SOME of their order's lines.
+ *   Invoices spanning two orders: 0.1%.
+ *
+ * So: part of a line, some of the lines, one order at a time.
+ */
+const partBilled = () =>
+  order({ items: [line({ _id: "l1", quantity: 100, invoicedQty: 40, cost: 50 })] });
+
+test("a pickable row shows what is left, not just what was ordered", () => {
+  const [row] = pickableLines(partBilled());
+  assert.equal(row.ordered, 100);
+  assert.equal(row.billed, 40);
+  assert.equal(row.pending, 60);
+  assert.equal(row.billNow, 60, "offered in full, for the user to reduce");
+  assert.equal(row.orderLineId, "l1");
+  assert.equal(row.orderNo, 7);
+  assert.equal(row.orderType, "Sale");
+});
+
+test("settled and cancelled lines are not pickable", () => {
+  const o = order({
+    items: [
+      line({ _id: "a", invoicedQty: 10 }),
+      line({ _id: "b", cancelledQty: 10 }),
+      line({ _id: "c" }),
+    ],
+  });
+  assert.deepEqual(pickableLines(o).map((r) => r.orderLineId), ["c"]);
+});
+
+test("PART OF A LINE CAN BE BILLED", () => {
+  // The headline case: 29.8% of their order lines are drawn down over
+  // several invoices, so all-or-nothing is wrong for nearly a third of them.
+  const { lines, problems } = pickFromOrder({
+    order: partBilled(),
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 25 }],
+  });
+  assert.deepEqual(problems, []);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].quantity, 25);
+});
+
+test("BILLING MORE THAN IS PENDING IS REFUSED, NOT CLAMPED", () => {
+  // Clamping would bill 60 while the clerk believes they billed 61, and
+  // nothing on screen would say otherwise.
+  const { lines, problems } = pickFromOrder({
+    order: partBilled(),
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 61 }],
+  });
+  assert.deepEqual(lines, []);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /only 60 is pending, so 61 cannot be billed/);
+});
+
+test("billing exactly what is pending is allowed", () => {
+  const { lines, problems } = pickFromOrder({
+    order: partBilled(),
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 60 }],
+  });
+  assert.deepEqual(problems, []);
+  assert.equal(lines[0].quantity, 60);
+});
+
+test("a zero pick is how a row is deselected", () => {
+  const { lines, problems } = pickFromOrder({
+    order: partBilled(),
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 0 }],
+  });
+  assert.deepEqual(lines, []);
+  assert.deepEqual(problems, [], "not an error -- just nothing chosen");
+});
+
+test("SOME of an order's lines can be billed", () => {
+  const o = order({
+    items: [
+      line({ _id: "a", name: "M8 Bolt", quantity: 10 }),
+      line({ _id: "b", name: "M6 Nut", quantity: 20 }),
+      line({ _id: "c", name: "Washer", quantity: 30 }),
+    ],
+  });
+  const { lines } = pickFromOrder({
+    order: o,
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "a", quantity: 4 }, { orderLineId: "c", quantity: 5 }],
+  });
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines.map((l) => l.orderLineId), ["a", "c"]);
+});
+
+test("a pick against a line that is no longer pending is refused", () => {
+  const { problems } = pickFromOrder({
+    order: order({ items: [line({ _id: "l1", invoicedQty: 10 })] }),
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 1 }],
+  });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /no longer pending/);
+});
+
+test("the AGREED rate is billed, with TODAY'S gst rate", () => {
+  // Same split as the whole-order prefill: the rate was agreed with the
+  // customer, the tax is the law on the day of billing.
+  const o = order({ items: [line({ _id: "l1", cost: 47.5, discount: 5, gstRate: 5 })] });
+  const { lines } = pickFromOrder({
+    order: o,
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 2 }],
+  });
+  assert.equal(lines[0].cost, 47.5);
+  assert.equal(lines[0].discount, 5);
+  assert.equal(lines[0].gstRate, 18, "the master's, not the order's");
+});
+
+test("every picked line carries the reference back to its order line", () => {
+  const { lines } = pickFromOrder({
+    order: partBilled(),
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 5 }],
+  });
+  assert.deepEqual(lineRef(lines[0]), { orderNo: 7, orderType: "Sale", lineId: "l1" });
+});
+
+test("an item no longer in the master is still billed, and reported", () => {
+  const o = order({ items: [line({ _id: "l1", name: "Discontinued washer" })] });
+  const { lines, skipped } = pickFromOrder({
+    order: o,
+    items: masters,
+    recalc,
+    picks: [{ orderLineId: "l1", quantity: 1 }],
+  });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(skipped, ["Discontinued washer"]);
+});
+
+test("junk picks are ignored rather than throwing", () => {
+  const o = partBilled();
+  assert.deepEqual(pickFromOrder({ order: o, items: masters, recalc, picks: null }).lines, []);
+  assert.deepEqual(pickFromOrder({ order: o, items: masters, recalc, picks: [{}] }).lines, []);
+  assert.deepEqual(
+    pickFromOrder({ order: o, items: masters, recalc, picks: [{ orderLineId: "l1", quantity: "abc" }] }).lines,
+    []
+  );
+  assert.deepEqual(pickableLines(null), []);
+});
+
+test("both billing pages offer the picker and neither does the arithmetic", () => {
+  for (const page of ["saleadd", "purchaseadd"]) {
+    const src = read(`../app/${page}/page.js`);
+    assert.match(src, /pickFromOrder/, `${page} must use the rule`);
+    assert.match(src, /order-pending/, `${page} must fetch the pending lines`);
+    assert.ok(
+      !/r\.ordered\s*-\s*r\.billed/.test(src),
+      `${page} must not re-derive a pending quantity`
+    );
+  }
+});
+
+test("the pending endpoint serves the picker's rows", () => {
+  const src = read("../app/api/order-pending/route.js");
+  assert.match(src, /pickableLines\(/);
+  assert.match(src, /pickable:/);
+});
+
 
 console.log("\n--- what a row says ---");
 

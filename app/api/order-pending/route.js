@@ -9,6 +9,7 @@ import {
   pendingValue,
   toInvoiceLines,
 } from "@/lib/orderStatus.mjs";
+import { pickableLines } from "@/lib/orderPrefill.mjs";
 
 /**
  * The orders a bill could be raised against.
@@ -60,7 +61,15 @@ async function handleGET(req, auth) {
         customer: { name: order.customer?.name || "" },
         status: orderStatus(order),
         pendingValue: pendingValue(order),
+        // Two shapes, deliberately:
+        //   `lines`    - invoice-ready, for "bill the lot" in one click.
+        //   `pickable` - the same lines with their ordered/billed/pending
+        //                figures, for the item-wise picker on the billing
+        //                form, which has to show what is left before the
+        //                user decides how much of it to take.
+        // Both come from the same rule modules, so they cannot disagree.
         lines: toInvoiceLines(order),
+        pickable: pickableLines(order),
       }))
       .filter((row) => row.lines.length);
 
