@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useEffect, useState } from "react";
+import React, { Suspense, useEffect, useRef, useState } from "react";
 import VoucherSearchParams from "@/components/VoucherSearchparams";
 import PartyBalance from "@/components/PartyBalance";
 import BillAdjust from "@/components/BillAdjust";
@@ -114,6 +114,9 @@ const AddVoucher = () => {
           // The party changed, so whatever was adjusted belongs to somebody
           // else's bills. Kept, it would be saved against invoices this party
           // never raised -- and the server would refuse the whole voucher.
+          // A different party is a different adjustment, so the line may be
+          // offered the picker again.
+          offered.current.delete(index);
           return {
             ...entry,
             name: value,
@@ -135,6 +138,36 @@ const AddVoucher = () => {
         return { ...entry, [name]: value };
       })
     );
+  };
+
+  /**
+   * Sigfa brings the bill grid up when you leave a line, and the line is
+   * what tells it which bills: a party and a direction. Waiting for a button
+   * to be noticed is why ticking the box looked like it did nothing.
+   *
+   * Offered ONCE per line. A second pop after the user closed it would be a
+   * trap, so the line is marked as soon as the picker opens and only
+   * unmarked when its party changes -- a different party is a different
+   * adjustment.
+   */
+  const offered = useRef(new Set());
+
+  const leaveLine = (index) => (event) => {
+    if (!form.againstBill) return;
+
+    // Still inside the same line: tabbing from Debit to Credit is not
+    // leaving it, and popping there would fire before the amount is typed.
+    const row = event.currentTarget.closest("tr");
+    if (row && event.relatedTarget && row.contains(event.relatedTarget)) return;
+
+    const entry = entries[index];
+    if (!entry?.name || !billTypeFor(entry)) return;
+    if ((entry.allocations || []).length) return;
+    if (adjusting !== null) return;
+    if (offered.current.has(index)) return;
+
+    offered.current.add(index);
+    setAdjusting(index);
   };
 
   const addEntry = () => {
@@ -245,6 +278,29 @@ const AddVoucher = () => {
 
         {/* --- VOUCHER FORM --- */}
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Sigfa's "Against Bill", and it sits HERE, immediately above the
+              lines it governs. It used to live below the table with the
+              account fields, so ticking it changed something off-screen above
+              and read as having done nothing at all. */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
+              <input
+                type="checkbox"
+                name="againstBill"
+                checked={form.againstBill}
+                onChange={handleFormChange}
+                className="field-check"
+              />
+              <span className="whitespace-nowrap">Against Bill</span>
+            </label>
+            {form.againstBill && (
+              <span className="field-hint">
+                The bills come up as you leave each line. A line needs a party and
+                an amount before there is anything to adjust.
+              </span>
+            )}
+          </div>
+
           {/* Table */}
           <div className="table-wrap">
             <table className="data-table min-w-[760px]">
@@ -301,6 +357,7 @@ const AddVoucher = () => {
                         name="debit"
                         value={entry.debit}
                         onChange={(e) => handleEntryChange(index, e)}
+                        onBlur={leaveLine(index)}
                         className="field-input field-input-sm num"
                       />
                     </td>
@@ -310,6 +367,7 @@ const AddVoucher = () => {
                         name="credit"
                         value={entry.credit}
                         onChange={(e) => handleEntryChange(index, e)}
+                        onBlur={leaveLine(index)}
                         className="field-input field-input-sm num"
                       />
                     </td>
@@ -346,10 +404,19 @@ const AddVoucher = () => {
                           Remove
                         </button>
                       </div>
-                      {form.againstBill && (entry.allocations || []).length > 0 && (
+                      {/* Always a word about this line while the box is
+                          ticked. A greyed-out button on its own is what made
+                          the feature look broken: nothing said what was
+                          missing. */}
+                      {form.againstBill && (
                         <span className="field-hint block">
-                          {allocatedTotal(entry.allocations).toFixed(2)} of{" "}
-                          {lineAmount(entry).toFixed(2)} adjusted
+                          {(entry.allocations || []).length > 0
+                            ? `${allocatedTotal(entry.allocations).toFixed(2)} of ${lineAmount(entry).toFixed(2)} adjusted`
+                            : !entry.name
+                              ? "Pick a party"
+                              : !billTypeFor(entry)
+                                ? "Enter a debit or a credit"
+                                : "Nothing adjusted yet"}
                         </span>
                       )}
                     </td>
@@ -417,16 +484,6 @@ const AddVoucher = () => {
               />
             </div>
 
-            <label className="mt-6 flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
-              <input
-                type="checkbox"
-                name="againstBill"
-                checked={form.againstBill}
-                onChange={handleFormChange}
-                className="field-check"
-              />
-              Against Bill
-            </label>
           </div>
 
           {/* 🔹 Main Narration Field */}

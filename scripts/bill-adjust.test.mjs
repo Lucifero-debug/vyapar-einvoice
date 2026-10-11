@@ -42,6 +42,7 @@ import {
   billKey,
   billTypeFor,
   fifoAllocate,
+  emptyReason,
   lineAmount,
   normalizeAllocations,
   nothingToAdjust,
@@ -588,6 +589,82 @@ test("a part-allocated receipt reports the remainder", () => {
   assert.equal(s.fullyAllocated, false);
 });
 
+console.log("\n--- why the list is empty ---");
+
+test("a list with bills in it has no reason to explain", () => {
+  assert.equal(emptyReason({ party: "Acme", type: "Sale", bills: threeBills() }), null);
+});
+
+test("unpaid bills on the other side name the other column", () => {
+  // THE COMMONEST MISTAKE, and the one Sigfa's "No Pending Bills Found"
+  // hides: a receipt typed into Debit asks for PURCHASE bills, correctly
+  // finds none, and says nothing about the five sale bills sitting unpaid.
+  const r = emptyReason({
+    party: "Acme Traders",
+    type: "Purchase",
+    bills: [],
+    counts: { anyOfType: 0, opposite: 5 },
+  });
+  assert.match(r, /Acme Traders/);
+  assert.match(r, /5 unpaid sale bills/);
+  assert.match(r, /Credit/, "it has to name the column to move the amount to");
+
+  // And the other way round, naming the other column.
+  const flip = emptyReason({
+    party: "Acme Traders",
+    type: "Sale",
+    bills: [],
+    counts: { anyOfType: 0, opposite: 2 },
+  });
+  assert.match(flip, /2 unpaid purchase bills/);
+  assert.match(flip, /Debit/);
+});
+
+test("one bill on the other side is singular", () => {
+  const r = emptyReason({
+    party: "Acme",
+    type: "Sale",
+    bills: [],
+    counts: { anyOfType: 0, opposite: 1 },
+  });
+  assert.match(r, /1 unpaid purchase bill\b/);
+  assert.doesNotMatch(r, /1 unpaid purchase bills/);
+});
+
+test("all settled says so, and says the money stays on account", () => {
+  const r = emptyReason({
+    party: "Acme",
+    type: "Sale",
+    bills: [],
+    counts: { anyOfType: 4, opposite: 0 },
+  });
+  assert.match(r, /All 4/);
+  assert.match(r, /settled/);
+  assert.match(r, /on account/);
+});
+
+test("a party with no bills at all is not told they are settled", () => {
+  const r = emptyReason({ party: "Acme", type: "Sale", bills: [], counts: {} });
+  assert.match(r, /no sale bills/);
+  assert.doesNotMatch(r, /settled/, "nothing was settled -- there was nothing");
+});
+
+test("the wrong-column hint wins over the settled one", () => {
+  // Both are true when every sale bill is paid and a purchase bill is not.
+  // The actionable one is the column.
+  const r = emptyReason({
+    party: "Acme",
+    type: "Sale",
+    bills: [],
+    counts: { anyOfType: 3, opposite: 2 },
+  });
+  assert.match(r, /Debit/);
+});
+
+test("a party with no name still reads as a sentence", () => {
+  assert.match(emptyReason({ type: "Sale", bills: [], counts: {} }), /^This party has no sale bills/);
+});
+
 console.log("\n--- wiring ---");
 
 test("allocations are declared on the voucher line", () => {
@@ -681,6 +758,60 @@ test("the form sends them, and shows the server's refusal", () => {
   // "Failed to save voucher" tells the user nothing they can act on; the
   // server names the bill and the figure.
   assert.ok(/result\.error \|\| "Failed to save voucher"/.test(src));
+});
+
+test("ticking the box changes something the user can see", () => {
+  // THE BUG THIS FEATURE SHIPPED WITH. The tick lived below the entry table
+  // with the account fields, so ticking it altered a column off-screen
+  // ABOVE, and the only visible effect was a greyed-out button nobody had
+  // scrolled back up to. It read as doing nothing at all.
+  const src = read("../app/voucheradd/page.js");
+  const tick = src.indexOf('name="againstBill"');
+  const table = src.indexOf("<table");
+  assert.ok(tick > 0 && table > 0);
+  assert.ok(tick < table, "the tick has to come before the lines it governs");
+
+  // And every line says what it is waiting for, rather than greying out.
+  assert.ok(/Pick a party/.test(src));
+  assert.ok(/Enter a debit or a credit/.test(src));
+  assert.ok(/Nothing adjusted yet/.test(src));
+});
+
+test("the bills come up as focus leaves a finished line", () => {
+  // Sigfa brings the grid up on leaving the line. Waiting for a button to be
+  // noticed is what made the feature look broken.
+  const src = read("../app/voucheradd/page.js");
+  assert.ok(/const leaveLine = /.test(src));
+  assert.equal(
+    (src.match(/onBlur=\{leaveLine\(index\)\}/g) || []).length,
+    2,
+    "both the debit and the credit box have to trigger it"
+  );
+  // Tabbing from Debit to Credit is not leaving the line.
+  assert.ok(/relatedTarget/.test(src) && /closest\("tr"\)/.test(src));
+  // Offered once, or closing it would be a trap.
+  assert.ok(/offered\.current\.has\(index\)/.test(src));
+  assert.ok(/offered\.current\.add\(index\)/.test(src));
+  assert.ok(/offered\.current\.delete\(index\)/.test(src), "a new party is a new adjustment");
+});
+
+test("an empty picker says which of the three things happened", () => {
+  const route = read("../app/api/open-bills/route.js");
+  assert.ok(/emptyReason/.test(route));
+  // The counts cost two queries, so they are only asked for when there is
+  // nothing to show.
+  assert.ok(/bills\.length \? null : await billCountsFor/.test(route));
+  assert.ok(/reason/.test(read("../components/BillAdjust.jsx")));
+});
+
+test("the counts read the same collection the bills came from", () => {
+  // A count taken from somewhere else could contradict the list beside it.
+  const src = read("../lib/openBillsFor.mjs");
+  const counts = src.slice(src.indexOf("billCountsFor"));
+  assert.ok(/Invoice\.countDocuments/.test(counts));
+  assert.ok(/"customer\.name": name/.test(counts));
+  assert.ok(/return: \{ \$ne: true \}/.test(counts), "a credit note is not a bill to chase");
+  assert.ok(/OPPOSITE_TYPE/.test(src), "the other side is not hardcoded twice");
 });
 
 test("the picker does its own checking from the same module", () => {

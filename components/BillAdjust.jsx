@@ -45,6 +45,7 @@ export default function BillAdjust({ open, line, voucherId, onClose, onApply }) 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [empty, setEmpty] = useState(false);
+  const [reason, setReason] = useState('');
 
   const type = billTypeFor(line);
   const amount = lineAmount(line);
@@ -65,6 +66,7 @@ export default function BillAdjust({ open, line, voucherId, onClose, onApply }) 
       }
       setBills(data.bills || []);
       setEmpty(Boolean(data.empty));
+      setReason(data.reason || '');
 
       // Anything already allocated on this line is shown as it stands, so
       // reopening the picker does not quietly discard what was chosen.
@@ -151,10 +153,13 @@ export default function BillAdjust({ open, line, voucherId, onClose, onApply }) 
 
         {loading && <div className="empty-state">Loading…</div>}
 
-        {/* Sigfa: "No Pending Bills Found". */}
+        {/* Sigfa says "No Pending Bills Found" and stops there. That is true
+            but unhelpful: the commonest reason the list is empty is that the
+            amount went in the other column, and nothing on the screen would
+            say so. The server works out which of the three it is. */}
         {!loading && type && empty && (
           <div className="empty-state">
-            No pending bills for {line?.name}. The whole amount stays on account.
+            {reason || `No pending ${type.toLowerCase()} bills for ${line?.name}.`}
           </div>
         )}
 

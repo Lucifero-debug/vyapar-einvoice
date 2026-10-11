@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 import { connect } from "@/lib/mongodb";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
-import { openBillsFor } from "@/lib/openBillsFor.mjs";
-import { adjustmentSummary, fifoAllocate, nothingToAdjust } from "@/lib/billAdjust.mjs";
+import { billCountsFor, openBillsFor } from "@/lib/openBillsFor.mjs";
+import {
+  adjustmentSummary,
+  emptyReason,
+  fifoAllocate,
+  nothingToAdjust,
+} from "@/lib/billAdjust.mjs";
 
 // Every receipt changes what is outstanding, so a cached list is a wrong one.
 export const dynamic = "force-dynamic";
@@ -51,6 +56,11 @@ async function handleGET(req, auth) {
     const line = type === "Sale" ? { credit: amount } : { debit: amount };
     const suggestion = Number.isFinite(amount) && amount > 0 ? fifoAllocate(line, bills) : [];
 
+    // Only when there is nothing to show. An empty picker has three causes
+    // and the commonest -- the amount typed in the wrong column -- looks
+    // exactly like the other two unless it is spelled out.
+    const counts = bills.length ? null : await billCountsFor({ party, type });
+
     return NextResponse.json({
       success: true,
       party,
@@ -62,6 +72,7 @@ async function handleGET(req, auth) {
       summary: adjustmentSummary(line, [], bills),
       // Sigfa: "No Pending Bills Found".
       empty: nothingToAdjust(bills),
+      reason: counts ? emptyReason({ party, type, bills, counts }) : null,
     });
   } catch (err) {
     console.error("Open bills error:", err);
