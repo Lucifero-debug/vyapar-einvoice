@@ -52,6 +52,20 @@ const itemSchema = new mongoose.Schema({
    lastQuantity:{
     type:Number
    },
+   // === The reorder level, for the dashboard's low-stock alerts ===
+   //
+   // OPTIONAL, and with no default on purpose. An item that has never had
+   // one set is left out of the "below minimum" alert rather than compared
+   // against an invented number: a wholesaler's minimum for steel plate is
+   // not a shop's for washers, and a made-up default would fill the alert
+   // list with items nobody asked about. Such an item is still reported when
+   // its stock has run out or gone negative, which needs no threshold.
+   //
+   // Declared here because Mongoose strict mode drops what is not -- and a
+   // dropped threshold is an alert that silently never fires.
+   minQuantity:{
+    type:Number
+   },
    // === E-invoicing ===
    //
    // `unit` above is free text -- what the shop calls it, and what the stock

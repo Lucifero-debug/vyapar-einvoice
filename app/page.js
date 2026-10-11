@@ -14,6 +14,8 @@ import {
   Printer,
   ReceiptIndianRupee,
   ClipboardList,
+  FileSpreadsheet,
+  LineChart,
   ScrollText,
   Settings,
   Tags,
@@ -530,6 +532,43 @@ const Page = () => {
   };
 
   // A master/document row: name on the left, the three verbs behind one menu
+  /**
+   * One stock voucher, as a full-width row.
+   *
+   * The same shape as the Cash and Bank rows below -- icon square, label and
+   * a line of subtext, action on the right -- because it sits directly under
+   * them. These were a three-across grid of nav-tiles first, which on a wide
+   * screen put all three on one line and read as a different kind of thing
+   * pasted into the section.
+   *
+   * No Manage dropdown: Cash and Bank have one because a master can be
+   * created, altered and deleted from the dashboard. A stock voucher is
+   * altered and deleted from its own register, so there is one action here
+   * and it opens the screen.
+   */
+  const renderStockVoucherRow = ({ label, hint, icon: Icon, href }) => (
+    <div
+      key={href}
+      className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 transition-colors hover:border-primary/30"
+    >
+      <span className="nav-tile-icon h-8 w-8">
+        <Icon className="h-4 w-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground">{hint}</p>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        className="shrink-0"
+        onClick={() => router.push(href)}
+      >
+        Open
+      </Button>
+    </div>
+  );
+
   const renderModuleRow = ({ section, label, icon: Icon, count, onCreate }) => (
     <div>
       <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 transition-colors hover:border-primary/30">
@@ -812,6 +851,38 @@ const Page = () => {
               count: cash.length,
               onCreate: () => router.push('/voucheradd?type=Cash'),
             })}
+
+            {/* The three stock vouchers. Sigfa keeps them in one table,
+                RIssue, under three keys -- 'FR' Production, 'IS' Goods
+                Issued, 'RS' Goods Received -- separately from the cash and
+                bank vouchers above, which live in its JOURNAL. They sit here
+                together because they are the same document in three
+                directions: goods moving without a bill behind them. */}
+            {/* ONE PER ROW, at every width. A three-across grid put all of
+                them on a single line on a desktop, which made them read as a
+                different kind of control from the Cash and Bank rows directly
+                above -- and left three short labels stranded in a wide row. */}
+            <div className="space-y-3 border-t border-border pt-3">
+              <p className="field-hint">Stock, without a bill</p>
+              {renderStockVoucherRow({
+                label: 'Production',
+                hint: 'Issue the materials, receive the finished item',
+                icon: Package,
+                href: '/production',
+              })}
+              {renderStockVoucherRow({
+                label: 'Goods Issued',
+                hint: 'Stock going out without a sale',
+                icon: Undo2,
+                href: '/production?kind=IS',
+              })}
+              {renderStockVoucherRow({
+                label: 'Goods Received',
+                hint: 'Stock coming in without a purchase',
+                icon: Boxes,
+                href: '/production?kind=RS',
+              })}
+            </div>
           </div>
         </section>
 
@@ -839,6 +910,42 @@ const Page = () => {
               busyText: "Loading items...",
               onPick: (id) => router.push(`/item-ledger?itemId=${id}`),
             })}
+
+            <button type="button" className="nav-tile" onClick={() => router.push('/sales-report')}>
+              <span className="nav-tile-icon">
+                <ReceiptIndianRupee className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Sales &amp; Purchase
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Book, party-wise and item-wise
+                </span>
+              </span>
+            </button>
+
+            <button type="button" className="nav-tile" onClick={() => router.push('/dashboard')}>
+              <span className="nav-tile-icon">
+                <LineChart className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Business Dashboard
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Sales trends, dues, stock and month-on-month
+                </span>
+              </span>
+            </button>
+
+            <button type="button" className="nav-tile" onClick={() => router.push('/gst-return')}>
+              <span className="nav-tile-icon">
+                <FileSpreadsheet className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                GST Returns
+                <span className="block text-xs font-normal text-muted-foreground">
+                  GSTR-1, GSTR-3, GSTR-3B and the e-return
+                </span>
+              </span>
+            </button>
 
             <button type="button" className="nav-tile" onClick={() => router.push('/financials')}>
               <span className="nav-tile-icon">
@@ -902,18 +1009,6 @@ const Page = () => {
                 Production Plan
                 <span className="block text-xs font-normal text-muted-foreground">
                   What to make for the open orders, and what is short to make it
-                </span>
-              </span>
-            </button>
-
-            <button type="button" className="nav-tile" onClick={() => router.push('/production')}>
-              <span className="nav-tile-icon">
-                <Package className="h-[18px] w-[18px]" />
-              </span>
-              <span className="flex-1">
-                Production
-                <span className="block text-xs font-normal text-muted-foreground">
-                  Issue the materials and receive the finished item
                 </span>
               </span>
             </button>

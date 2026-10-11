@@ -51,6 +51,7 @@ async function handlePOST(req, auth) {
                 group: itemData.group,
                 short: itemData.short,
                 openingQuantity: itemData.openBal,
+                minQuantity: itemData.minBal,
                 lastQuantity: itemData.lastBal,
                 uqc: normalizeUqc(itemData.uqc) || UQC_DEFAULT,
                 isService: Boolean(itemData.isService),

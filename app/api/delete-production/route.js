@@ -4,6 +4,7 @@ import Production from "@/models/productionModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import { deleteProductionLedgerRows } from "@/lib/itemLedger.mjs";
+import { kindOf } from "@/lib/stockVoucher.mjs";
 
 /**
  * Delete a production entry, and the stock it moved.
@@ -38,7 +39,13 @@ async function handlePOST(req, auth) {
         );
       }
 
-      const removed = await deleteProductionLedgerRows({ session, docNo: entry.docNo });
+      // The kind decides the ledger key, so a goods issue's rows are
+      // removed from under "GI-" and not looked for under "PRD-".
+      const removed = await deleteProductionLedgerRows({
+        session,
+        kind: kindOf(entry),
+        docNo: entry.docNo,
+      });
       await Production.deleteOne({ _id: entry._id }, { session });
 
       return { entry, removed };

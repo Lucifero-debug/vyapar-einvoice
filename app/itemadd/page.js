@@ -29,6 +29,7 @@ const PageContent = () => {
   const [short, setShort] = useState('')
   const [group, setGroup] = useState('')
   const [openBal, setOpenBal] = useState('')
+  const [minBal, setMinBal] = useState('')
   const [lastBal, setLastBal] = useState('')
   const [cost, setCost] = useState('')
   const [unit, setUnit] = useState(0)
@@ -76,6 +77,7 @@ const PageContent = () => {
           setShort(data.short || '')
           setGroup(data.group || '')
           setOpenBal(data.openingQuantity ?? '')
+          setMinBal(data.minQuantity ?? '')
           setLastBal(data.lastQuantity ?? '')
           setCost(data.cost ?? '')
           setUnit(data.unit || 0)
@@ -122,6 +124,7 @@ const PageContent = () => {
       gst: numOrNull(gst),
       discount: numOrNull(discount),
       openBal: numOrNull(openBal),
+      minBal: numOrNull(minBal),
       lastBal: numOrNull(lastBal),
       id,
     };
@@ -265,6 +268,17 @@ const PageContent = () => {
                   <div className="space-y-1">
                     <Label>Last Year Stock</Label>
                     <Input type="number" onChange={e => setLastBal(e.target.value)} value={lastBal} />
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>Minimum Stock</Label>
+                    <Input type="number" onChange={e => setMinBal(e.target.value)} value={minBal} />
+                    {/* Left blank on purpose by default: an item with no
+                        minimum is not compared against a made-up one. It is
+                        still flagged when it runs out. */}
+                    <p className="field-hint">
+                      Leave blank and this item is only flagged when it runs out.
+                    </p>
                   </div>
                 </div>
               </CardContent>

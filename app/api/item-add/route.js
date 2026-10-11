@@ -40,6 +40,7 @@ async function handlePOST(req, auth) {
             discount:itemData.discount,
             group:itemData.group,
             openingQuantity:itemData.openBal,
+            minQuantity:itemData.minBal,
             lastQuantity:itemData.lastBal,
             short:itemData.short,
             // Whitelisted like everything else here, so an unknown code from a

@@ -1,7 +1,21 @@
 'use client';
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { LINE_KIND_LABELS, reversalSummary } from '@/lib/bom.mjs';
+import { LINE_KIND_LABELS } from '@/lib/bom.mjs';
+import ItemSearch from '@/components/billing/ItemSearch';
+import {
+  DEFAULT_KIND,
+  SLIP_COLUMNS,
+  isStockKind,
+  kindOf,
+  reversalOf,
+  seriesUsed,
+  slipAmount,
+  slipDayName,
+  slipTitle,
+  slipTotal,
+  stockKind,
+} from '@/lib/stockVoucher.mjs';
 
 /**
  * The production entry -- Sigfa's Production voucher (MKEY 'FR').
@@ -43,8 +57,24 @@ function ProductionScreen() {
   const params = useSearchParams();
 
   const [boms, setBoms] = useState([]);
+  // The item master, for the goods vouchers' own item search. Fetched only
+  // when this screen is one of them -- a production entry picks its items by
+  // exploding a formula and has no use for it.
+  const [items, setItems] = useState([]);
+  // The parties, for the slip's Party box. Sigfa's is a lookup into CUSMAST;
+  // this offers the same names while still accepting a one-off typed in.
+  const [customers, setCustomers] = useState([]);
   const [register, setRegister] = useState([]);
   const [loadingRegister, setLoadingRegister] = useState(true);
+
+  // WHICH OF THE THREE this screen is. Sigfa keeps Production, Goods Issued
+  // and Goods Received in one table under three MKEYs, and this is one screen
+  // under three URLs for the same reason: the stock-writing, the alter and
+  // the delete are identical, and a second copy of them is where a direction
+  // gets inverted unnoticed.
+  const askedKind = params.get('kind');
+  const kind = isStockKind(askedKind) ? kindOf(askedKind) : DEFAULT_KIND;
+  const config = stockKind(kind);
 
   const [form, setForm] = useState({
     bomName: params.get('bom') || '',
@@ -53,6 +83,10 @@ function ProductionScreen() {
     partyName: '',
     remarks: '',
     nested: true,
+    // Sigfa's slip header. Series is its SubKey; Store is recorded only --
+    // this app holds stock in one place. See models/productionModel.js.
+    series: '',
+    store: '',
   });
 
   // The server's answer: lines, costing, shortfalls, warnings. Null until a
@@ -82,7 +116,7 @@ function ProductionScreen() {
   const loadRegister = useCallback(async () => {
     setLoadingRegister(true);
     try {
-      const res = await fetch('/api/production');
+      const res = await fetch(`/api/production?kind=${encodeURIComponent(kind)}`);
       const data = await res.json();
       if (data.success) setRegister(data.productions || []);
     } catch {
@@ -90,7 +124,42 @@ function ProductionScreen() {
     } finally {
       setLoadingRegister(false);
     }
-  }, []);
+  }, [kind]);
+
+  // Sigfa shows the Slip No. on the blank form. A peek, not a reservation:
+  // opening the slip and walking away must not burn a number and leave a gap
+  // in the register.
+  const [nextNo, setNextNo] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/next-production-no?kind=${encodeURIComponent(kind)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled && d.success) setNextNo(d.docNo);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, register.length]);
+
+  useEffect(() => {
+    if (config.usesFormula) return;
+    let cancelled = false;
+    Promise.all([
+      fetch('/api/get-item').then((r) => r.json()),
+      fetch('/api/get-customer').then((r) => r.json()),
+    ])
+      .then(([itemData, customerData]) => {
+        if (cancelled) return;
+        setItems(itemData.item || []);
+        setCustomers(customerData.customer || []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [config.usesFormula]);
 
   useEffect(() => {
     loadBoms();
@@ -146,11 +215,22 @@ function ProductionScreen() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...(editing ? { id: editing._id } : {}),
-          bomName: plan.bom.name,
-          outputItem: plan.bom.outputItem,
-          quantity: Number(form.quantity),
+          kind,
+          // A goods issue or receipt has neither: its quantities are on its
+          // lines, and the server refuses an output on a kind that has none.
+          ...(config.usesFormula
+            ? {
+                bomName: plan.bom.name,
+                outputItem: plan.bom.outputItem,
+                quantity: Number(form.quantity),
+              }
+            : {}),
           date: form.date,
           partyName: form.partyName,
+          // Sigfa's slip header. Rates are still not sent -- the server reads
+          // them from the item master.
+          series: form.series,
+          store: form.store,
           remarks: form.remarks,
           nested: form.nested,
           // The lines as they stand on screen, edits included. Rates are
@@ -212,6 +292,8 @@ function ProductionScreen() {
         partyName: entry.partyName || '',
         remarks: entry.remarks || '',
         nested: true,
+        series: entry.series || '',
+        store: entry.store || '',
       });
       setLines(entry.lines || []);
       // The costing figures come off the ENTRY rather than from a fresh
@@ -262,12 +344,12 @@ function ProductionScreen() {
       const res = await fetch(`/api/get-production?id=${encodeURIComponent(row._id)}`);
       const data = await res.json();
       const entry = data.production || row;
-      setConfirming({ entry, reversal: reversalSummary(entry) });
+      setConfirming({ entry, reversal: reversalOf(entry) });
     } catch {
       // The dialog still opens: refusing to confirm because a lookup failed
       // would leave no way to delete the entry at all. It just cannot list
       // the lines.
-      setConfirming({ entry: row, reversal: reversalSummary(row) });
+      setConfirming({ entry: row, reversal: reversalOf(row) });
     }
   };
 
@@ -304,10 +386,8 @@ function ProductionScreen() {
     <div className="mx-auto w-full max-w-7xl p-4 sm:p-6">
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="page-title text-xl font-semibold">Production</h1>
-          <p className="page-subtitle">
-            Issues the materials and receives the finished item, in one entry.
-          </p>
+          <h1 className="page-title text-xl font-semibold">{slipTitle(kind)}</h1>
+          <p className="page-subtitle">{config.blurb}</p>
         </div>
         <button type="button" className="btn btn-secondary" onClick={() => router.push('/bom')}>
           Bills of Material
@@ -349,6 +429,152 @@ function ProductionScreen() {
         </div>
       )}
 
+      {!config.usesFormula && (
+        <div className="panel mb-4">
+          <div className="panel-head">
+            <div className="panel-title">{slipTitle(kind)}</div>
+          </div>
+
+          {/* === SIGFA'S SLIP HEADER, field for field ===
+              Series, Slip No., Date, Store, Party -- in its order and with
+              its wording. Slip No. and the day in brackets after the date are
+              shown exactly as its form shows them. */}
+          <div className="panel-body grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="field">
+              <label className="field-label mb-1.5 block" htmlFor="slip-series">
+                Series
+              </label>
+              <input
+                id="slip-series"
+                type="text"
+                className="field-input"
+                list="slip-series-used"
+                value={form.series}
+                placeholder="Optional"
+                onChange={(e) => setForm({ ...form, series: e.target.value })}
+              />
+              {/* Sigfa backs this with a master (its SubKey -- MI, MO, RMI).
+                  There is none here, so the list fills itself from the slips
+                  already written and nothing has to be maintained. */}
+              <datalist id="slip-series-used">
+                {seriesUsed(register).map((value) => (
+                  <option key={value} value={value} />
+                ))}
+              </datalist>
+            </div>
+
+            <div className="field">
+              <label className="field-label mb-1.5 block">Slip No.</label>
+              <div className="field-input flex items-center bg-muted/40">
+                {editing ? editing.docNo : nextNo ?? '—'}
+              </div>
+              <p className="field-hint mt-1">
+                {editing ? 'Fixed once saved.' : 'Settled when you save.'}
+              </p>
+            </div>
+
+            <div className="field">
+              <label className="field-label mb-1.5 block" htmlFor="slip-date">
+                Date
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="slip-date"
+                  type="date"
+                  className="field-input"
+                  value={form.date}
+                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                />
+                {/* Sigfa prints the day in brackets after the date. */}
+                <span className="field-hint whitespace-nowrap">
+                  ({slipDayName(form.date) || '—'})
+                </span>
+              </div>
+            </div>
+
+            <div className="field">
+              <label className="field-label mb-1.5 block" htmlFor="slip-store">
+                Store
+              </label>
+              <input
+                id="slip-store"
+                type="text"
+                className="field-input"
+                value={form.store}
+                placeholder="Optional"
+                onChange={(e) => setForm({ ...form, store: e.target.value })}
+              />
+              {/* Said plainly, because the field invites the opposite
+                  assumption: Sigfa holds stock per store and this app does
+                  not. Recording where goods went is still worth doing. */}
+              <p className="field-hint mt-1">
+                Recorded on the slip. Stock is held in one place, so the stock
+                report will not separate stores.
+              </p>
+            </div>
+
+            <div className="field">
+              <label className="field-label mb-1.5 block" htmlFor="slip-party">
+                Party
+              </label>
+              <input
+                id="slip-party"
+                type="text"
+                className="field-input"
+                list="slip-parties"
+                value={form.partyName}
+                placeholder="Optional"
+                onChange={(e) => setForm({ ...form, partyName: e.target.value })}
+              />
+              <datalist id="slip-parties">
+                {customers.map((c) => (
+                  <option key={c._id || c.name} value={c.name} />
+                ))}
+              </datalist>
+              <p className="field-hint mt-1">
+                {kind === 'IS' ? 'Who the goods went to.' : 'Who they came from.'}
+              </p>
+            </div>
+
+            <div className="field">
+              <ItemSearch
+                items={items}
+                label="Add item"
+                priceOf={(item) => Number(item.cost) || 0}
+                stockOf={(item) => Number(item.lastQuantity)}
+                onPick={(item) => {
+                  setLines((rows) => [
+                    ...rows,
+                    {
+                      itemName: item.name,
+                      // Every line on a goods slip moves the way the SLIP
+                      // moves, so the line's own kind is not asked -- see
+                      // lineDirection in lib/stockVoucher.mjs. Stored as
+                      // "material" because that is the model's default.
+                      kind: 'material',
+                      quantity: '1',
+                      unit: item.unit || '',
+                      // SHOWN, NOT SENT. The save deliberately omits rates and
+                      // the server reads them from the item master, so a
+                      // client cannot post its own costs. This is here only so
+                      // the Amount column is filled in before saving.
+                      rate: Number(item.cost) || 0,
+                      depth: 0,
+                      via: '',
+                    },
+                  ]);
+                  setPlan(
+                    (p) =>
+                      p || { bom: { name: '', outputItem: '' }, costing: null, shortfalls: [], warnings: [] }
+                  );
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {config.usesFormula && (
       <div className="panel mb-4">
         <div className="panel-head">
           <div className="panel-title">New entry</div>
@@ -444,6 +670,7 @@ function ProductionScreen() {
           </button>
         </div>
       </div>
+      )}
 
       {plan && (
         <>
@@ -482,44 +709,120 @@ function ProductionScreen() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Item</th>
-                    <th>Kind</th>
-                    <th className="num">Quantity</th>
-                    <th>Unit</th>
-                    <th>From</th>
+                    {config.usesFormula ? (
+                      <th>Item</th>
+                    ) : (
+                      <>
+                        <th className="num w-12">S.No.</th>
+                        <th>Item Name</th>
+                      </>
+                    )}
+                    {config.usesFormula ? (
+                      <>
+                        <th>Kind</th>
+                        <th className="num">Quantity</th>
+                        <th>Unit</th>
+                        <th>From</th>
+                      </>
+                    ) : (
+                      <>
+                        {/* Sigfa's Issue Slip and Receipt Slip grid, column
+                            for column. The first column is the row number;
+                            Item Name is the one already rendered above. */}
+                        <th>Unit</th>
+                        <th className="num">Quantity</th>
+                        <th className="num">Rate</th>
+                        <th className="num">Amount</th>
+                        <th />
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((line, i) => (
-                    <tr key={`${line.itemName}-${line.kind}`}>
-                      <td style={{ paddingLeft: `${0.75 + (line.depth || 0) * 1}rem` }}>
-                        {line.itemName}
-                      </td>
-                      <td>{LINE_KIND_LABELS[line.kind] || line.kind}</td>
-                      <td className="num">
-                        <input
-                          className="field-input-sm text-right"
-                          type="number"
-                          min="0"
-                          step="0.001"
-                          value={line.quantity}
-                          onChange={(e) =>
-                            setLines((rows) =>
-                              rows.map((r, n) =>
-                                n === i ? { ...r, quantity: e.target.value } : r
-                              )
-                            )
-                          }
-                        />
-                      </td>
-                      <td>{line.unit || '—'}</td>
-                      <td className="text-muted-foreground">
-                        {line.via}
-                        {line.mergedFrom > 1 && ` (merged from ${line.mergedFrom})`}
-                      </td>
-                    </tr>
-                  ))}
+                  {lines.map((line, i) => {
+                    const onQuantity = (e) =>
+                      setLines((rows) =>
+                        rows.map((r, n) => (n === i ? { ...r, quantity: e.target.value } : r))
+                      );
+
+                    if (!config.usesFormula) {
+                      return (
+                        <tr key={`${line.itemName}-${i}`}>
+                          <td className="num text-muted-foreground">{i + 1}</td>
+                          <td className="font-medium">{line.itemName}</td>
+                          <td>{line.unit || '—'}</td>
+                          <td className="num">
+                            <input
+                              className="field-input-sm text-right"
+                              type="number"
+                              min="0"
+                              step="0.001"
+                              value={line.quantity}
+                              onChange={onQuantity}
+                            />
+                          </td>
+                          {/* Rate is the item master's cost, shown so the
+                              Amount column is filled in. It is NOT sent: the
+                              server reads it from the master on save, so a
+                              client cannot post its own costs. */}
+                          <td className="num text-muted-foreground">{money(line.rate)}</td>
+                          <td className="num">{money(slipAmount(line))}</td>
+                          <td className="num">
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm text-destructive hover:text-destructive"
+                              onClick={() =>
+                                setLines((rows) => rows.filter((_, n) => n !== i))
+                              }
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return (
+                      <tr key={`${line.itemName}-${line.kind}`}>
+                        <td style={{ paddingLeft: `${0.75 + (line.depth || 0) * 1}rem` }}>
+                          {line.itemName}
+                        </td>
+                        <td>{LINE_KIND_LABELS[line.kind] || line.kind}</td>
+                        <td className="num">
+                          <input
+                            className="field-input-sm text-right"
+                            type="number"
+                            min="0"
+                            step="0.001"
+                            value={line.quantity}
+                            onChange={onQuantity}
+                          />
+                        </td>
+                        <td>{line.unit || '—'}</td>
+                        <td className="text-muted-foreground">
+                          {line.via}
+                          {line.mergedFrom > 1 && ` (merged from ${line.mergedFrom})`}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
+                {/* The row Sigfa rules off under its grid. */}
+                {!config.usesFormula && lines.length > 0 && (
+                  <tfoot>
+                    <tr>
+                      <td />
+                      <td className="font-medium">Total</td>
+                      <td />
+                      <td className="num font-medium">
+                        {qty(lines.reduce((t, l) => t + (Number(l.quantity) || 0), 0))}
+                      </td>
+                      <td />
+                      <td className="num font-medium">{money(slipTotal(lines))}</td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           </div>

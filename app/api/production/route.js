@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { connect } from "@/lib/mongodb";
 import Production from "@/models/productionModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import { DEFAULT_KIND, isStockKind, kindOf } from "@/lib/stockVoucher.mjs";
 
 // Stock and costs move under it, so a cached register is a wrong one.
 export const dynamic = "force-dynamic";
@@ -23,8 +24,24 @@ async function handleGET(req, auth) {
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const item = (searchParams.get("item") || "").trim();
+    const askedKind = searchParams.get("kind");
 
     const filter = {};
+
+    // The register is per KIND -- a goods issue has no business appearing in
+    // the production register. An absent kind matches the rows written before
+    // the field existed, which were all production entries.
+    if (askedKind) {
+      if (!isStockKind(askedKind)) {
+        return NextResponse.json(
+          { success: false, error: `"${askedKind}" is not a stock voucher kind.` },
+          { status: 400 }
+        );
+      }
+      const kind = kindOf(askedKind);
+      filter.kind =
+        kind === DEFAULT_KIND ? { $in: [DEFAULT_KIND, null] } : kind;
+    }
 
     if (from || to) {
       filter.date = {};
@@ -52,6 +69,9 @@ async function handleGET(req, auth) {
 
     const entries = await Production.find(filter, {
       docNo: 1,
+      kind: 1,
+      series: 1,
+      store: 1,
       date: 1,
       bomName: 1,
       outputItem: 1,

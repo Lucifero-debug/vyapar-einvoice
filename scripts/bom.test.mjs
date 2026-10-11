@@ -72,9 +72,29 @@ import {
   stockDirection,
   subBomFor,
   toProductionLines,
-  reversalSummary,
 } from "../lib/bom.mjs";
 import { canAccessPath, permissionForPath } from "../lib/roles.mjs";
+import {
+  DEFAULT_KIND,
+  STOCK_KINDS,
+  STOCK_KIND_CODES,
+  isStockKind,
+  kindOf,
+  lineDirection,
+  reversalOf,
+  stockKind,
+  stockKindProblems,
+  SLIP_COLUMNS,
+  SLIP_HEADER_FIELDS,
+  seriesUsed,
+  slipAmount,
+  slipDate,
+  slipDayName,
+  slipTitle,
+  slipTotal,
+  stockLedgerKey,
+  stockMovements,
+} from "../lib/stockVoucher.mjs";
 import { MASTER_COLLECTIONS, TRANSACTION_COLLECTIONS } from "../lib/clearData.mjs";
 
 let passed = 0;
@@ -1304,11 +1324,20 @@ test("delete-item still checks invoices and stock as well", () => {
 
 test("the stock writer uses the prefixed key, not the bare number", () => {
   // Belt and braces over the unit tests above: this asserts the CALL SITE
-  // uses productionLedgerKey, because a writer that formatted the key inline
-  // would pass every test in the section above and still destroy invoice 5's
-  // stock history.
+  // builds its key from the shared helper, because a writer that formatted
+  // the key inline would pass every test in the section above and still
+  // destroy invoice 5's stock history.
+  //
+  // The helper is now `stockLedgerKey(kind, docNo)` -- each of the three
+  // stock vouchers has its own prefix, which is what lets them share a
+  // collection and still number independently.
   const src = read("../lib/itemLedger.mjs");
-  assert.ok(/productionLedgerKey\(docNo\)/.test(src));
+  assert.ok(/stockLedgerKey\(kind, docNo\)/.test(src));
+  assert.equal(
+    (src.match(/stockLedgerKey\(/g) || []).length,
+    2,
+    "the writer and the delete must both build the key the same way"
+  );
   assert.equal(
     /invoiceNo:\s*docNo/.test(src),
     false,
@@ -1390,7 +1419,10 @@ test("every new route is wrapped in tenantRoute", () => {
 test("the dashboard reaches both new screens", () => {
   const src = read("../app/page.js");
   assert.ok(/router\.push\(['"]\/bom['"]\)/.test(src), "no tile for the formulas");
-  assert.ok(/router\.push\(['"]\/production['"]\)/.test(src), "no tile for production");
+  // Production moved out of Reports and into the stock vouchers under
+  // Receipts & Payments, where it is a row rather than a nav-tile -- so the
+  // route is reached through the row's href, not a router.push of its own.
+  assert.ok(/href: '\/production'/.test(src), "no row for production");
 });
 
 console.log("\n--- every import resolves ---");
@@ -1531,7 +1563,7 @@ test("a reversal is the opposite of the movement, in both directions", () => {
   // The whole point of showing this before a delete: an entry moved stock in
   // two directions at once, so undoing it moves stock in two directions
   // again. What was RECEIVED comes out; what was ISSUED goes back in.
-  const { outOfStock, backIntoStock } = reversalSummary(ENTRY);
+  const { outOfStock, backIntoStock } = reversalOf(ENTRY);
   assert.deepEqual(
     outOfStock.map((r) => r.itemName),
     ["Bracket", "Offcut"],
@@ -1548,7 +1580,7 @@ test("a by-product never goes back INTO stock", () => {
   // The direction this function got wrong first time, by comparing the kind
   // string by hand instead of asking `consumes`. A by-product listed as going
   // back in would tell somebody a delete ADDS stock it actually removes.
-  const { outOfStock, backIntoStock } = reversalSummary(ENTRY);
+  const { outOfStock, backIntoStock } = reversalOf(ENTRY);
   assert.ok(outOfStock.some((r) => r.itemName === "Offcut"));
   assert.ok(!backIntoStock.some((r) => r.itemName === "Offcut"));
   // And the direction is decided by the shared rule, not a local comparison.
@@ -1562,7 +1594,7 @@ test("the direction agrees with the ledger's own rule for every kind", () => {
   // disagreed with it would describe the wrong thing on screen while the
   // server did the right thing -- worse than no dialog at all.
   for (const kind of LINE_KINDS) {
-    const { outOfStock, backIntoStock } = reversalSummary({
+    const { outOfStock, backIntoStock } = reversalOf({
       outputItem: "",
       lines: [{ itemName: "X", kind, quantity: 1, unit: "KG" }],
     });
@@ -1578,7 +1610,7 @@ test("the direction agrees with the ledger's own rule for every kind", () => {
 });
 
 test("an unknown kind reverses as a material, as it posts", () => {
-  const { backIntoStock } = reversalSummary({
+  const { backIntoStock } = reversalOf({
     outputItem: "",
     lines: [{ itemName: "Mystery", quantity: 3, unit: "KG" }],
   });
@@ -1587,7 +1619,7 @@ test("an unknown kind reverses as a material, as it posts", () => {
 
 test("blank and zero lines are left out", () => {
   // A dialog listing "0 KG of nothing" reads as a bug.
-  const { backIntoStock } = reversalSummary({
+  const { backIntoStock } = reversalOf({
     outputItem: "",
     lines: [
       { itemName: "", quantity: 5 },
@@ -1599,12 +1631,12 @@ test("blank and zero lines are left out", () => {
 });
 
 test("no entry at all is an empty summary, not a crash", () => {
-  assert.deepEqual(reversalSummary(null), { outOfStock: [], backIntoStock: [] });
-  assert.deepEqual(reversalSummary({}), { outOfStock: [], backIntoStock: [] });
+  assert.deepEqual(reversalOf(null), { outOfStock: [], backIntoStock: [] });
+  assert.deepEqual(reversalOf({}), { outOfStock: [], backIntoStock: [] });
 });
 
 test("quantities are rounded by the project's one rule", () => {
-  const { outOfStock } = reversalSummary({ outputItem: "A", outputQuantity: 1 / 3, lines: [] });
+  const { outOfStock } = reversalOf({ outputItem: "A", outputQuantity: 1 / 3, lines: [] });
   assert.equal(outOfStock[0].quantity, roundQty(1 / 3));
 });
 
@@ -1724,7 +1756,7 @@ test("deleting an entry is confirmed, and the dialog lists both directions", () 
   // in two directions.
   const src = read("../app/production/page.js");
   assert.ok(/askDelete/.test(src) && /doDelete/.test(src));
-  assert.ok(/reversalSummary/.test(src), "the dialog must use the shared rule");
+  assert.ok(/reversalOf/.test(src), "the dialog must use the shared rule");
   assert.ok(/Comes back out of stock/.test(src));
   assert.ok(/Goes back into stock/.test(src));
   assert.ok(/role="dialog"/.test(src) && /aria-modal="true"/.test(src));
@@ -1749,6 +1781,523 @@ test("the formula register already offers both, and still does", () => {
   assert.ok(/askDelete/.test(src) && /doDelete/.test(src), "and it confirms");
   const form = read("../app/bomadd/page.js");
   assert.ok(/editingId \? '\/api\/bom-alter' : '\/api\/bom-add'/.test(form));
+});
+
+console.log("\n--- the three stock vouchers Sigfa keeps in one table ---");
+
+const GOODS_LINES = [
+  { itemName: "Plate", kind: "material", quantity: 20, unit: "KG" },
+  { itemName: "Scrap", kind: "wastage", quantity: 2, unit: "KG" },
+  { itemName: "Offcut", kind: "byproduct", quantity: 1, unit: "KG" },
+];
+
+test("the kinds are Sigfa's own MKEY codes", () => {
+  // Read out of SIGFA105.exe, from the rows it seeds MkeyMaster with:
+  //   'FR' Production, 'IS' Goods Issued, 'RS' Goods Received.
+  // Its three characters rather than a prettier slug, so a row here and a row
+  // there say the same thing.
+  assert.deepEqual([...STOCK_KIND_CODES].sort(), ["FR", "IS", "RS"]);
+  assert.equal(STOCK_KINDS.FR.label, "Production");
+  assert.equal(STOCK_KINDS.IS.label, "Goods Issued");
+  assert.equal(STOCK_KINDS.RS.label, "Goods Received");
+});
+
+test("an entry written before kinds existed is a production entry", () => {
+  // THE MIGRATION RULE. Every row in `productions` predating this field is a
+  // production entry and carries no kind at all, so an absent one must read
+  // as 'FR' -- otherwise the register loses them and their stock rows are
+  // looked for under the wrong prefix.
+  assert.equal(DEFAULT_KIND, "FR");
+  assert.equal(kindOf({}), "FR");
+  assert.equal(kindOf({ kind: null }), "FR");
+  assert.equal(kindOf({ kind: "" }), "FR");
+  assert.equal(kindOf(undefined), "FR");
+  assert.equal(kindOf({ kind: "is" }), "IS", "case does not matter on the way in");
+});
+
+test("an unknown kind reads as production but cannot be asked for", () => {
+  // Reading is lenient so a row written by a future version still lists;
+  // creating is strict, because treating a mistyped kind as Production would
+  // write a finished item into stock on a document meant to send goods out.
+  assert.equal(kindOf({ kind: "ZZ" }), "FR");
+  assert.equal(isStockKind("ZZ"), false);
+  assert.equal(isStockKind(""), false);
+  assert.equal(isStockKind("IS"), true);
+  assert.equal(isStockKind("is"), true);
+});
+
+test("production keeps the ledger prefix its rows already carry", () => {
+  // Renaming it would orphan every stock row ever written by a production
+  // entry -- they are keyed "PRD-<docNo>" in the database right now.
+  assert.equal(stockLedgerKey("FR", 5), "PRD-5");
+  assert.equal(stockLedgerKey({}, 5), "PRD-5", "and so does an unstamped one");
+});
+
+test("each kind has its own prefix, so numbers may repeat across them", () => {
+  // Goods Issue 5 and Production 5 are different vouchers under different
+  // keys. If they shared a key, writing one would delete the other's stock
+  // rows -- writeProductionLedgerRows opens by deleting everything under the
+  // key it is given.
+  const keys = STOCK_KIND_CODES.map((k) => stockLedgerKey(k, 5));
+  assert.deepEqual(keys, ["PRD-5", "GI-5", "GR-5"]);
+  assert.equal(new Set(keys).size, 3, "two kinds share a key");
+  // And no prefix is a prefix of another, or a startsWith test would match
+  // the wrong kind.
+  for (const a of STOCK_KIND_CODES) {
+    for (const b of STOCK_KIND_CODES) {
+      if (a === b) continue;
+      assert.equal(
+        STOCK_KINDS[a].prefix.startsWith(STOCK_KINDS[b].prefix),
+        false,
+        `${a}'s prefix starts with ${b}'s`
+      );
+    }
+  }
+});
+
+test("each kind draws from its own counter", () => {
+  // One series per kind, as Sigfa numbers per MKEY. A shared counter would
+  // make a shop's goods-issue register read 1, 4, 9 and get reported as
+  // missing documents.
+  const counters = STOCK_KIND_CODES.map((k) => STOCK_KINDS[k].counter);
+  assert.equal(new Set(counters).size, 3);
+  assert.equal(STOCK_KINDS.FR.counter, "productionNo", "the existing counter is kept");
+});
+
+test("a goods issue sends everything out, whatever the line says", () => {
+  // The VOUCHER decides, not the line. A by-product line on a goods issue
+  // still leaves stock -- there is only one direction on the document.
+  const { issues, receipts } = stockMovements({ kind: "IS", lines: GOODS_LINES });
+  assert.deepEqual(issues.map((r) => r.itemName), ["Offcut", "Plate", "Scrap"]);
+  assert.deepEqual(receipts, []);
+});
+
+test("a goods receipt brings everything in, whatever the line says", () => {
+  const { issues, receipts } = stockMovements({ kind: "RS", lines: GOODS_LINES });
+  assert.deepEqual(receipts.map((r) => r.itemName), ["Offcut", "Plate", "Scrap"]);
+  assert.deepEqual(issues, []);
+});
+
+test("production still moves both ways, by line", () => {
+  const { issues, receipts } = stockMovements({
+    kind: "FR",
+    outputItem: "Bracket",
+    outputQuantity: 10,
+    lines: GOODS_LINES,
+  });
+  assert.deepEqual(issues.map((r) => r.itemName), ["Plate", "Scrap"]);
+  assert.deepEqual(receipts.map((r) => r.itemName), ["Bracket", "Offcut"]);
+});
+
+test("production's movements are what they always were", () => {
+  // THE REGRESSION THAT MATTERS. stockMovements is a generalisation of
+  // productionMovements, not a second implementation beside it: for 'FR' it
+  // must return exactly what the old function returned, or every existing
+  // production entry starts moving different stock.
+  for (const fixture of [
+    { outputItem: "Bracket", outputQuantity: 10, lines: GOODS_LINES },
+    { outputItem: "A", outputQuantity: 1, lines: [] },
+    { outputItem: "", outputQuantity: 0, lines: GOODS_LINES },
+    { outputItem: "Plate", outputQuantity: 5, lines: GOODS_LINES },
+  ]) {
+    assert.deepEqual(
+      stockMovements({ kind: "FR", ...fixture }),
+      productionMovements(fixture),
+      JSON.stringify(fixture).slice(0, 60)
+    );
+    // And an unstamped entry takes the same path.
+    assert.deepEqual(stockMovements({ ...fixture }), productionMovements(fixture));
+  }
+});
+
+test("only production has a finished item", () => {
+  // A goods issue with an output would RECEIVE stock on a document whose
+  // whole purpose is to send it out.
+  for (const kind of ["IS", "RS"]) {
+    const { issues, receipts } = stockMovements({
+      kind,
+      outputItem: "Bracket",
+      outputQuantity: 10,
+      lines: [],
+    });
+    assert.deepEqual([...issues, ...receipts], [], `${kind} invented a movement`);
+  }
+  assert.equal(stockKind("IS").hasOutput, false);
+  assert.equal(stockKind("RS").hasOutput, false);
+  assert.equal(stockKind("FR").hasOutput, true);
+});
+
+test("a goods voucher is refused an output, and refused no lines", () => {
+  assert.match(
+    stockKindProblems({ kind: "IS", outputItem: "Bracket", lines: [{}] })[0],
+    /no finished item/i
+  );
+  assert.match(stockKindProblems({ kind: "RS", lines: [] })[0], /at least one item/i);
+  assert.deepEqual(stockKindProblems({ kind: "IS", lines: [{}] }), []);
+  // Production is validated by productionProblems instead, which demands the
+  // output this would reject.
+  assert.deepEqual(stockKindProblems({ kind: "FR", outputItem: "Bracket", lines: [{}] }), []);
+});
+
+test("a line's direction follows the voucher, except on production", () => {
+  for (const line of GOODS_LINES) {
+    assert.equal(lineDirection("IS", line), "issue", line.kind);
+    assert.equal(lineDirection("RS", line), "receipt", line.kind);
+  }
+  assert.equal(lineDirection("FR", { kind: "material" }), "issue");
+  assert.equal(lineDirection("FR", { kind: "wastage" }), "issue");
+  assert.equal(lineDirection("FR", { kind: "byproduct" }), "receipt");
+});
+
+test("reversing a voucher is its movements, swapped", () => {
+  // Derived from stockMovements rather than decided again, so there is one
+  // direction rule. Deciding it separately is how the first version had
+  // by-products going back INTO stock -- the one direction they never move.
+  for (const entry of [
+    { kind: "FR", outputItem: "Bracket", outputQuantity: 10, outputUnit: "NOS", lines: GOODS_LINES },
+    { kind: "IS", lines: GOODS_LINES },
+    { kind: "RS", lines: GOODS_LINES },
+  ]) {
+    const moves = stockMovements({ ...entry, lines: entry.lines });
+    const reversal = reversalOf(entry);
+    assert.deepEqual(
+      reversal.outOfStock.map((r) => r.itemName),
+      moves.receipts.map((r) => r.itemName),
+      `${entry.kind}: what was received must come out`
+    );
+    assert.deepEqual(
+      reversal.backIntoStock.map((r) => r.itemName),
+      moves.issues.map((r) => r.itemName),
+      `${entry.kind}: what was issued must go back`
+    );
+  }
+});
+
+test("a goods receipt reverses by taking stock OUT", () => {
+  // The direction somebody reading quickly would get backwards.
+  const r = reversalOf({ kind: "RS", lines: [{ itemName: "Plate", quantity: 5, unit: "KG" }] });
+  assert.deepEqual(r.outOfStock.map((x) => x.itemName), ["Plate"]);
+  assert.deepEqual(r.backIntoStock, []);
+
+  const i = reversalOf({ kind: "IS", lines: [{ itemName: "Plate", quantity: 5, unit: "KG" }] });
+  assert.deepEqual(i.backIntoStock.map((x) => x.itemName), ["Plate"]);
+  assert.deepEqual(i.outOfStock, []);
+});
+
+test("the reversal carries the unit and a reason for the dialog", () => {
+  const r = reversalOf({
+    kind: "FR",
+    outputItem: "Bracket",
+    outputQuantity: 10,
+    outputUnit: "NOS",
+    lines: GOODS_LINES,
+  });
+  const bracket = r.outOfStock.find((x) => x.itemName === "Bracket");
+  assert.equal(bracket.unit, "NOS");
+  assert.equal(bracket.why, "produced");
+  const plate = r.backIntoStock.find((x) => x.itemName === "Plate");
+  assert.equal(plate.unit, "KG");
+  assert.equal(plate.why, "material");
+});
+
+test("no entry at all is an empty reversal, not a crash", () => {
+  assert.deepEqual(reversalOf(null), { outOfStock: [], backIntoStock: [] });
+  assert.deepEqual(reversalOf({}), { outOfStock: [], backIntoStock: [] });
+});
+
+console.log("\n--- the three kinds are wired through, end to end ---");
+
+test("the model carries the kind, and only production needs an output", () => {
+  const src = read("../models/productionModel.js");
+  assert.ok(/kind: \{/.test(src));
+  assert.ok(/enum: STOCK_KIND_CODES/.test(src), "the enum comes from the shared list");
+  assert.ok(/default: DEFAULT_KIND/.test(src));
+  // Conditionally required, or every goods voucher fails validation.
+  assert.equal(
+    (src.match(/required: function requiredForProduction/g) || []).length,
+    2,
+    "outputItem and outputQuantity must both be conditional"
+  );
+});
+
+test("the unique index is per kind, and a backfill exists for the old rows", () => {
+  // (companyId, docNo) alone would stop Goods Issue 5 existing beside
+  // Production 5. (companyId, kind, docNo) allows it -- but to Mongo a
+  // missing kind is a distinct value, so the old rows have to be stamped or
+  // two production entries could share a number.
+  const src = read("../models/productionModel.js");
+  assert.ok(/index\(\{ companyId: 1, kind: 1, docNo: 1 \}, \{ unique: true \}\)/.test(src));
+  assert.doesNotMatch(src, /index\(\{ companyId: 1, docNo: 1 \}, \{ unique: true \}\)/);
+  const backfill = read("../scripts/backfill-stock-kind.mjs");
+  assert.ok(/DEFAULT_KIND/.test(backfill));
+  assert.ok(/--apply/.test(backfill), "it must have a dry run");
+});
+
+test("every route that touches stock passes the kind", () => {
+  // The key depends on it. A route that forgot would write a goods issue's
+  // rows under "PRD-" and delete a production entry's.
+  for (const route of [
+    "../app/api/production-add/route.js",
+    "../app/api/production-alter/route.js",
+    "../app/api/delete-production/route.js",
+  ]) {
+    const src = read(route);
+    assert.ok(/kind/.test(src), `${route} never mentions the kind`);
+  }
+  assert.ok(/kind,\n        docNo,/.test(read("../app/api/production-add/route.js")));
+  assert.ok(/kind: kindOf\(updated\)/.test(read("../app/api/production-alter/route.js")));
+  assert.ok(/kind: kindOf\(entry\)/.test(read("../app/api/delete-production/route.js")));
+});
+
+test("an alter cannot change a voucher's kind", () => {
+  // Its stock rows are keyed by the kind's prefix, so the old ones would be
+  // stranded under "PRD-" while the new ones landed under "GI-".
+  const src = read("../app/api/production-alter/route.js");
+  assert.ok(/kind: kindOf\(existing\)/.test(src));
+});
+
+test("the numbering is per kind on both the reserve and the peek", () => {
+  const src = read("../lib/getNextProductionNo.js");
+  assert.ok(/counterFor\(kind\)/.test(src));
+  // The highest existing entry is looked for WITHIN the kind, or a firm's
+  // first goods issue is numbered 48 because it has 47 production entries.
+  assert.ok(/kindFilter\(kind\)/.test(src));
+  // And an unstamped row counts as production, or the next production entry
+  // takes a number already in the book.
+  assert.ok(/\$exists: false/.test(src));
+});
+
+test("the register and the peek are both told which kind", () => {
+  assert.ok(/searchParams.get\("kind"\)/.test(read("../app/api/production/route.js")));
+  assert.ok(/searchParams.get\("kind"\)/.test(read("../app/api/next-production-no/route.js")));
+  // An unknown kind is refused rather than quietly listing production.
+  for (const route of ["../app/api/production/route.js", "../app/api/next-production-no/route.js"]) {
+    assert.ok(/is not a stock voucher kind/.test(read(route)), route);
+  }
+});
+
+test("one screen serves all three, and says which it is", () => {
+  const src = read("../app/production/page.js");
+  assert.ok(/params.get\('kind'\)/.test(src));
+  // The heading is Sigfa's FORM title now -- "Issue Slip", not "Goods
+  // Issued" -- while the subtitle still describes the kind.
+  assert.ok(/\{slipTitle\(kind\)\}/.test(src));
+  assert.ok(/\{config.blurb\}/.test(src));
+  // The formula panel is production's alone.
+  assert.ok(/config.usesFormula &&/.test(src));
+  assert.ok(/!config.usesFormula &&/.test(src));
+  // And the goods vouchers pick items with the billing screens' own search,
+  // rather than a second one written here.
+  assert.ok(/from '@\/components\/billing\/ItemSearch'/.test(src));
+});
+
+test("the three sit together on the dashboard", () => {
+  const src = read("../app/page.js");
+  assert.ok(/'\/production\?kind=IS'/.test(src));
+  assert.ok(/'\/production\?kind=RS'/.test(src));
+  // Out of Reports, where a voucher that moves stock did not belong.
+  const reports = src.slice(src.indexOf("Reports</h2>"));
+  assert.doesNotMatch(reports, /href: '\/production'/, "still under Reports");
+});
+
+test("the three stack, one per row, at every width", () => {
+  // A three-across grid put all of them on one line on a desktop, which made
+  // them read as a different kind of control from the Cash and Bank rows
+  // directly above and left three short labels stranded in a wide row.
+  const src = read("../app/page.js");
+  assert.equal(
+    (src.match(/renderStockVoucherRow\(\{/g) || []).length,
+    3,
+    "all three must go through the row renderer"
+  );
+  // No column grid around them -- that is what put them side by side.
+  // Anchored on the WRAPPER, which is the thing that decides the layout.
+  // Slicing from the "Stock, without a bill" caption forward missed it: the
+  // caption is INSIDE the wrapper, so the class that would put the three on
+  // one line sits just before the slice began, and the check passed with a
+  // three-column grid in place.
+  const at = src.indexOf("Stock, without a bill");
+  assert.ok(at > 0, "the stock voucher block is gone");
+  const openedAt = src.lastIndexOf('<div className="', at);
+  const wrapper = src.slice(openedAt, src.indexOf(">", openedAt));
+  assert.doesNotMatch(
+    wrapper,
+    /grid-cols-\d/,
+    `a column grid puts them back on one line: ${wrapper}`
+  );
+  assert.ok(/space-y-/.test(wrapper), `the rows should be stacked: ${wrapper}`);
+});
+
+test("a stock voucher row looks like the cash and bank rows above it", () => {
+  // Same shape, because it sits directly under them: icon square, label and
+  // subtext, action on the right.
+  const src = read("../app/page.js");
+  const renderer = src.slice(
+    src.indexOf("const renderStockVoucherRow"),
+    src.indexOf("const renderModuleRow")
+  );
+  assert.ok(/nav-tile-icon h-8 w-8/.test(renderer), "the same icon square");
+  assert.ok(/min-w-0 flex-1/.test(renderer));
+  assert.ok(/truncate text-sm font-medium text-foreground/.test(renderer));
+  assert.ok(/rounded-lg border border-border bg-card/.test(renderer));
+  // One action, not the masters' Manage dropdown: a stock voucher is altered
+  // and deleted from its own register.
+  assert.doesNotMatch(renderer, /DropdownMenu/);
+  assert.ok(/Open/.test(renderer));
+});
+
+test("there is only one reversal rule in the codebase", () => {
+  // It lived in lib/bom.mjs first and moved to lib/stockVoucher.mjs when the
+  // other two kinds arrived. Two copies of a direction rule is how a
+  // by-product ends up going back into stock.
+  assert.doesNotMatch(read("../lib/bom.mjs"), /export const reversalSummary/);
+  assert.ok(/export const reversalOf/.test(read("../lib/stockVoucher.mjs")));
+});
+
+console.log("\n--- the slip matches Sigfa's, field for field ---");
+
+test("the form is headed the way Sigfa heads it", () => {
+  // Its MkeyMaster calls these "Goods Issued" and "Goods Received"; its FORM
+  // is headed "Issue Slip" and "Receipt Slip". Both names are Sigfa's, so
+  // both are kept -- the first for the register and the dashboard, the second
+  // for the slip itself.
+  assert.equal(slipTitle("IS"), "Issue Slip");
+  assert.equal(slipTitle("RS"), "Receipt Slip");
+  assert.equal(slipTitle("FR"), "Production");
+  assert.equal(stockKind("IS").label, "Goods Issued", "the list name is unchanged");
+});
+
+test("the header fields are Sigfa's, in its order", () => {
+  assert.deepEqual(SLIP_HEADER_FIELDS, ["Series", "Slip No.", "Date", "Store", "Party"]);
+});
+
+test("the grid columns are Sigfa's, in its order and its spelling", () => {
+  // "S.No." with both full stops, as its header prints it.
+  assert.deepEqual(SLIP_COLUMNS, [
+    "S.No.",
+    "Item Name",
+    "Unit",
+    "Quantity",
+    "Rate",
+    "Amount",
+  ]);
+});
+
+test("the date reads as Sigfa prints it, day included", () => {
+  // "11-10-2026 (Sun)" off its slip.
+  assert.equal(slipDate("2026-10-11"), "11-10-2026");
+  assert.equal(slipDayName("2026-10-11"), "Sun");
+  // A SINGLE-DIGIT day and month, which the sample date hides: both are
+  // padded, so the column stays aligned and the format never shrinks to
+  // "5-1-2026". Dropping the padding passed every check until this was added.
+  assert.equal(slipDate("2026-01-05"), "05-01-2026");
+  assert.equal(slipDate("2026-12-31"), "31-12-2026");
+});
+
+test("the day is the IST day, not the server's", () => {
+  // The container runs Asia/Calcutta and Vercel runs UTC, so a late-evening
+  // slip would carry yesterday's day name on one of them. Checked at the
+  // boundary: 18:30 UTC is already the next day in IST.
+  assert.equal(slipDayName("2026-10-11T18:29:00Z"), "Sun");
+  assert.equal(slipDayName("2026-10-11T18:30:00Z"), "Mon");
+  assert.equal(slipDate("2026-10-11T18:30:00Z"), "12-10-2026");
+});
+
+test("a missing or unreadable date prints nothing, not Invalid Date", () => {
+  for (const bad of ["", null, undefined, "rubbish"]) {
+    assert.equal(slipDayName(bad), "");
+    assert.equal(slipDate(bad), "");
+  }
+});
+
+test("Amount is quantity times rate, and the total adds them", () => {
+  // No discount, no tax, no rounding of its own: a goods slip carries none.
+  assert.equal(slipAmount({ quantity: 3, rate: 12.5 }), 37.5);
+  assert.equal(slipAmount({ quantity: 3 }), 0, "no rate is no amount");
+  assert.equal(slipAmount({}), 0);
+  assert.equal(slipTotal([{ quantity: 3, rate: 12.5 }, { quantity: 2, rate: 10 }]), 57.5);
+  assert.equal(slipTotal([]), 0);
+  assert.equal(slipTotal(), 0);
+});
+
+test("the series box offers back what has been used, once each", () => {
+  // Sigfa backs this with a master; there is none here, so the list fills
+  // itself from the slips already written.
+  // Given OUT OF ORDER, so the sort is actually exercised: the first fixture
+  // happened to be alphabetical already, and deleting the sort passed.
+  assert.deepEqual(seriesUsed([{ series: "RMI" }, { series: "MI" }, { series: "RMI" }]), [
+    "MI",
+    "RMI",
+  ]);
+  assert.deepEqual(seriesUsed([{ series: "Z" }, { series: "A" }, { series: "M" }]), [
+    "A",
+    "M",
+    "Z",
+  ]);
+  // Case-insensitively unique, but the spelling first used is offered back.
+  assert.deepEqual(seriesUsed([{ series: "mi" }, { series: "MI" }]), ["mi"]);
+  assert.deepEqual(seriesUsed([{ series: "" }, {}, { series: "   " }]), []);
+  assert.deepEqual(seriesUsed(), []);
+});
+
+test("Series and Store are stored, and Store is honest about itself", () => {
+  const model = read("../models/productionModel.js");
+  assert.ok(/series: \{ type: String/.test(model));
+  assert.ok(/store: \{ type: String/.test(model));
+
+  // THE PART THAT MATTERS. Sigfa holds stock per store -- STORECODE is on its
+  // RIssue and its PhyStock alike -- and this app does not. A Store box with
+  // nothing said would read as segregating stock that it does not segregate.
+  const page = read("../app/production/page.js");
+  assert.ok(
+    /Stock is held in one place/.test(page),
+    "the screen must say the store does not split stock"
+  );
+  assert.doesNotMatch(read("../lib/itemLedger.mjs"), /store/i, "there is no store on a stock row");
+});
+
+test("the slip carries Series and Store through to the save", () => {
+  const page = read("../app/production/page.js");
+  assert.ok(/series: form\.series/.test(page));
+  assert.ok(/store: form\.store/.test(page));
+  const save = read("../lib/productionSave.mjs");
+  assert.ok(/series: text\(body\.series\)/.test(save));
+  assert.ok(/store: text\(body\.store\)/.test(save));
+  // And an edit loads them back, or re-saving a slip would blank them.
+  assert.ok(/series: entry\.series \|\| ''/.test(page));
+  assert.ok(/store: entry\.store \|\| ''/.test(page));
+});
+
+test("the screen builds its grid from the shared column list", () => {
+  // Not retyped into the JSX, or the headings and the tests drift the first
+  // time one changes.
+  const page = read("../app/production/page.js");
+  for (const heading of ["S.No.", "Item Name", "Unit", "Quantity", "Rate", "Amount"]) {
+    assert.ok(page.includes(heading), `${heading} is missing from the slip`);
+  }
+  assert.ok(/slipAmount\(line\)/.test(page), "Amount must come from the shared rule");
+  assert.ok(/slipTotal\(lines\)/.test(page));
+});
+
+test("the rate is shown but never sent", () => {
+  // A client that could post its own rates could value a slip at nothing.
+  // The browser shows the item master's cost so the Amount column is filled
+  // in; the server reads the rate again on save.
+  const page = read("../app/production/page.js");
+  const save = page.slice(page.indexOf("const save = async"));
+  const body = save.slice(0, save.indexOf("});"));
+  assert.doesNotMatch(body, /rate:/, "a rate is being sent");
+  assert.ok(/rate: Number\(item\.cost\) \|\| 0/.test(page), "the rate should be shown");
+  assert.ok(/toProductionLines/.test(read("../lib/productionSave.mjs")));
+});
+
+test("the slip shows its number before it is saved", () => {
+  // Sigfa shows Slip No. on the blank form. A peek, not a reservation:
+  // opening the slip and walking away must not burn a number.
+  const page = read("../app/production/page.js");
+  assert.ok(/next-production-no\?kind=/.test(page));
+  assert.ok(/Slip No\./.test(page));
+  assert.ok(/peekNextProductionNo/.test(read("../lib/getNextProductionNo.js")));
 });
 
 console.log(`\n${passed} checks passed`);

@@ -5,6 +5,7 @@ import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import { writeProductionLedgerRows } from "@/lib/itemLedger.mjs";
 import { buildProductionEntry } from "@/lib/productionSave.mjs";
+import { kindOf } from "@/lib/stockVoucher.mjs";
 
 /**
  * Change a production entry, and the stock it moved.
@@ -83,6 +84,11 @@ async function handlePATCH(req, auth) {
             ...fields,
             // The number stays the entry's own, whatever the request said.
             docNo: existing.docNo,
+            // So does the KIND. A production entry cannot become a goods
+            // issue by editing: its stock rows are keyed by the kind's own
+            // prefix, so the old ones would be stranded under "PRD-" while
+            // the new ones landed under "GI-".
+            kind: kindOf(existing),
             // Who made the entry is not who edited it. The schema already
             // carries both of Sigfa's columns -- LUSER as `createdBy` and
             // LUSERE as `updatedBy` -- so there is nothing to invent here, and
@@ -110,6 +116,7 @@ async function handlePATCH(req, auth) {
       // deleted and the new ones written as one step.
       const rows = await writeProductionLedgerRows({
         session,
+        kind: kindOf(updated),
         docNo: updated.docNo,
         date: fields.date,
         outputItem: updated.outputItem,

@@ -50,7 +50,7 @@ async function handlePOST(req, auth) {
       // live in lib/productionSave.mjs, shared with `production-alter`. Two
       // copies of this would be two chances for an alter to value a batch
       // differently from the way the original save valued it.
-      const { fields, frozen, warnings } = await buildProductionEntry({ body, session, auth });
+      const { fields, frozen, warnings, kind } = await buildProductionEntry({ body, session, auth });
 
       // The number, settled before the write -- the same dance as save-invoice
       // and order-add. The form supplies one from the peek endpoint, which two
@@ -59,15 +59,22 @@ async function handlePOST(req, auth) {
       const requested = Number(body.docNo);
       let docNo;
       if (Number.isFinite(requested) && requested > 0) {
-        const taken = await Production.findOne({ docNo: requested }, { _id: 1 }, { session }).lean();
+        // Scoped to the KIND: Goods Issue 5 and Production 5 are different
+        // vouchers under different ledger keys, so one does not take the
+        // other's number.
+        const taken = await Production.findOne(
+          { kind, docNo: requested },
+          { _id: 1 },
+          { session }
+        ).lean();
         if (taken) {
-          docNo = await getNextProductionNo(session);
+          docNo = await getNextProductionNo(session, kind);
         } else {
           docNo = requested;
-          await raiseProductionCounter(requested, session);
+          await raiseProductionCounter(requested, session, kind);
         }
       } else {
-        docNo = await getNextProductionNo(session);
+        docNo = await getNextProductionNo(session, kind);
       }
 
       const [entry] = await Production.create(
@@ -86,6 +93,7 @@ async function handlePOST(req, auth) {
       // is why productionLedgerKey exists -- see the note in lib/itemLedger.mjs.
       const rows = await writeProductionLedgerRows({
         session,
+        kind,
         docNo,
         date: fields.date,
         outputItem: entry.outputItem,
