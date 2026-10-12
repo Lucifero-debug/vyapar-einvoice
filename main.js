@@ -4,10 +4,10 @@ const path = require('path');
 
 let mainWindow;
 
-// The deployed app this window shows. NOTE: still the original deployment;
-// confirm the production domain before shipping a desktop build (see the
-// release-readiness report).
-const APP_URL = 'https://vyapaar-ten.vercel.app/';
+// The deployed app this window shows: the Vercel project connected to this
+// repo (vyapar-einvoice-ph2z, production domain). Change it here if a custom
+// domain is added later -- the navigation lock below follows this origin.
+const APP_URL = 'https://vyapar-einvoice-ph2z.vercel.app/';
 
 function createWindow() {
   mainWindow = new BrowserWindow({

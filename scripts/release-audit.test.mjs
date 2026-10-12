@@ -342,6 +342,13 @@ test("the company page imports every prefs and logo helper it calls (the build f
   }
 });
 
+test("the desktop app opens the confirmed production domain, over https", () => {
+  // The Vercel project connected to this repo (confirmed 12 Oct 2026).
+  const main = code(read("../main.js"));
+  assert.match(main, /const APP_URL = 'https:\/\/vyapar-einvoice-ph2z\.vercel\.app\/';/);
+  assert.doesNotMatch(main, /vyapaar-ten|vyapaar-aspx/);
+});
+
 test("no ref is written or read during render in the keyboard and notice hooks", () => {
   for (const file of ["../components/billing/useBillingKeys.js", "../components/masters/MasterShortcuts.jsx"]) {
     const src = code(read(file));

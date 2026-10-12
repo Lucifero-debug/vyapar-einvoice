@@ -277,6 +277,30 @@
   .num {
     @apply text-right tabular-nums;
   }
+
+  /* A NUMERIC HEADING SITS OVER ITS OWN COLUMN.
+
+     `.data-table thead th` above sets text-left with two element selectors,
+     which out-specifies a bare `.num`, so every money and quantity heading
+     in the app sat against the left of a column whose figures were right
+     aligned -- the reports looked out of true even though each cell was
+     correct on its own.
+
+     Only print was right, because the print block carries
+     `.report-table .num` and two classes beat one class and two elements.
+     The screen now matches the paper. */
+  .data-table thead th.num,
+  .data-table tfoot th.num {
+    @apply text-right;
+  }
+
+  /* Totals line up with the column they total, in figures of the same
+     width as the rows above: a totals row that does not sit under its
+     column is read twice. */
+  .data-table tfoot td.num,
+  .data-table tfoot td {
+    @apply tabular-nums;
+  }
   .money-dr {
     @apply text-right font-medium tabular-nums text-success;
   }
