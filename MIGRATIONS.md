@@ -208,4 +208,4 @@ Then, **per firm**, in the app:
   - In each, invoice 1, order 1 and production 1 save successfully.
   - Neither firm's reports show the other's heads or rows.
   - `db.ledgers.countDocuments({ companyId: { $exists: false } })` is 0.
-- [ ] Keep the `backups/` folder and the database snapshot until the next period close.
+- [ ] Keep the `backups/` folder and the database snapshot until the next period close..
