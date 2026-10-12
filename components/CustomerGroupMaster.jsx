@@ -8,6 +8,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 import { isReservedGroup } from '@/lib/customerGroups.mjs';
 
 /**
@@ -21,21 +23,23 @@ import { isReservedGroup } from '@/lib/customerGroups.mjs';
 const CustomerGroupMaster = ({ open, onClose, selected }) => {
   const [form, setForm] = useState({ name: '', note: '' });
   const [saving, setSaving] = useState(false);
+  const [notice, notify] = useNotice();
   const isEditing = Boolean(selected?._id || selected?.id);
   const reserved = isEditing && isReservedGroup(selected?.name);
 
   useEffect(() => {
+    notify.clear();
     if (!open) {
       setForm({ name: '', note: '' });
       return;
     }
     setForm({ name: selected?.name || '', note: selected?.note || '' });
-  }, [open, selected]);
+  }, [open, selected, notify]);
 
   const handleSave = async () => {
     const name = form.name.trim();
     if (!name) {
-      alert('Please enter a group name.');
+      notify.error('Please enter a group name.');
       return;
     }
 
@@ -51,15 +55,15 @@ const CustomerGroupMaster = ({ open, onClose, selected }) => {
           note: form.note.trim(),
         }),
       });
-      const result = await res.json();
-      if (result.success) {
+      const { ok, body: result, message } = await readResponse(res);
+      if (ok && result.success) {
         onClose(true);
       } else {
-        alert(result.error || result.message || 'Could not save the group.');
+        notify.error(`The group was not saved. ${message}`);
       }
     } catch (err) {
       console.error('Error saving customer group:', err);
-      alert('Error saving the group.');
+      notify.error(`The group was not saved. ${NETWORK_ERROR}`);
     } finally {
       setSaving(false);
     }
@@ -101,6 +105,7 @@ const CustomerGroupMaster = ({ open, onClose, selected }) => {
           </div>
         </div>
 
+        <Notice notice={notice} onClose={notify.clear} className='mb-0' />
         <div className="flex items-center justify-end gap-2">
           <button type="button" className="btn btn-secondary" onClick={() => onClose(false)}>
             Cancel

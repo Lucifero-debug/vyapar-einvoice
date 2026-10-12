@@ -13,9 +13,6 @@ export default function VoucherSearchParams({ onParams }) {
     if (onParams) {
       onParams({ type, value });
     }
-
-    // Debug log
-    console.log("Voucher Search Params:", { type, value });
   }, [searchParams, onParams]);
 
   return null;

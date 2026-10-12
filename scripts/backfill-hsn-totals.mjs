@@ -81,13 +81,22 @@ export function diagnoseInvoice(stored = [], derived = []) {
   if (stored.some((r) => r.total === undefined || r.total === null))
     problems.push("total dropped");
 
-  const byHsn = new Map(derived.map((r) => [String(r.hsn), r]));
+  // Derived rows are one per HSN code AND rate (lib/hsnTotals.mjs), so a
+  // code can appear twice. A stored row is matched on both when it kept its
+  // rate, and on the code alone when the schema dropped it -- which is the
+  // truncation this script exists for.
+  const byKey = new Map(derived.map((r) => [`${r.hsn}@${Number(r.gstRate) || 0}`, r]));
+  const byHsn = new Map();
+  for (const r of derived) if (!byHsn.has(String(r.hsn))) byHsn.set(String(r.hsn), r);
   if (stored.length !== derived.length) {
     problems.push(`row count ${stored.length} → ${derived.length}`);
   }
 
   for (const row of stored) {
-    const want = byHsn.get(String(row.hsn));
+    const want =
+      row.gstRate === undefined || row.gstRate === null
+        ? byHsn.get(String(row.hsn))
+        : byKey.get(`${row.hsn}@${Number(row.gstRate) || 0}`) || byHsn.get(String(row.hsn));
     if (!want) {
       problems.push(`hsn ${row.hsn} not in the lines`);
       continue;

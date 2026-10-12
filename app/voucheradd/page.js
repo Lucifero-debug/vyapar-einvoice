@@ -5,17 +5,25 @@ import VoucherSearchParams from "@/components/VoucherSearchparams";
 import PartyBalance from "@/components/PartyBalance";
 import BillAdjust from "@/components/BillAdjust";
 import { allocatedTotal, billTypeFor, lineAmount } from "@/lib/billAdjust.mjs";
+import { istToday } from "@/lib/istDate.mjs";
+import { Notice, useNotice } from "@/components/ui/notice";
+import { NETWORK_ERROR, readResponse } from "@/lib/apiResponse.mjs";
+
+/** Today in India, not in UTC -- see istToday in lib/istDate.mjs. */
+const todayIst = () => istToday();
 
 const AddVoucher = () => {
   const [voucherParams, setVoucherParams] = useState({ type: "", value: "" });
 
   const [form, setForm] = useState({
     acName: "",
-    date: new Date().toISOString().slice(0, 10),
+    date: todayIst(),
     againstBill: false,
     acType: "",
     narration: "", // 🔹 Added main narration
   });
+  const [notice, notify] = useNotice();
+  const [saving, setSaving] = useState(false);
 
   const [entries, setEntries] = useState([
     { name: "", debit: "", credit: "", custId: "", narration: "", allocations: [] },
@@ -36,7 +44,7 @@ const AddVoucher = () => {
         setCustomers(result.customer || []);
       } catch (error) {
         console.error("Error fetching customer data:", error);
-        alert("Failed to fetch customer.");
+        notify.error("Could not load the party list. Reload the page to try again.");
       }
     };
 
@@ -62,7 +70,7 @@ const AddVoucher = () => {
             acName: voucher.acName || "",
             date:
               voucher.date?.slice(0, 10) ||
-              new Date().toISOString().slice(0, 10),
+              todayIst(),
             againstBill: voucher.againstBill || false,
             acType: voucher.acType || "",
             narration: voucher.narration || "", // 🔹 load main narration
@@ -85,7 +93,7 @@ const AddVoucher = () => {
           );
         } catch (err) {
           console.error("Failed to fetch voucher:", err);
-          alert("Failed to load voucher.");
+          notify.error("Could not load this voucher. Reload the page to try again.");
         }
       };
 
@@ -186,6 +194,10 @@ const AddVoucher = () => {
   // --- submit ---
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // One save at a time: a double click posted the voucher twice.
+    if (saving) return;
+    setSaving(true);
+    notify.clear();
 
     try {
       const endpoint = voucherParams.value
@@ -214,22 +226,19 @@ const AddVoucher = () => {
         }),
       });
 
-      const result = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // The server's own words. It names the bill and the figure -- "Failed
-        // to save voucher" tells the user nothing they can act on.
-        throw new Error(result.error || "Failed to save voucher");
+      // The server's own words. It names the bill and the figure -- "Failed
+      // to save voucher" tells the user nothing they can act on.
+      const { ok, message } = await readResponse(res);
+      if (!ok) {
+        notify.error(`The voucher was not saved. ${message}`);
+        return;
       }
 
-      alert(
-        voucherParams.value
-          ? "Voucher updated successfully!"
-          : "Voucher added successfully!"
-      );
+      notify.success(voucherParams.value ? "Voucher updated." : "Voucher added.");
 
       setForm({
         acName: "",
-        date: new Date().toISOString().slice(0, 10),
+        date: todayIst(),
         againstBill: false,
         acType: "",
         narration: "",
@@ -238,7 +247,10 @@ const AddVoucher = () => {
       setEntries([{ name: "", debit: "", credit: "", custId: "", narration: "", allocations: [] }]);
       setVoucherParams({ type: "", value: "" });
     } catch (error) {
-      alert(error.message);
+      console.error("Voucher save error:", error);
+      notify.error(`The voucher was not saved. ${NETWORK_ERROR}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -275,6 +287,8 @@ const AddVoucher = () => {
             </p>
           </div>
         </div>
+
+        <Notice notice={notice} onClose={notify.clear} />
 
         {/* --- VOUCHER FORM --- */}
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -502,8 +516,10 @@ const AddVoucher = () => {
           <button
             type="submit"
             className="btn btn-primary w-full sm:w-auto"
+            disabled={saving}
+            aria-busy={saving}
           >
-            {voucherParams.value ? "Update Voucher" : "Add Voucher"}
+            {saving ? "Saving…" : voucherParams.value ? "Update Voucher" : "Add Voucher"}
           </button>
         </form>
 

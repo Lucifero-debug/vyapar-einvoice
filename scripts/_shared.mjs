@@ -60,6 +60,50 @@ export async function confirmYes(question, assumeYes = false) {
   return answer.trim().toLowerCase() === "yes";
 }
 
+/* ------------------------------------------------------------ connecting -- */
+
+/**
+ * Connect WITHOUT letting Mongoose change the database.
+ *
+ * By default Mongoose builds every index a compiled model declares
+ * (autoIndex) and creates every collection it has a model for (autoCreate)
+ * as soon as the connection opens. A script that imports a model -- even
+ * only to read `schema.indexes()`, even in a dry run -- would therefore
+ * build unique indexes over the live data, possibly the very ones the dry run
+ * is meant to check first. Off, here and on the connection, for every
+ * maintenance script. Anything a script builds, it builds itself, by name.
+ *
+ * Call `quietMongoose(mongoose)` BEFORE importing models (use a dynamic
+ * import after it), then `connectMaintenance(mongoose, uri)`.
+ */
+export function quietMongoose(mongoose) {
+  mongoose.set("autoIndex", false);
+  mongoose.set("autoCreate", false);
+}
+
+export async function connectMaintenance(mongoose, uri) {
+  quietMongoose(mongoose);
+  await mongoose.connect(uri, { autoIndex: false, autoCreate: false });
+  return mongoose.connection;
+}
+
+/**
+ * Can this deployment run multi-document transactions?
+ *
+ * Only a replica set or a sharded cluster can (Atlas is always one; a plain
+ * `mongod` on a laptop is not). Returns `{ ok, kind }`.
+ */
+export async function transactionSupport(db) {
+  try {
+    const hello = await db.admin().command({ hello: 1 });
+    if (hello.setName) return { ok: true, kind: `replica set "${hello.setName}"` };
+    if (hello.msg === "isdbgrid") return { ok: true, kind: "sharded cluster" };
+    return { ok: false, kind: "standalone server" };
+  } catch (err) {
+    return { ok: false, kind: `unknown (${err.message})` };
+  }
+}
+
 /* ------------------------------------------------------------ formatting -- */
 
 /** Accounting style: negatives in parentheses. */

@@ -3,8 +3,12 @@ import Invoice from "../../../models/invoiceModel";
 import Customer from "../../../models/custModel";
 import Ledger from "../../../models/ledgerModel";
 import ItemLedger from "../../../models/itemLedgerModel";
-import { balancePipeline, round2, toDisplay, voucherDelta } from "@/lib/balance.mjs";
-import { invoicePostingDeltas } from "@/lib/invoicePosting.mjs";
+import { balancePipeline, round2, toDisplay } from "@/lib/balance.mjs";
+import {
+  balanceMovesFromRows,
+  invoicePostingDeltas,
+  withPartyCashLeg,
+} from "@/lib/invoicePosting.mjs";
 import {
   recomputeItemBalances,
   recomputeLedgerBalances,
@@ -13,6 +17,8 @@ import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { LOCKED_STATUS, deleteBlockedReason } from "@/lib/einvoiceLock.mjs";
 import { releaseOrderQty } from "@/lib/orderClaims.mjs";
+import { settledBillProblem } from "@/lib/billAdjust.mjs";
+import { settledAgainst } from "@/lib/openBillsFor.mjs";
 
 async function handlePOST(req, auth) {
   try {
@@ -36,7 +42,7 @@ async function handlePOST(req, auth) {
         // below.
         const existing = await Invoice.findOne(
           { invoiceNo: Number(invoiceNo) },
-          { invoiceNo: 1, irn: 1, ackDt: 1, einvoiceStatus: 1 }
+          { invoiceNo: 1, irn: 1, ackDt: 1, einvoiceStatus: 1, type: 1, return: 1, customer: 1 }
         )
           .session(session)
           .lean();
@@ -47,6 +53,20 @@ async function handlePOST(req, auth) {
             { error: blocked, irn: existing.irn },
             LOCKED_STATUS
           );
+        }
+
+        // A bill a receipt or payment has been adjusted against cannot go:
+        // the allocation lives on the voucher and names this bill by number,
+        // so deleting it orphans the money -- and a later bill given the same
+        // number would open already part-paid. lib/billAdjust.mjs.
+        if (existing) {
+          const settled = await settledAgainst({
+            invoiceNo: existing.invoiceNo,
+            type: existing.type,
+            session,
+          });
+          const problem = settledBillProblem({ before: existing, after: null, ...settled });
+          if (problem) throw new AbortTransaction({ error: problem }, 409);
         }
 
         const deletedInvoice = await Invoice.findOneAndDelete(
@@ -69,7 +89,7 @@ async function handlePOST(req, auth) {
         // other people's rows.
         const rows = await Ledger.find(
           { voucherId: deletedInvoice._id },
-          { customerName: 1, debit: 1, credit: 1 },
+          { customerName: 1, account: 1, debit: 1, credit: 1 },
           { session }
         ).lean();
 
@@ -80,17 +100,26 @@ async function handlePOST(req, auth) {
         // move money that was never posted on invoices raised before the
         // receipt leg existed, and would guess wrong on any invoice whose
         // payment type has since been edited.
-        const settlement = new Map();
-        for (const row of rows) {
-          if (!row.customerName || row.customerName === partyName) continue;
-          settlement.set(
-            row.customerName,
-            round2(
-              (settlement.get(row.customerName) || 0) +
-                voucherDelta({ debit: row.debit, credit: row.credit })
-            )
-          );
-        }
+        //
+        // The party itself is reversed by the derived `partyDelta` below. For
+        // an invoice billed to the cash account itself, its cash leg -- which
+        // sits under the party's own name -- is reversed here too; skipping
+        // the party's rows altogether used to leave the money in the till.
+        const deltas = invoicePostingDeltas({
+          type: deletedInvoice.type,
+          isReturn: deletedInvoice.return,
+          finalAmount:
+            deletedInvoice.finalAmount ??
+            Number(deletedInvoice.balanceDue || 0) +
+              Number(deletedInvoice.received || 0),
+          received: deletedInvoice.received,
+        });
+        const settlement = withPartyCashLeg(
+          balanceMovesFromRows(rows),
+          rows,
+          partyName,
+          deltas.cashDelta
+        );
 
         const deleteResult = await Ledger.deleteMany(
           { voucherId: deletedInvoice._id },
@@ -106,15 +135,6 @@ async function handlePOST(req, auth) {
         // reverse by the stored `balanceDue` while the posting moved the party
         // by finalAmount - received: identical whenever the client's arithmetic
         // agreed, and a permanent drift whenever it did not.
-        const deltas = invoicePostingDeltas({
-          type: deletedInvoice.type,
-          isReturn: deletedInvoice.return,
-          finalAmount:
-            deletedInvoice.finalAmount ??
-            Number(deletedInvoice.balanceDue || 0) +
-              Number(deletedInvoice.received || 0),
-          received: deletedInvoice.received,
-        });
 
         const moves = new Map();
         const move = (name, delta) => {

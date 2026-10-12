@@ -1,6 +1,7 @@
 'use client'
 import React, { useEffect, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { formatQuantity, stockOf } from '@/lib/itemStock.mjs'
 import { Button } from '../../components/ui/button'
 import {
   Card,
@@ -20,6 +21,8 @@ import {
 } from '../../components/ui/tabs'
 import { UQC_CODES, UQC_DEFAULT, normalizeUqc } from '@/lib/uqc.mjs'
 import MasterShortcuts from '@/components/masters/MasterShortcuts'
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 
 const PageContent = () => {
   const searchParams = useSearchParams();
@@ -32,6 +35,8 @@ const PageContent = () => {
   const [openBal, setOpenBal] = useState('')
   const [minBal, setMinBal] = useState('')
   const [lastBal, setLastBal] = useState('')
+  // Read-only: what is on the shelf now. Shown when editing an item.
+  const [currentStock, setCurrentStock] = useState('')
   const [cost, setCost] = useState('')
   const [unit, setUnit] = useState(0)
   // The code the IRP accepts, which is NOT the free-text unit above and is
@@ -47,6 +52,8 @@ const PageContent = () => {
   const [discount, setDiscount] = useState('')
   const [id, setId] = useState('')
   const [hsnList, setHsnList] = useState([])
+  const [notice, notify] = useNotice()
+  const [saving, setSaving] = useState(false)
 
   // 🔄 Fetch HSN list
   useEffect(() => {
@@ -92,13 +99,27 @@ const PageContent = () => {
           setGst(data.gst ?? '')
           setDiscount(data.discount ?? '')
           setId(data._id)
+          // Current stock, from the same summed stock ledger the dashboard,
+          // the billing screens and the stock reports use -- never from
+          // "Last Year Stock", which is a hand-typed figure nothing updates.
+          fetch('/api/item-stock')
+            .then((r) => r.json())
+            .then((body) => {
+              const entry = stockOf(body.stock || [], data.name)
+              setCurrentStock(entry ? formatQuantity(entry.quantity, entry.unit) : '0')
+            })
+            .catch(() => setCurrentStock(''))
         })
-        .catch(error => console.error('Error fetching item data:', error));
+        .catch(error => {
+          console.error('Error fetching item data:', error);
+          notify.error('Could not load this item. Reload the page to try again.');
+        });
     }
-  }, [value]);
+  }, [value, notify]);
 
   // 💾 Save (add or alter)
   const handleSave = async () => {
+    if (saving) return;
     // Blank means "not set", and must stay that way: sending 0 is what put a
     // zero price on every item nobody had got round to pricing. The schema
     // keeps these as Numbers -- every calculation in the app multiplies them.
@@ -132,6 +153,8 @@ const PageContent = () => {
 
     const endpoint = value ? '/api/item-alter' : '/api/item-add';
 
+    setSaving(true);
+    notify.clear();
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -139,14 +162,19 @@ const PageContent = () => {
         body: JSON.stringify(itemData),
       });
 
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-
-      const result = await response.json();
-      console.log('Success:', result);
-      alert(`Item ${value ? 'updated' : 'added'} successfully!`);
+      // The route's own reason (a duplicate name, a blank field) is shown;
+      // it used to be thrown away for "Failed to save item data."
+      const { ok, message } = await readResponse(response);
+      if (!ok) {
+        notify.error(`The item was not saved. ${message}`);
+        return;
+      }
+      notify.success(`Item ${value ? 'updated' : 'added'}.`);
     } catch (error) {
       console.error('Save error:', error);
-      alert('Failed to save item data.');
+      notify.error(`The item was not saved. ${NETWORK_ERROR}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -175,6 +203,7 @@ const PageContent = () => {
           <p className="page-subtitle">Item details, HSN and stock.</p>
         </div>
       </header>
+      <Notice notice={notice} onClose={notify.clear} />
       <Tabs defaultValue="account" className="panel flex w-full flex-col overflow-hidden md:flex-row">
         {/* LEFT SIDE (Tabs List) */}
         <TabsList className="flex h-auto w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-none border-b border-border bg-transparent p-2 md:w-[210px] md:flex-col md:border-b-0 md:border-r">
@@ -265,7 +294,7 @@ const PageContent = () => {
                 </div>
               </CardContent>
               <CardFooter className="justify-end px-0 pb-0">
-                <Button onClick={handleSave}>Save</Button>
+                <Button onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
               </CardFooter>
             </Card>
           </TabsContent>
@@ -282,6 +311,12 @@ const PageContent = () => {
                   <div className="space-y-1">
                     <Label>Opening Stock</Label>
                     <Input type="number" onChange={e => setOpenBal(e.target.value)} value={openBal} />
+                    {currentStock !== '' && (
+                      <p className="field-hint">
+                        In stock now: <span className="font-medium">{currentStock}</span> (opening plus
+                        every receipt, less every issue)
+                      </p>
+                    )}
                   </div>
        
                   <div className="space-y-1">
@@ -302,7 +337,7 @@ const PageContent = () => {
                 </div>
               </CardContent>
               <CardFooter className="justify-end px-0 pb-0">
-                <Button onClick={handleSave}>Save</Button>
+                <Button onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
               </CardFooter>
             </Card>
           </TabsContent>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import Item from "../../../models/itemModel";
 import ItemLedger from "../../../models/itemLedgerModel";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
+import { recomputeItemBalances } from "@/lib/runningBalances.mjs";
 import { findNameClash, normalizeName } from "@/lib/uniqueName.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { UQC_DEFAULT, normalizeUqc } from "@/lib/uqc.mjs";
@@ -20,6 +21,7 @@ async function handlePOST(req, auth) {
             }
 
             const previousName = existing.name;
+            const previousOpening = Number(existing.openingQuantity) || 0;
             const nextName = (itemData.name || "").trim() || previousName;
             const renamed = nextName !== previousName;
 
@@ -67,6 +69,14 @@ async function handlePOST(req, auth) {
                     { $set: { itemName: nextName } },
                     { session }
                 );
+            }
+
+            // The opening quantity is where every running figure starts, so
+            // changing it (or renaming the item onto its rows) rewrites them.
+            // Only then: a price edit must not rewrite the item's whole stock
+            // history. Same session: the edit and the figures commit together.
+            if (renamed || (Number(existing.openingQuantity) || 0) !== previousOpening) {
+                await recomputeItemBalances([nextName], session);
             }
 
             return existing;

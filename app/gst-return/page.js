@@ -3,6 +3,11 @@ import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'reac
 import { useCompany } from '@/context/CompanyContext';
 import { companyAddress } from '@/lib/company.mjs';
 import { GST_RETURNS } from '@/lib/gstReturns.mjs';
+import ReportUrlSync from '@/components/reports/ReportUrlSync';
+import { REPORT_QUERIES, parseReportQuery } from '@/lib/reportQuery.mjs';
+import { useSearchParams } from 'next/navigation';
+import { Notice } from '@/components/ui/notice';
+import { useReportDownload } from '@/components/reports/useReportDownload';
 
 export const dynamic = 'force-dynamic';
 
@@ -285,11 +290,22 @@ function TableRows({ tag, rows }) {
 
 function GstReturns() {
   const { company } = useCompany();
-  const period = useMemo(lastMonth, []);
+  const period = useMemo(() => lastMonth(), []);
 
-  const [view, setView] = useState('gstr1');
-  const [from, setFrom] = useState(period.from);
-  const [to, setTo] = useState(period.to);
+  // A shared link's filters, read BEFORE the first render and used as the
+  // initial state -- so the first fetch is already the link's report. Read in
+  // an effect instead, the page would fetch its defaults first and the two
+  // responses would race (lib/reportQuery.mjs validates every value; anything
+  // invalid or absent keeps the page's own default).
+  const searchParams = useSearchParams();
+  const [link] = useState(() => parseReportQuery(REPORT_QUERIES.gstReturn, searchParams).values);
+
+  const [view, setView] = useState(link.view ?? 'gstr1');
+  const [from, setFrom] = useState(link.from ?? period.from);
+  const [to, setTo] = useState(link.to ?? period.to);
+  // The query the sheet on screen was built for, so a download is never of a
+  // return the screen has not shown yet (a click mid-load, or a stale reply).
+  const [loadedFor, setLoadedFor] = useState('');
 
   const [sheet, setSheet] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -308,6 +324,7 @@ function GstReturns() {
         return;
       }
       setSheet(data);
+      setLoadedFor(`${view}|${from}|${to}`);
     } catch (err) {
       setError(err.message || 'Could not build the return.');
     } finally {
@@ -322,6 +339,22 @@ function GstReturns() {
   const chosen = GST_RETURNS.find((r) => r.key === view);
   const isEReturn = view === 'gstr1-ereturn';
 
+  // Downloads fetch first, so a refusal is a message here rather than a
+  // page of raw JSON in place of the app. lib/downloadFile.mjs.
+  const exporter = useReportDownload();
+
+  /**
+   * The return as a spreadsheet, from the SAME route and query as the screen.
+   * GSTR-1 is ten tables, so it downloads as a workbook only; GSTR-3 and
+   * GSTR-3B are one table each and come as CSV too (the route enforces both).
+   */
+  const downloadSheet = (format) => {
+    const qs = new URLSearchParams({ view, from, to, format });
+    exporter.download(`/api/gst-return?${qs.toString()}`);
+  };
+  const canExport =
+    !isEReturn && Boolean(sheet?.sections) && !busy && loadedFor === `${view}|${from}|${to}`;
+
   const download = () => {
     if (!sheet?.json) return;
     const blob = new Blob([JSON.stringify(sheet.json, null, 2)], { type: 'application/json' });
@@ -335,6 +368,11 @@ function GstReturns() {
 
   return (
     <div className="page-shell-wide doc-sheet report-sheet">
+      <ReportUrlSync
+        schema={REPORT_QUERIES.gstReturn}
+        values={{ view, from, to }}
+        restore={false}
+      />
       <div className="doc-head">
         <p className="doc-org">{company?.name || ''}</p>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -393,15 +431,36 @@ function GstReturns() {
                 Download JSON
               </button>
             ) : (
-              <button type="button" className="btn btn-secondary" onClick={() => window.print()}>
-                Print
-              </button>
+              <>
+                <button type="button" className="btn btn-secondary" onClick={() => window.print()}>
+                  Print
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => downloadSheet('xlsx')}
+                  disabled={!canExport}
+                >
+                  Download Excel
+                </button>
+                {view !== 'gstr1' && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => downloadSheet('csv')}
+                    disabled={!canExport}
+                  >
+                    Download CSV
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
         <p className="field-hint mt-3">{chosen?.blurb}</p>
       </div>
 
+      <Notice notice={exporter.notice} onClose={exporter.notify.clear} />
       {error && (
         <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}

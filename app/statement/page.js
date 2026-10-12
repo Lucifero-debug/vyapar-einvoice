@@ -27,6 +27,8 @@ import { CompanyBrand, CompanyLogo } from '@/components/CompanyBrand';
 import { formatINR } from '@/lib/currency.mjs';
 import DateFilter from '@/components/reports/DateFilter';
 import StatementSearchParams from '@/components/StatementSearchParams';
+import ReportUrlSync from '@/components/reports/ReportUrlSync';
+import { REPORT_QUERIES } from '@/lib/reportQuery.mjs';
 import { periodText, samePeriod } from '@/lib/reportPeriods.mjs';
 import {
   MONTHLY_COLUMNS,
@@ -40,6 +42,8 @@ import {
   isStatementSide,
 } from '@/lib/statements.mjs';
 import { isPreset } from '@/lib/reportPeriods.mjs';
+import { Notice } from '@/components/ui/notice';
+import { useReportDownload } from '@/components/reports/useReportDownload';
 
 const PAGE_SIZE = 100;
 
@@ -118,12 +122,16 @@ function Statement() {
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const shown = rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 
+  // Downloads fetch first, so a refusal is a message here rather than a
+  // page of raw JSON in place of the app. lib/downloadFile.mjs.
+  const exporter = useReportDownload();
+
   const download = (format) => {
     const params = new URLSearchParams(query);
     params.set('format', format);
-    // A plain navigation, so the browser's own download handles the file and
-    // nothing is held in a Blob. Content-Disposition on the route names it.
-    window.location.href = `/api/statement?${params.toString()}`;
+    // Fetched, then handed to the browser (lib/downloadFile.mjs), so a
+    // refusal is a message here; Content-Disposition on the route names it.
+    exporter.download(`/api/statement?${params.toString()}`);
   };
 
   /**
@@ -161,6 +169,14 @@ function Statement() {
     <div className="page-shell-wide">
       {/* A deep link from the Reports hub, or a bookmark. */}
       <StatementSearchParams onValues={applyLink} />
+      {/* And back: the filters on screen are written to the URL, so the
+          statement can be bookmarked or sent as it stands. The reading stays
+          with StatementSearchParams above. */}
+      <ReportUrlSync
+        schema={REPORT_QUERIES.statement}
+        values={{ side, account, view, preset: period.preset, from: period.from, to: period.to }}
+        restore={false}
+      />
 
       {/* ── controls ─────────────────────────────────────────────── */}
       <div className="no-print">
@@ -280,6 +296,7 @@ function Statement() {
         </div>
       </div>
 
+      <Notice notice={exporter.notice} onClose={exporter.notify.clear} className='no-print mb-4' />
       {error && (
         <div className="no-print mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}

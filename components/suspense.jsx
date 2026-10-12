@@ -10,7 +10,6 @@ export default function InvoiceSearchParams({ onValue,onReady }) {
     if (value && onValue){ onValue(value);
       onReady(true)
     }
-    console.log("value",value)
   }, [searchParams, onValue]);
 
   return null;

@@ -21,9 +21,11 @@ Read `PROJECT_CONTEXT.md` first. This assumes its section 6 rules.
 > material, production and stock vouchers, the account books, the financial
 > statements, production planning, bill-wise adjustment, staff management, the
 > billing-screen consolidation, the Sales/Purchase module reports, the GST
-> returns and the business dashboard all exist **only here**. Treat
-> `vyapaar-einvoice` as the live repo. `PROJECT_CONTEXT.md` is current;
-> nothing below has changed, but it is no longer the whole of what is built.
+> returns, the business dashboard, the master keyboard actions, the reporting
+> and export layer, customer and supplier statements, per-firm branding and the
+> invoice importer all exist **only here**. Treat `vyapaar-einvoice` as the live
+> repo. `PROJECT_CONTEXT.md` is current; nothing below has changed except where
+> this file says so, but it is no longer the whole of what is built.
 
 ---
 
@@ -31,9 +33,10 @@ Read `PROJECT_CONTEXT.md` first. This assumes its section 6 rules.
 
 Three things, and only the first two are not automatic.
 
-1. **Copy two files by hand** from `vyapaar` into `vyapaar-einvoice`:
-   `.env.local` and `backend/.env`. Remote tooling is not permitted to write
-   `.env` files, so they are the one thing missing from the copy.
+1. **Copy `.env.local` by hand** from `vyapaar` into `vyapaar-einvoice`.
+   Remote tooling is not permitted to write `.env` files, so it is the one
+   thing missing from the copy. (`backend/.env` used to be the second;
+   `backend/` is no longer used — `PROJECT_CONTEXT.md` §6.26.)
 
 2. **Add a new key** to `.env.local`:
 
@@ -136,7 +139,7 @@ firm printed the first firm's details.
 
 | File | What it does |
 |---|---|
-| `lib/company.mjs` | **Rewritten.** No hardcoded firm anywhere. `companyFrom()` (a record → the object documents read), `addressLines()`, `companyAddress()`, `profileProblems()`, `irpMissing()`, `canReportToIrp()`, `PROFILE_FIELDS`, `BLANK_COMPANY` |
+| `lib/company.mjs` | **Rewritten.** No hardcoded firm anywhere. `companyFrom()` (a record → the object documents read), `addressLines()`, `companyAddress()`, `profileProblems()`, `irpMissing()`, `canReportToIrp()`, `PROFILE_FIELDS`, `BLANK_COMPANY`. **Since extended:** `legalName` and `website` joined `PROFILE_FIELDS`, and `companyFrom()` now also returns `logo` (through `lib/companyLogo.mjs`'s validator) and `invoicePrefs` (through `lib/invoicePrefs.mjs`'s defaults). `COMPANY_LOGO` is **gone** — it was the last shared-branding constant; see `PROJECT_CONTEXT.md` §6.25 |
 | `app/company/page.js` | The Business profile form, built from `PROFILE_FIELDS` |
 | `app/api/company/route.js` | `GET` — the firm's details. Readable by **every** role |
 | `app/api/company-update/route.js` | `POST` — owner only |
@@ -145,7 +148,7 @@ firm printed the first firm's details.
 | `components/InvoiceDocument.jsx` | Letterhead from `useCompany()`; address lines added (a tax invoice needs the supplier's address, and so does the IRP) |
 | `app/invoice`, `app/ledger`, `app/item-ledger`, `app/voucher` | All read `useCompany()` |
 | `app/api/send-email/route.js` | The sender name is now the firm's, built per request from `auth.company.name` rather than once at import |
-| `lib/roles.mjs` | `["/api/company", null]`, `["/api/company-update", "setup:write"]`, `["/company", "setup:write"]` |
+| `lib/roles.mjs` | `["/api/company", null]`, `["/api/company-update", "setup:write"]`, `["/api/company-logo", "setup:write"]`, `["/company", "setup:write"]` |
 
 **Why GET is readable by everyone.** A biller cannot print a bill without the
 letterhead. Permissions in this project are per *path*, not per method, which
@@ -169,6 +172,11 @@ is why the read and the write are two routes — the same reason
 `companyFrom()` upper-cases the GSTIN and IFSC and pads the state code, so what
 is validated, what is stored and what is printed are the same string whatever
 the owner's keyboard did.
+
+A `website`, if present, must carry `http://` or `https://`. It is **refused**
+rather than silently prefixed: guessing `https` for a host that may only serve
+`http` puts a dead link on a bill, which is worse than a typo caught while
+typing.
 
 **Blank prints as nothing.** An empty line on a bill is honest; a placeholder
 that looks like a real GSTIN is not.

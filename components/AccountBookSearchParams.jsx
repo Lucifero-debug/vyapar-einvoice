@@ -26,15 +26,22 @@ export default function AccountBookSearchParams({ onValues }) {
 
   useEffect(() => {
     if (done.current) return;
+    // Once, whatever the URL held. The page now writes its filters back to the
+    // URL (components/reports/ReportUrlSync.jsx); a reader still waiting for
+    // values would pick up that write-back and apply it as if it were a link.
+    done.current = true;
     const values = {
       kind: searchParams.get('kind') || '',
       account: searchParams.get('account') || '',
       group: searchParams.get('group') || '',
+      // Written back by components/reports/ReportUrlSync.jsx, so a preset
+      // survives a shared link as a preset rather than as frozen dates.
+      preset: searchParams.get('preset') || '',
+      daywise: searchParams.get('daywise') || '',
       from: searchParams.get('from') || '',
       to: searchParams.get('to') || '',
     };
     if (Object.values(values).some(Boolean)) {
-      done.current = true;
       onValues?.(values);
     }
   }, [searchParams, onValues]);

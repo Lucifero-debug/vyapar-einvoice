@@ -1,6 +1,7 @@
 'use client'
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useCompany } from '@/context/CompanyContext';
+import { CompanyLogo } from '@/components/CompanyBrand';
 import {
   BLANK_COMPANY,
   FIELD_NAMES,
@@ -14,6 +15,15 @@ import {
   EINVOICE_DEFAULT_ENV,
   credentialProblems,
 } from '@/lib/einvoiceCredentials.mjs';
+import { PAPER_SIZES, PREF_FIELDS, prefProblems, prefsFrom } from '@/lib/invoicePrefs.mjs';
+import {
+  LOGO_ACCEPT,
+  LOGO_FORMAT_WORDS,
+  MAX_LOGO_BYTES,
+  logoBytesOf,
+  logoProblem,
+  logoSrc,
+} from '@/lib/companyLogo.mjs';
 
 /**
  * The firm's own details — what prints on every document it issues.

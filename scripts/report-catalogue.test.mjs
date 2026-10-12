@@ -32,6 +32,7 @@ import {
   reportsIn,
 } from "../lib/reportCatalogue.mjs";
 import { ROLES, canAccessPath, permissionForPath } from "../lib/roles.mjs";
+import { REPORT_QUERIES } from "../lib/reportQuery.mjs";
 
 let passed = 0;
 const test = (name, fn) => {
@@ -140,9 +141,31 @@ test("every preselecting query is one the target page actually reads", () => {
     "/statement": "../components/StatementSearchParams.jsx",
     "/account-book": "../components/AccountBookSearchParams.jsx",
   };
+  // Pages that read their filters through components/reports/ReportUrlSync.jsx
+  // declare them as a schema in lib/reportQuery.mjs instead of a reader of
+  // their own; a key is read when the schema names it.
+  const schemas = {
+    "/sales-report": REPORT_QUERIES.salesReport,
+    "/gst-return": REPORT_QUERIES.gstReturn,
+    "/financials": REPORT_QUERIES.financials,
+    "/order-report": REPORT_QUERIES.orderReport,
+    "/stock-report": REPORT_QUERIES.stockReport,
+  };
   for (const report of REPORTS) {
     const keys = Object.keys(report.query || {});
     if (!keys.length) continue;
+    if (schemas[report.path]) {
+      const page = fs.readFileSync(new URL(`../app${report.path}/page.js`, import.meta.url), "utf8");
+      assert.match(page, /<ReportUrlSync/, `${report.path} does not render ReportUrlSync`);
+      for (const key of keys) {
+        const field = schemas[report.path][key];
+        assert.ok(field, `${report.path}'s schema does not read ?${key}`);
+        if (field.type === "enum") {
+          assert.ok(field.values.includes(report.query[key]), `?${key}=${report.query[key]} is not a value ${report.path} accepts`);
+        }
+      }
+      continue;
+    }
     const reader = readers[report.path];
     assert.ok(reader, `${report.path} is given a query but has no params reader`);
     const src = fs.readFileSync(new URL(reader, import.meta.url), "utf8");

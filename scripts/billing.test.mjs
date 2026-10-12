@@ -337,21 +337,44 @@ test("QUIRK: a cost of zero falls through to the sale price", () => {
   assert.equal(recalcItem({ quantity: 1 }).cost, 0, "neither one present");
 });
 
-test("QUIRK: an HSN group takes the rate of its first line", () => {
-  // A real bug, preserved. Two items under one HSN at different rates: the
-  // amounts are right, the printed rate is the first line's. Fixing it would
-  // change what prints on a GST return, so it is reported, not repaired.
+test("FIXED: one HSN at two rates is two groups, each with its own rate", () => {
+  // Was the first-rate-wins quirk: both lines landed in one "7308" group that
+  // claimed 5% while carrying 23 of tax. Now one group per code AND rate,
+  // from lib/hsnTotals.mjs, the grouping the print and the returns use.
   const grouped = buildHsnTotals([
-    { hsn: "7308", gstRate: 5, gstAmount: 5, total: 105 },
-    { hsn: "7308", gstRate: 18, gstAmount: 18, total: 118 },
+    { hsn: "7308", gstRate: 5, taxableAmount: 100, gstAmount: 5, total: 105 },
+    { hsn: "7308", gstRate: 18, taxableAmount: 100, gstAmount: 18, total: 118 },
   ]);
-  assert.equal(grouped["7308"].gstRate, 5, "first rate wins -- documented");
-  assert.equal(grouped["7308"].gstAmount, 23, "the amounts are still correct");
-  assert.equal(grouped["7308"].total, 223);
+  assert.deepEqual(Object.keys(grouped), ["7308@5", "7308@18"]);
+  assert.equal(grouped["7308@5"].hsn, "7308");
+  assert.equal(grouped["7308@5"].gstRate, 5);
+  assert.equal(grouped["7308@5"].gstAmount, 5);
+  assert.equal(grouped["7308@18"].gstRate, 18);
+  assert.equal(grouped["7308@18"].gstAmount, 18);
+  assert.equal(grouped["7308@18"].total, 118);
+  // And what is stored names each code once per rate.
+  assert.deepEqual(hsnTotalsArray(grouped), [
+    { hsn: "7308", gstRate: 5, amount: 5, total: 105 },
+    { hsn: "7308", gstRate: 18, amount: 18, total: 118 },
+  ]);
+});
+
+test("an HSN group is rounded once, not line by line, and not left raw", () => {
+  // recalcItem keeps its dust: three lines of 1/3 of a rupee's tax.
+  const lines = [1, 2, 3].map(() =>
+    recalcItem({ hsn: "4901", cost: 10 / 3, quantity: 1, gstRate: 5 })
+  );
+  const g = buildHsnTotals(lines)["4901@5"];
+  assert.equal(g.taxable, 10, "3.333.. x 3 is 10.00, not 9.99");
+  assert.equal(g.gstAmount, 0.5);
+  assert.equal(g.total, 10.5);
 });
 
 test("QUIRK: a line with no HSN groups under the string N/A", () => {
-  assert.deepEqual(Object.keys(buildHsnTotals([{ gstRate: 5, gstAmount: 1, total: 2 }])), ["N/A"]);
+  assert.deepEqual(
+    Object.values(buildHsnTotals([{ gstRate: 5, gstAmount: 1, total: 2 }])).map((g) => g.hsn),
+    ["N/A"]
+  );
 });
 
 test("the HSN array renames gstAmount to amount", () => {

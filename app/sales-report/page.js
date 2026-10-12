@@ -2,6 +2,9 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useCompany } from '@/context/CompanyContext';
 import { companyAddress } from '@/lib/company.mjs';
+import ReportUrlSync from '@/components/reports/ReportUrlSync';
+import { REPORT_QUERIES, parseReportQuery } from '@/lib/reportQuery.mjs';
+import { useSearchParams } from 'next/navigation';
 import { toCsv } from '@/lib/orderReports.mjs';
 import {
   BOOK_GRAINS,
@@ -16,6 +19,8 @@ import {
   reportName,
   scopeName,
 } from '@/lib/salesReports.mjs';
+import { Notice } from '@/components/ui/notice';
+import { useReportDownload } from '@/components/reports/useReportDownload';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,17 +77,29 @@ const monthBounds = () => {
 
 function SalesReports() {
   const { company } = useCompany();
-  const bounds = useMemo(monthBounds, []);
+  const bounds = useMemo(() => monthBounds(), []);
 
-  const [side, setSide] = useState('Sale');
-  const [view, setView] = useState('book');
-  const [scope, setScope] = useState(DEFAULT_SCOPE);
-  const [grain, setGrain] = useState(DEFAULT_GRAIN);
+  // A shared link's filters, read BEFORE the first render and used as the
+  // initial state -- so the first fetch is already the link's report. Read in
+  // an effect instead, the page would fetch its defaults first and the two
+  // responses would race (lib/reportQuery.mjs validates every value; anything
+  // invalid or absent keeps the page's own default).
+  const searchParams = useSearchParams();
+  const [link] = useState(() => parseReportQuery(REPORT_QUERIES.salesReport, searchParams).values);
+
+  const [side, setSide] = useState(link.side ?? 'Sale');
+  const [view, setView] = useState(link.view ?? 'book');
+  const [scope, setScope] = useState(link.scope ?? DEFAULT_SCOPE);
+  const [grain, setGrain] = useState(link.grain ?? DEFAULT_GRAIN);
   // Set only by clicking a month row, and cleared by every other control:
   // it is a position inside the book, not a filter the user set.
-  const [zoomMonth, setZoomMonth] = useState('');
-  const [from, setFrom] = useState(bounds.from);
-  const [to, setTo] = useState(bounds.to);
+  // A month zoom only means anything on the book's date grain, which is how
+  // the link was written.
+  const [zoomMonth, setZoomMonth] = useState(() =>
+    link.month && (link.view ?? 'book') === 'book' && link.grain === 'date' ? link.month : ''
+  );
+  const [from, setFrom] = useState(link.from ?? bounds.from);
+  const [to, setTo] = useState(link.to ?? bounds.to);
 
   const [rows, setRows] = useState([]);
   const [totals, setTotals] = useState(null);
@@ -90,12 +107,18 @@ function SalesReports() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  /** The route's query for what is on screen -- the fetch and the downloads share it. */
+  const reportQuery = useCallback(() => {
+    const qs = new URLSearchParams({ view, side, from, to, scope, grain });
+    if (zoomMonth) qs.set('month', zoomMonth);
+    return qs;
+  }, [view, side, from, to, scope, grain, zoomMonth]);
+
   const load = useCallback(async () => {
     setBusy(true);
     setError('');
     try {
-      const qs = new URLSearchParams({ view, side, from, to, scope, grain });
-      if (zoomMonth) qs.set('month', zoomMonth);
+      const qs = reportQuery();
       const res = await fetch(`/api/sales-report?${qs.toString()}`);
       const data = await res.json();
       if (!data.success) {
@@ -112,11 +135,25 @@ function SalesReports() {
     } finally {
       setBusy(false);
     }
-  }, [view, side, from, to, scope, grain, zoomMonth]);
+  }, [reportQuery]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  /**
+   * The workbook, from the SAME route and the same query as the rows on
+   * screen, fetched first so a refusal is a message here rather than a page
+   * of raw JSON in place of the app (lib/downloadFile.mjs). Content-
+   * Disposition on the route names the file.
+   */
+
+  const exporter = useReportDownload();
+  const downloadXlsx = () => {
+    const qs = reportQuery();
+    qs.set('format', 'xlsx');
+    exporter.download(`/api/sales-report?${qs.toString()}`);
+  };
 
   const title = reportName(view, side);
   const isPeriod = view === 'book' && grain !== 'document';
@@ -147,6 +184,11 @@ function SalesReports() {
 
   return (
     <div className="page-shell-wide doc-sheet report-sheet">
+      <ReportUrlSync
+        schema={REPORT_QUERIES.salesReport}
+        values={{ side, view, scope, grain, month: zoomMonth, from, to }}
+        restore={false}
+      />
       <div className="doc-head">
         <p className="doc-org">{company?.name || ''}</p>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -256,10 +298,19 @@ function SalesReports() {
             >
               Download CSV
             </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={downloadXlsx}
+              disabled={busy || !rows.length}
+            >
+              Download Excel
+            </button>
           </div>
         </div>
       </div>
 
+      <Notice notice={exporter.notice} onClose={exporter.notify.clear} />
       {error && (
         <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}

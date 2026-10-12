@@ -1,8 +1,9 @@
 /**
  * Stamp `kind: "FR"` onto the stock vouchers written before kinds existed.
  *
- *     node scripts/backfill-stock-kind.mjs            # say what would change
- *     node scripts/backfill-stock-kind.mjs --apply    # change it
+ *     node scripts/backfill-stock-kind.mjs                 # report only -- reads, changes nothing
+ *     node scripts/backfill-stock-kind.mjs --apply         # back up, then stamp
+ *     node scripts/backfill-stock-kind.mjs --apply --yes   # without the typed confirmation
  *
  *
  * WHY IT HAS TO RUN
@@ -20,50 +21,140 @@
  * allow both -- two production entries sharing a number, each writing stock
  * rows under "PRD-5", the second silently deleting the first's.
  *
- * The counter guards against reaching that number again (getNextProductionNo
- * nudges itself past the highest existing entry, counting the unstamped rows
- * as Production), so this is a belt rather than a brace. It still has to run
- * before anybody edits an old entry by hand-typing its number.
+ * WHICH ROWS
+ * ----------
+ * Only rows whose `kind` is absent, null or "". A row that already carries a
+ * kind -- 'FR', 'IS' or 'RS' -- is never touched, so a rerun changes nothing
+ * and a goods issue can never be relabelled a production entry.
  *
- * Run it alongside `npm run sync:indexes`.
+ * BEFORE IT STAMPS
+ * ----------------
+ * It checks, per firm, that no docNo would then be held by two production
+ * entries (an unstamped row and an 'FR' row, or two unstamped rows). If one
+ * would, the (companyId, kind, docNo) index could not be built over the
+ * result, so it stops and names the rows by _id. Nothing is deleted or
+ * renumbered automatically.
+ *
+ * BACKUP AND ROLLBACK
+ * -------------------
+ * The _ids it stamps (with their firm and docNo) are written to
+ * backups/stock-kind-<timestamp>.json first. Undo:
+ *     db.productions.updateMany({ _id: { $in: [<ids>] } }, { $unset: { kind: "" } })
+ * `updatedAt` is not touched: the rows' history stays as it was.
+ *
+ * Run it BEFORE `npm run sync:indexes -- --apply`, which builds the
+ * (companyId, kind, docNo) index and retires the old (companyId, docNo) one.
  */
 
 import mongoose from "mongoose";
-import { connect } from "../lib/mongodb.js";
-import Production from "../models/productionModel.js";
-import { runAcrossAllTenants } from "../lib/tenantContext.mjs";
+import {
+  connectMaintenance,
+  confirmYes,
+  flags,
+  loadEnv,
+  quietMongoose,
+  writeBackup,
+} from "./_shared.mjs";
 import { DEFAULT_KIND } from "../lib/stockVoucher.mjs";
+import { kindCollisions, MISSING_KIND } from "../lib/stockKindBackfill.mjs";
 
-const apply = process.argv.includes("--apply");
+// Before any model is compiled: this script uses the raw collection only, so
+// no schema can build or change an index while it looks.
+quietMongoose(mongoose);
+
+const { apply, yes } = flags();
 
 const main = async () => {
-  await connect();
+  loadEnv();
+  if (!process.env.MONGO_URI) {
+    console.error("MONGO_URI is not set (looked in env, .env.local, .env).");
+    process.exitCode = 1;
+    return;
+  }
 
-  // Across every firm: this is a schema migration, not a request, so it is
-  // one of the few places the tenant scope is deliberately stood down.
-  await runAcrossAllTenants(async () => {
-    const missing = { $or: [{ kind: { $exists: false } }, { kind: null }, { kind: "" }] };
-    const count = await Production.countDocuments(missing);
+  await connectMaintenance(mongoose, process.env.MONGO_URI);
+  const db = mongoose.connection.db;
+  console.log(`\ndatabase : ${mongoose.connection.name}`);
+  console.log(`mode     : ${apply ? "APPLY -- rows will be stamped" : "report only -- nothing is changed"}\n`);
 
-    if (!count) {
-      console.log("Nothing to do: every stock voucher already carries a kind.");
-      return;
+  // Across every firm, through the raw driver: a schema migration, not a
+  // request, so no tenant scope -- and no model, so nothing is built.
+  const productions = db.collection("productions");
+  const exists = (await db.listCollections({ name: "productions" }).toArray()).length > 0;
+  if (!exists) {
+    console.log("No productions collection. Nothing to do.");
+    return;
+  }
+
+  const targets = await productions
+    .find(MISSING_KIND, { projection: { _id: 1, companyId: 1, docNo: 1, date: 1 } })
+    .toArray();
+
+  if (!targets.length) {
+    console.log("Nothing to do: every stock voucher already carries a kind.");
+    return;
+  }
+
+  const byFirm = new Map();
+  for (const t of targets) {
+    const firm = String(t.companyId ?? "(no firm)");
+    byFirm.set(firm, (byFirm.get(firm) || 0) + 1);
+  }
+  console.log(`${targets.length} stock voucher(s) carry no kind. All of them predate`);
+  console.log(`Goods Issued and Goods Received, so all of them are '${DEFAULT_KIND}'.\n`);
+  for (const [firm, n] of byFirm) console.log(`  firm ${firm}: ${n}`);
+  console.log("");
+
+  // Would (companyId, 'FR', docNo) be unique once they are stamped?
+  const existingFr = await productions
+    .find({ kind: DEFAULT_KIND }, { projection: { _id: 1, companyId: 1, docNo: 1 } })
+    .toArray();
+  const collisions = kindCollisions({ unstamped: targets, stamped: existingFr });
+  if (collisions.length) {
+    console.log(`BLOCKED -- ${collisions.length} production number(s) would be held twice in one firm:\n`);
+    for (const c of collisions.slice(0, 50)) {
+      console.log(`  firm ${c.companyId}  docNo ${c.docNo}  _id ${c.ids.join(", ")}`);
     }
+    if (collisions.length > 50) console.log(`  ... and ${collisions.length - 50} more`);
+    console.log("\nNothing was stamped. Renumber all but one of each pair through the app,");
+    console.log("then re-run. Nothing is deleted automatically.\n");
+    process.exitCode = 1;
+    return;
+  }
 
-    console.log(`${count} stock voucher(s) carry no kind. All of them predate`);
-    console.log(`Goods Issued and Goods Received, so all of them are '${DEFAULT_KIND}'.`);
+  const noFirm = targets.filter((t) => t.companyId === undefined || t.companyId === null).length;
+  if (noFirm) {
+    console.log(`WARNING: ${noFirm} of them carry no companyId -- invisible to the app.`);
+    console.log("They are stamped too, but belong to no firm until adopted.\n");
+  }
 
-    if (!apply) {
-      console.log("\nDry run. Re-run with --apply to stamp them.");
-      return;
-    }
+  if (!apply) {
+    console.log("Report only. Re-run with --apply to stamp them (after a database backup).\n");
+    return;
+  }
 
-    const result = await Production.updateMany(missing, { $set: { kind: DEFAULT_KIND } });
-    console.log(`\nStamped ${result.modifiedCount} of ${count}.`);
-
-    const left = await Production.countDocuments(missing);
-    console.log(left ? `${left} still unstamped -- investigate.` : "None left.");
+  const backupPath = writeBackup("stock-kind", {
+    database: mongoose.connection.name,
+    setTo: DEFAULT_KIND,
+    rows: targets.map((t) => ({ _id: String(t._id), companyId: String(t.companyId ?? ""), docNo: t.docNo })),
   });
+  console.log(`Backup written to ${backupPath}`);
+
+  if (!(await confirmYes(`\nStamp ${targets.length} row(s) with kind '${DEFAULT_KIND}'? Type yes: `, yes))) {
+    console.log("Nothing was changed.\n");
+    return;
+  }
+
+  // By _id, AND still unstamped: a row that gained a kind since it was read
+  // (somebody edited it) is not overwritten.
+  const result = await productions.updateMany(
+    { _id: { $in: targets.map((t) => t._id) }, ...MISSING_KIND },
+    { $set: { kind: DEFAULT_KIND } }
+  );
+  console.log(`\nStamped ${result.modifiedCount} of ${targets.length}.`);
+
+  const left = await productions.countDocuments(MISSING_KIND);
+  console.log(left ? `${left} still unstamped (written since the read?) -- re-run.` : "None left.");
 };
 
 main()

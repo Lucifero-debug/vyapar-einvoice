@@ -328,6 +328,43 @@ function Dashboard() {
   const openLedger = (id) => id && router.push(`/ledger?customerId=${encodeURIComponent(id)}`);
   const openItem = (id) => id && router.push(`/item-ledger?itemId=${encodeURIComponent(id)}`);
 
+  /**
+   * Mark a low-stock alert as seen. It stays listed while the item is short;
+   * it only stops counting as new -- and if the shortage gets worse it is new
+   * again (lib/stockAlerts.mjs).
+   */
+  const acknowledge = async (id) => {
+    try {
+      const res = await fetch('/api/stock-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!body.success) return;
+      setData((current) => {
+        if (!current?.stock) return current;
+        const wasNew = current.stock.rows.some((r) => r.alert?.id === id && r.alert?.isNew);
+        const rows = current.stock.rows.map((r) =>
+          r.alert?.id === id ? { ...r, alert: body.alert } : r
+        );
+        // Counted down rather than recounted: the table shows the first fifty
+        // rows, and the count is over every open alert.
+        const unseen = Math.max(0, (current.stock.alertCounts?.unseen || 0) - (wasNew ? 1 : 0));
+        return {
+          ...current,
+          stock: {
+            ...current.stock,
+            rows,
+            alertCounts: { ...(current.stock.alertCounts || {}), unseen },
+          },
+        };
+      });
+    } catch {
+      // Nothing to undo: the alert simply stays new.
+    }
+  };
+
   return (
     <div className="page-shell-wide">
       <div className="page-header">
@@ -469,6 +506,9 @@ function Dashboard() {
             <div className="panel-head">
               <h2 className="panel-title">Stock to reorder</h2>
               <span className="chip">As at today</span>
+              {data.stock.alertCounts?.unseen > 0 && (
+                <span className="chip">{data.stock.alertCounts.unseen} new</span>
+              )}
             </div>
             <div className="panel-body">
               <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -500,6 +540,7 @@ function Dashboard() {
                         <th className="num">Minimum</th>
                         <th className="num">Short by</th>
                         <th>Why</th>
+                        <th>Since</th>
                         <th className="no-print" />
                       </tr>
                     </thead>
@@ -514,8 +555,27 @@ function Dashboard() {
                           <td className="num">{r.shortfall === null ? '—' : qty(r.shortfall)}</td>
                           <td>
                             <span className="chip">{STOCK_REASON_LABELS[r.reason]}</span>
+                            {r.alert?.isNew && <span className="chip ml-1">New</span>}
+                          </td>
+                          {/* When this shortage was first recorded -- the stored
+                              alert, which is raised once and kept until the
+                              stock recovers (lib/stockAlerts.mjs). */}
+                          <td className="text-xs">
+                            {r.alert?.raisedAt ? new Date(r.alert.raisedAt).toLocaleDateString('en-IN') : '—'}
+                            {r.alert?.acknowledgedBy && (
+                              <span className="block text-muted-foreground">Seen by {r.alert.acknowledgedBy}</span>
+                            )}
                           </td>
                           <td className="no-print">
+                            {r.alert?.isNew && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => acknowledge(r.alert.id)}
+                              >
+                                Mark seen
+                              </button>
+                            )}
                             {r.id ? (
                               <button
                                 type="button"

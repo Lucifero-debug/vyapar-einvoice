@@ -8,7 +8,6 @@ export default function ItemLedgerSearchParams({ onValue }) {
   useEffect(() => {
     const value = searchParams.get('itemId');
     if (value && onValue) onValue(value);
-    console.log("JHULA",value)
   }, [searchParams, onValue]);
 
   return null;

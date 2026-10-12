@@ -6,6 +6,9 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import { useSaleOptions } from '@/context/SaleOptionContext';
 import { useCompany } from '@/context/CompanyContext';
+import EmailInvoiceDialog from '@/components/EmailInvoiceDialog';
+import { sentSummary } from '@/lib/invoiceEmail.mjs';
+import { Notice, useNotice } from '@/components/ui/notice';
 
 const PageContent = () => {
     // The firm whose documents these are -- never a hardcoded one.
@@ -75,10 +78,16 @@ const generatePDF = async (contentRef) => {
 
 
 const downloadPDF = async () => {
+  if (downloading) return;
+  setDownloading(true);
+  notify.clear();
+  // Rendering the sheet to an image takes a second or two on a phone; the
+  // button says so rather than looking dead.
   const pdfBase64 = await generatePDF(contentRef);
+  setDownloading(false);
 
   if (!pdfBase64) {
-    alert("Failed to generate PDF");
+    notify.error("Could not make the PDF. Use Print and choose \"Save as PDF\" instead.");
     return;
   }
 
@@ -91,49 +100,25 @@ const downloadPDF = async () => {
 };
 
 
-  const sendInvoice = async () => {
-    // The bill goes to the party it was raised against. This used to be
-    // hard-coded to one developer's gmail address, so every "email invoice"
-    // click sent the customer's bill to a stranger.
-    const recipient = (invoice?.customer?.email || '').trim();
-
-    if (!recipient) {
-      alert(
-        `No email address on file for ${invoice?.customer?.name || 'this customer'}.\n\n` +
-        `Add one under Customers, then try again.`
-      );
-      return;
-    }
-
-    const pdfBase64 = await generatePDF(contentRef);
-
-    if (!pdfBase64) {
-      alert("Failed to generate PDF");
-      return;
-    }
-
-    const response = await fetch("/api/send-email", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        toEmail: recipient,
-        subject: `Invoice ${invoice?.invoiceNo ?? ''} from ${company.name}`.trim(),
-        htmlContent: "<p>Please find your invoice attached.</p>",
-        pdfBase64: pdfBase64.split(",")[1],
-        fileName: `Invoice_${invoice?.invoiceNo ?? 'invoice'}.pdf`,
-      }),
-    });
-
-    // The route answers { success } — a 200 alone used to be read as "sent",
-    // which it was not when the provider rejected the message.
-    const result = await response.json().catch(() => ({}));
-
-    if (response.ok && result.success) {
-      alert(`Invoice emailed to ${recipient}.`);
-    } else {
-      alert(`Failed to send invoice.\n\n${result.error || 'Please try again.'}`);
-    }
-  };
+  /**
+   * Emailing the bill.
+   *
+   * WHAT THIS REPLACES. A `sendInvoice()` that was never rendered -- there was
+   * no button anywhere on this page, so the whole feature was unreachable --
+   * and that, finding no address on the bill, alerted "add one under
+   * Customers, then try again": a dead end in the middle of something else.
+   *
+   * The dialog offers the party's address, lets it be changed, and sends
+   * through `/api/send-email`, which loads the bill by its number and records
+   * the send on it. components/EmailInvoiceDialog.jsx and
+   * lib/invoiceEmail.mjs have the reasoning.
+   */
+  const [emailing, setEmailing] = useState(false);
+  const [notice, notify] = useNotice();
+  const [downloading, setDownloading] = useState(false);
+  // Appended locally after a send so the line below the bill updates without
+  // refetching the whole invoice.
+  const [justSent, setJustSent] = useState(null);
   
   /**
    * The invoice is READ BACK from the database, by number.
@@ -202,15 +187,46 @@ const downloadPDF = async () => {
 <InvoiceDocument ref={contentRef} invoice={invoice} isRollStationary={isRollStationary} />
       </div>
 
+      {/* When it was last emailed, and to whom. Nothing could answer that
+          before, because no send was recorded anywhere. */}
+      {(() => {
+        const summary = justSent
+          ? `Emailed to ${(justSent.sentTo || []).join(', ')} just now`
+          : sentSummary(invoice);
+        return summary ? (
+          <p className='no-print mt-4 px-4 text-center text-xs text-muted-foreground'>{summary}</p>
+        ) : null;
+      })()}
+
       {/* Button */}
+      <div className='no-print px-4'>
+        <Notice notice={notice} onClose={notify.clear} className='mx-auto mt-4 max-w-xl' />
+      </div>
       <div className='no-print sticky bottom-0 mt-6 flex flex-col items-center justify-center gap-2 border-t border-border bg-card/90 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur sm:flex-row sm:gap-3 sm:py-4'>
         <button onClick={() => window.print()} className='btn btn-secondary w-full sm:w-auto' type="button">
           Print
         </button>
-        <button onClick={downloadPDF} className='btn btn-primary w-full sm:w-auto' type="button">
-          Download Invoice
+        <button onClick={downloadPDF} className='btn btn-secondary w-full sm:w-auto' type="button" disabled={downloading} aria-busy={downloading}>
+          {downloading ? 'Preparing PDF…' : 'Download Invoice'}
+        </button>
+        <button
+          onClick={() => setEmailing(true)}
+          className='btn btn-primary w-full sm:w-auto'
+          type="button"
+        >
+          Email to Customer
         </button>
       </div>
+
+      {emailing && (
+        <EmailInvoiceDialog
+          invoice={invoice}
+          company={company}
+          makePdf={() => generatePDF(contentRef)}
+          onClose={() => setEmailing(false)}
+          onSent={(result) => setJustSent(result)}
+        />
+      )}
     </>
   );
 }

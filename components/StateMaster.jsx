@@ -8,6 +8,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 import { INDIAN_STATES, findStateByName, normalizeStateCode } from '@/lib/states.mjs';
 
 /**
@@ -21,9 +23,11 @@ import { INDIAN_STATES, findStateByName, normalizeStateCode } from '@/lib/states
 const StateMaster = ({ open, onClose, selected }) => {
   const [form, setForm] = useState({ name: '', code: '' });
   const [saving, setSaving] = useState(false);
+  const [notice, notify] = useNotice();
   const isEditing = Boolean(selected?._id || selected?.id);
 
   useEffect(() => {
+    notify.clear();
     if (!open) {
       setForm({ name: '', code: '' });
       return;
@@ -32,7 +36,7 @@ const StateMaster = ({ open, onClose, selected }) => {
       name: selected?.name || '',
       code: normalizeStateCode(selected?.code) || '',
     });
-  }, [open, selected]);
+  }, [open, selected, notify]);
 
   /** Typing a state we know fills its code, unless one is already entered. */
   const onName = (name) => {
@@ -49,8 +53,8 @@ const StateMaster = ({ open, onClose, selected }) => {
     const name = form.name.trim();
     const code = normalizeStateCode(form.code);
 
-    if (!name) { alert('Please enter a state name.'); return; }
-    if (!code) { alert('Please enter a two-digit GST state code, e.g. 07.'); return; }
+    if (!name) { notify.error('Please enter a state name.'); return; }
+    if (!code) { notify.error('Please enter a two-digit GST state code, e.g. 07.'); return; }
 
     setSaving(true);
     try {
@@ -59,15 +63,15 @@ const StateMaster = ({ open, onClose, selected }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: selected?._id || selected?.id, name, code }),
       });
-      const result = await res.json();
-      if (result.success) {
+      const { ok, body: result, message } = await readResponse(res);
+      if (ok && result.success) {
         onClose(true);
       } else {
-        alert(result.error || result.message || 'Could not save the state.');
+        notify.error(`The state was not saved. ${message}`);
       }
     } catch (err) {
       console.error('Error saving state:', err);
-      alert('Error saving the state.');
+      notify.error(`The state was not saved. ${NETWORK_ERROR}`);
     } finally {
       setSaving(false);
     }
@@ -114,6 +118,7 @@ const StateMaster = ({ open, onClose, selected }) => {
           known state fills it in for you.
         </p>
 
+        <Notice notice={notice} onClose={notify.clear} className='mb-0' />
         <div className="flex items-center justify-end gap-2 pt-1">
           <button type="button" className="btn btn-secondary" onClick={() => onClose(false)}>
             Cancel

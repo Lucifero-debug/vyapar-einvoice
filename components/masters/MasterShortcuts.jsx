@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import QuickMaster from '@/components/billing/QuickMaster';
 import useMasterActions from '@/components/masters/useMasterActions';
 import { isTypingTarget, shortcutFor } from '@/lib/billingKeys.mjs';
@@ -29,8 +29,11 @@ export default function MasterShortcuts({ lists = {}, onChanged }) {
   // Held in a ref so the listener installs once rather than being torn down
   // and rebuilt on every render -- a listener that re-registers on each
   // keystroke loses keys pressed during the gap.
+  // Updated after each commit, not during render (see useBillingKeys).
   const latest = useRef(masters);
-  latest.current = masters;
+  useLayoutEffect(() => {
+    latest.current = masters;
+  });
 
   useEffect(() => {
     const onKeyDown = (event) => {

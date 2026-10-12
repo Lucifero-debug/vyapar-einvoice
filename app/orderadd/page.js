@@ -15,6 +15,7 @@ import {
   roundQty,
   trim,
 } from '@/lib/orderStatus.mjs';
+import { istToday } from '@/lib/istDate.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +40,8 @@ export const dynamic = 'force-dynamic';
  * assume it is broken.
  */
 
-const todayISO = () => new Date().toISOString().substring(0, 10);
+// Today in India, not in UTC (which is yesterday until 05:30 IST).
+const todayISO = () => istToday();
 const asISO = (value) => (value ? new Date(value).toISOString().substring(0, 10) : '');
 
 const blankLine = () => ({

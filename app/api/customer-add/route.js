@@ -4,6 +4,7 @@ import Customer from '../../../models/custModel'
 import { toSigned, modeOf } from '@/lib/balance.mjs'
 import { findNameClash, normalizeName } from "@/lib/uniqueName.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import { headNameProblem } from "@/lib/invoiceGl.mjs";
 
 
 async function handlePOST(req, auth) {
@@ -18,6 +19,12 @@ async function handlePOST(req, auth) {
         const name = (customerData.name || "").trim();
         if (!name) {
             return NextResponse.json({ error: "Please enter a name." }, { status: 400 });
+        }
+
+        // A party may not take a ledger head's name (lib/invoiceGl.mjs).
+        const headProblem = headNameProblem({ name, group: customerData.group });
+        if (headProblem) {
+            return NextResponse.json({ error: headProblem }, { status: 400 });
         }
 
         const clash = await findNameClash(Customer, "name", name);

@@ -175,8 +175,12 @@ test("the plan never touches anything but hsnTotals", () => {
 /* ------------------------------ the summary the print page renders -------- */
 
 test("the printed summary and the stored rows come from one derivation", () => {
-  const summary = buildHsnSummary([LINE]);
+  // Keyed by code AND rate now (lib/hsnTotals.mjs `hsnKey`); the row
+  // carries its own `hsn`.
+  const [printed] = Object.values(buildHsnSummary([LINE]));
+  const summary = { [printed.hsn]: printed };
   const [stored] = hsnTotalsForStorage([LINE]);
+  assert.equal(stored.hsn, printed.hsn);
   assert.equal(summary["1210"].taxable, round2(stored.total - stored.amount));
   assert.equal(summary["1210"].gstAmount, stored.amount);
   assert.equal(summary["1210"].total, stored.total);

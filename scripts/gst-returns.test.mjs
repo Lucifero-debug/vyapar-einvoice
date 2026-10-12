@@ -179,6 +179,9 @@ const SMALL_OTHER_RATE = invoice({
 });
 
 const ALL = [invoice(), BIG_B2CL, SMALL_B2CS, CDNR_NOTE, CDNUR_NOTE];
+
+/** A credit note to an unregistered buyer against a B2CL-sized inter-State supply: table 10. */
+const BIG_NOTE = { ...CDNUR_NOTE, invoiceNo: 8, taxType: "central", stateCode: "27", finalAmount: 400000 };
 const PERIOD = { from: "2026-06-01", to: "2026-06-30" };
 
 console.log("\n--- the four returns Sigfa has ---");
@@ -212,7 +215,7 @@ test("GSTR-1 carries Sigfa's ten tables, in its numbering and its words", () => 
   // And its captions verbatim, threshold and all.
   assert.equal(
     GSTR1_SECTIONS[1].title,
-    "5. Inter-State Sale To Un-Reg. Persons Inv.Value Above Rs 2.5 Lakh (B2CL)"
+    "5. Inter-State Sale To Un-Reg. Persons Inv.Value Above Rs 1 Lakh (B2CL)"
   );
   assert.match(GSTR1_SECTIONS[3].title, /Net Of Debit And Credit Notes/);
 });
@@ -249,7 +252,10 @@ test("every sales document lands in exactly one table", () => {
   assert.equal(tableFor(BIG_B2CL), "B2CL");
   assert.equal(tableFor(SMALL_B2CS), "B2CS");
   assert.equal(tableFor(CDNR_NOTE), "CDNR");
-  assert.equal(tableFor(CDNUR_NOTE), "CDNUR");
+  // A small note to an unregistered buyer is netted into table 7; table 10
+  // takes only notes against B2CL (and export) supplies.
+  assert.equal(tableFor(CDNUR_NOTE), "B2CS");
+  assert.equal(tableFor(BIG_NOTE), "CDNUR");
   // Nothing falls through: whatever the invoice, a table is named.
   for (const inv of [{}, { customer: {} }, { return: true }, { taxType: "central" }]) {
     assert.ok(tableFor(inv), JSON.stringify(inv));
@@ -274,12 +280,20 @@ test("the inter-State test reads the stored taxType, not the states", () => {
   assert.doesNotMatch(src, /placeOfSupply\(/, "the return must not re-derive the supply type");
 });
 
-test("table 5 is above the limit, not at it", () => {
-  assert.equal(B2CL_THRESHOLD, 250000, "Sigfa's own caption says 2.5 lakh");
-  const at = { ...BIG_B2CL, finalAmount: 250000 };
-  const over = { ...BIG_B2CL, finalAmount: 250000.01 };
+test("table 5 is above the limit, not at it -- Rs 1 lakh from August 2024", () => {
+  // Notification 12/2024-CT cut it from Rs 2.5 lakh. Sigfa's caption, which
+  // this file copied, still said 2.5.
+  assert.equal(B2CL_THRESHOLD, 100000);
+  const at = { ...BIG_B2CL, finalAmount: 100000 };
+  const over = { ...BIG_B2CL, finalAmount: 100000.01 };
   assert.equal(tableFor(at), "B2CS", "exactly at the limit is not above it");
   assert.equal(tableFor(over), "B2CL");
+  assert.equal(tableFor({ ...BIG_B2CL, finalAmount: 177000 }), "B2CL", "the case that was summarised");
+  // A bill from before the change keeps the limit it was raised under.
+  const old = { ...BIG_B2CL, date: "2024-07-31", finalAmount: 200000 };
+  assert.equal(tableFor(old), "B2CS");
+  assert.equal(tableFor({ ...old, date: "2024-08-01" }), "B2CL");
+  assert.equal(tableFor({ ...old, finalAmount: 250000.01 }), "B2CL");
   // And an intra-State bill of any size is never B2CL.
   assert.equal(tableFor({ ...BIG_B2CL, taxType: "local" }), "B2CS");
 });
@@ -471,26 +485,27 @@ test("table 7 is net of credit notes, which is what its heading says", () => {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].txval, 400, "500 less the 100 credited");
   assert.equal(round(rows[0].camt + rows[0].samt), 72, "90 less 18");
-  // The same note is itemised in table 10. That is the portal asking for the
-  // same document two ways, not one document counted twice.
-  assert.equal(cdnurRows(documentsIn({ invoices: [CDNUR_NOTE], ...PERIOD })).length, 1);
+  // ...and is NOT listed again in table 10: the portal takes no "B2CS"
+  // notes there, and listing it too filed the same return twice.
+  assert.equal(cdnurRows(documentsIn({ invoices: [CDNUR_NOTE], ...PERIOD })).length, 0);
 });
 
 test("a B2CL-sized credit note nets nothing off table 7", () => {
   // It never belonged to table 7, so subtracting it there would make the
   // table negative against sales it does not cover.
-  const big = { ...CDNUR_NOTE, invoiceNo: 8, taxType: "central", stateCode: "27", finalAmount: 400000 };
+  const big = BIG_NOTE;
   const rows = b2csRows(documentsIn({ invoices: [SMALL_B2CS, big], ...PERIOD }));
   assert.equal(rows.length, 1);
   assert.equal(rows[0].txval, 500, "untouched");
   // And it is still listed in table 10, typed as B2CL.
   const ten = cdnurRows(documentsIn({ invoices: [big], ...PERIOD }));
   assert.equal(ten[0].typ, "B2CL");
-  assert.equal(cdnurRows(documentsIn({ invoices: [CDNUR_NOTE], ...PERIOD }))[0].typ, "B2CS");
+  // Every row of table 10 is a type the portal accepts.
+  assert.ok(cdnurRows(documentsIn({ invoices: [big, CDNUR_NOTE], ...PERIOD })).every((r) => r.typ === "B2CL"));
 });
 
 test("tables 9 and 10 file credit notes, not invoices", () => {
-  const docs = documentsIn({ invoices: ALL, ...PERIOD });
+  const docs = documentsIn({ invoices: [...ALL, BIG_NOTE], ...PERIOD });
   const nine = cdnrBlocks(docs);
   assert.equal(nine.length, 1);
   assert.equal(nine[0].nt.length, 1);
@@ -498,8 +513,8 @@ test("tables 9 and 10 file credit notes, not invoices", () => {
   assert.equal(nine[0].nt[0].p_gst, "N", "raised under GST, not before it");
   assert.equal(nine[0].nt[0].nt_num, "4");
   const ten = cdnurRows(docs);
-  assert.equal(ten.length, 1);
-  assert.equal(ten[0].nt_num, "5");
+  assert.equal(ten.length, 1, "the small note is in table 7, not here");
+  assert.equal(ten[0].nt_num, "8");
 });
 
 test("table 12 is per HSN AND per rate, off the lines", () => {
@@ -619,7 +634,7 @@ test("the GSTR-1 sheet shows every table, filled or not", () => {
   assert.equal(byTag.B2CL.rows.length, 1);
   assert.equal(byTag.B2CS.rows.length, 1);
   assert.equal(byTag.CDNR.rows.length, 1);
-  assert.equal(byTag.CDNUR.rows.length, 1);
+  assert.equal(byTag.CDNUR.rows.length, 0, "the one unregistered note is small: table 7");
   assert.equal(byTag.HSN.rows.length, 1);
   // The three that cannot be built carry no rows AND a reason.
   for (const tag of ["EXP", "EXEMP", "AT"]) {
@@ -759,7 +774,7 @@ console.log("\n--- the e-return ---");
 
 test("the JSON carries the portal's own keys", () => {
   // The firm's own GSTIN typed in lower case, because it is stored as typed.
-  const json = gstr1Json({ company: { gstin: "07aaaca1111a1z5" }, invoices: ALL, ...PERIOD });
+  const json = gstr1Json({ company: { gstin: "07aaaca1111a1z5" }, invoices: [...ALL, BIG_NOTE], ...PERIOD });
   assert.equal(json.gstin, "07AAACA1111A1Z5", "the portal rejects lower case");
   assert.equal(json.fp, "062026");
   assert.deepEqual(
@@ -801,6 +816,19 @@ test("the firm's GSTIN is required, and said so before uploading", () => {
   assert.match(eReturnProblem({ company: {}, from: "2026-06-01" }), /GSTIN/);
   assert.match(eReturnProblem({ company: { gstin: "07AAACA1111A1Z5" } }), /period/);
   assert.equal(eReturnProblem({ company: { gstin: "07AAACA1111A1Z5" }, from: "2026-06-01" }), null);
+  // One file, one tax period: exactly a calendar month.
+  const firm = { gstin: "07AAACA1111A1Z5" };
+  assert.equal(eReturnProblem({ company: firm, from: "2026-06-01", to: "2026-06-30" }), null);
+  assert.equal(eReturnProblem({ company: firm, from: "2028-02-01", to: "2028-02-29" }), null, "a leap February");
+  for (const [from, to] of [
+    ["2026-04-01", "2026-06-30"], // a quarter filed as April
+    ["2026-06-01", "2026-06-15"], // half a month
+    ["2026-06-02", "2026-06-30"],
+    ["2026-06-01", "2026-07-31"],
+    ["2026-06-01", "nonsense"],
+  ]) {
+    assert.match(eReturnProblem({ company: firm, from, to }), /month|dates/, `${from}..${to}`);
+  }
 });
 
 test("the file names itself after the firm and the period", () => {

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { isTypingTarget, shortcutFor } from '@/lib/billingKeys.mjs';
 
 /**
@@ -33,8 +33,14 @@ export function useBillingKeys(handlers) {
   // Held in a ref so the listener is installed once rather than torn down and
   // rebuilt on every render. A listener that re-registers on each keystroke
   // loses keys pressed during the gap.
+  // Updated after each commit rather than during render: React may render
+  // without committing, and a ref written mid-render can then point at
+  // handlers that never reached the screen. Layout effect, so it is current
+  // before the browser can deliver the next key.
   const latest = useRef(handlers);
-  latest.current = handlers;
+  useLayoutEffect(() => {
+    latest.current = handlers;
+  });
 
   // Recomputed per render rather than memoised: it is a handful of keys, and
   // a stale `bound` set would put the overlay back to lying.

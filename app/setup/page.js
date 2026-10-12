@@ -2,11 +2,14 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useSaleOptions } from '@/context/SaleOptionContext';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 
 const Page = () => {
   const { options, setOptions } = useSaleOptions();
    const [loadings, setLoadings] = useState(false);
   const [clearingTxns, setClearingTxns] = useState(false);
+  const [notice, notify] = useNotice();
 
   const handleChange = (e) => {
     const { name, checked } = e.target;
@@ -29,7 +32,7 @@ const Page = () => {
     const typed = window.prompt(`${warning}\n\nType ${phrase} to confirm.`);
 
     if (typed !== phrase) {
-      if (typed !== null) alert("Phrase did not match. Nothing was deleted.");
+      if (typed !== null) notify.error("The phrase did not match. Nothing was deleted.");
       return;
     }
 
@@ -42,11 +45,14 @@ const Page = () => {
         body: JSON.stringify({ confirm: phrase }),
       });
 
-      const data = await res.json();
-
-      alert(data.message);
+      // Success and refusal both used to come up as alert(data.message) --
+      // a refusal that sent `error` instead showed "undefined".
+      const { ok, body: data, message } = await readResponse(res);
+      if (ok) notify.success(data.message || "Done.");
+      else notify.error(`Nothing was deleted. ${message}`);
     } catch (error) {
-      alert("Something went wrong");
+      console.error("Clear data error:", error);
+      notify.error(`The request did not complete. ${NETWORK_ERROR} Reload the page to see what is left before trying again.`);
     } finally {
       setBusy(false);
     }
@@ -87,6 +93,7 @@ const Page = () => {
           <p className="page-subtitle">Choose which fields appear while billing.</p>
         </div>
       </header>
+      <Notice notice={notice} onClose={notify.clear} />
 
       {/* Listed first because it is the one thing here that has to be filled
           in before anything the app prints is a valid tax invoice. */}
@@ -96,7 +103,7 @@ const Page = () => {
         </div>
         <div className="panel-body flex flex-wrap items-center justify-between gap-4">
           <p className="max-w-sm text-sm text-muted-foreground">
-            Your firm's name, GSTIN, address and bank details — what prints on every
+            Your firm&apos;s name, GSTIN, address and bank details — what prints on every
             invoice, ledger and report you issue.
           </p>
           <Link href="/company" className="btn btn-secondary">

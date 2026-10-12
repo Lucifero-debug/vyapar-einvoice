@@ -3,12 +3,14 @@
 import React, { Suspense, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { NETWORK_ERROR, readResponse, safeNextPath } from '@/lib/apiResponse.mjs'
 
 function LoginForm() {
   const router = useRouter()
   const params = useSearchParams()
   // Where they were headed before the gate sent them here.
-  const next = params.get('next') || '/'
+  // Only ever a path on this site -- see safeNextPath.
+  const next = safeNextPath(params.get('next'))
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -25,16 +27,18 @@ function LoginForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       })
-      const data = await res.json()
-      if (!res.ok || !data.success) {
-        setError(data.message || 'Could not sign in.')
+      // Never throws: a crashed server used to look like "Could not reach
+      // the server", which sends people to check their Wi-Fi.
+      const { ok, body: data, message } = await readResponse(res)
+      if (!ok || !data.success) {
+        setError(message || 'Could not sign in.')
         return
       }
       // A full navigation, not router.push: the session cookie has just been
       // set and every page behind the gate needs the server to see it.
       window.location.assign(next)
     } catch {
-      setError('Could not reach the server.')
+      setError(NETWORK_ERROR)
     } finally {
       setBusy(false)
     }

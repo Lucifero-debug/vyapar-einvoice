@@ -419,8 +419,8 @@ test("where the bill DOES say and the master disagrees, the bill wins and it is 
 });
 
 test("the rate off the bill is the COST, never the selling price", () => {
-  // `resolveItemPricing` reads `salePrice` unconditionally, which would
-  // price a purchase at what the firm sells it for.
+  // A master rate (sale OR purchase price) is a default for a typed line;
+  // a read-in bill says what was actually paid.
   const line = importLine({ name: "MS Plate 10mm", quantity: 10, rate: 200 }, ITEMS);
   assert.equal(line.cost, 200);
   assert.equal("salePrice" in line, false);

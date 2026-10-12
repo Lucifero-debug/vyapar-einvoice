@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { internalErrorBody } from "@/lib/serverError.mjs";
 import { requireAuth, AuthError } from "@/lib/authServer.mjs";
 import { ROLE_PERMISSIONS } from "@/lib/roles.mjs";
 
@@ -40,6 +41,8 @@ export async function GET(req) {
         { status: error.status }
       );
     }
-    return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+    const { ref, payload } = internalErrorBody();
+    console.error(`[api ${ref}] Who-am-I error:`, error);
+    return NextResponse.json(payload, { status: 500 });
   }
 }

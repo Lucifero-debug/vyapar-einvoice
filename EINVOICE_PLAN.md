@@ -180,6 +180,13 @@ firm, so every tenant's invoice currently prints the wrong letterhead
 (`PROJECT_CONTEXT.md` §9.1). **Build this page and switch `InvoiceDocument` to
 read the signed-in firm's record as part of this step.**
 
+> **Done, and since extended.** `/company` now also carries the firm's **logo**
+> and its **document preferences** — the logo mattered because it was the last
+> piece of shared branding left: `COMPANY_LOGO = "/logo.jpg"`, one file in
+> `/public`, on every firm's invoice. See `PROJECT_CONTEXT.md` §6.25. The IRP
+> cares about none of that; it is noted here only so this section is not read
+> as the whole of what `/company` holds.
+
 ### 4.2 E-invoice credentials, per firm
 
 Also on `companies`:

@@ -6,6 +6,9 @@ import Invoice from "@/models/invoiceModel";
 import ItemLedger from "@/models/itemLedgerModel";
 import Ledger from "@/models/ledgerModel";
 import Voucher from "@/models/voucherModel";
+import Order from "@/models/orderModel";
+import Production from "@/models/productionModel";
+import StockAlert from "@/models/stockAlertModel";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import {
   CLEAR_TRANSACTIONS_PHRASE,
@@ -31,6 +34,12 @@ const MODELS = {
   ledgers: Ledger,
   itemledgers: ItemLedger,
   counters: Counter,
+  // Orders and production entries were added to TRANSACTION_COLLECTIONS
+  // without being wired here, so the guard below refused every clear. Wired
+  // now, with the low-stock alerts, so the wipe empties what the list says.
+  orders: Order,
+  productions: Production,
+  stockalerts: StockAlert,
 };
 
 async function handleDELETE(req, auth) {

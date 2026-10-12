@@ -7,8 +7,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { netRate } from '@/lib/priceList.mjs';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
+import { istToday } from '@/lib/istDate.mjs';
 
-const today = () => new Date().toISOString().substring(0, 10);
+// Today in India, not in UTC (which is yesterday until 05:30 IST).
+const today = () => istToday();
 
 const BLANK_ROWS = 10;
 const emptyRow = () => ({
@@ -40,6 +44,7 @@ const PriceListMaster = ({ open, onClose, selected }) => {
   const [rows, setRows] = useState(padRows([]));
   const [activeRow, setActiveRow] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [notice, notify] = useNotice();
   const isEditing = Boolean(selected?._id);
   const gridRef = useRef(null);
 
@@ -50,6 +55,7 @@ const PriceListMaster = ({ open, onClose, selected }) => {
   }, [items]);
 
   useEffect(() => {
+    notify.clear();
     if (!open) return;
     Promise.all([fetch('/api/get-item'), fetch('/api/get-customer')])
       .then((responses) => Promise.all(responses.map((res) => res.json())))
@@ -59,9 +65,9 @@ const PriceListMaster = ({ open, onClose, selected }) => {
       })
       .catch((err) => {
         console.error('Error fetching items or parties:', err);
-        alert('Failed to fetch items or parties.');
+        notify.error('Could not load the items and parties. Close this and open it again.');
       });
-  }, [open]);
+  }, [open, notify]);
 
   useEffect(() => {
     if (!open) return;
@@ -139,13 +145,13 @@ const PriceListMaster = ({ open, onClose, selected }) => {
 
   const handleSave = useCallback(async () => {
     if (!party || !date) {
-      alert('Please select a party and a date');
+      notify.error('Choose a party and a date.');
       return;
     }
 
     const unmatched = rows.filter((r) => r.name.trim() && !r.itemId);
     if (unmatched.length) {
-      alert(
+      notify.error(
         `These item names are not in the item master:\n\n${unmatched
           .map((r) => `• ${r.name}`)
           .join('\n')}\n\nPick them from the list, or add them under Items first.`
@@ -154,7 +160,7 @@ const PriceListMaster = ({ open, onClose, selected }) => {
     }
 
     if (!filledRows.length) {
-      alert('Add at least one item.');
+      notify.error('Add at least one item.');
       return;
     }
 
@@ -173,26 +179,28 @@ const PriceListMaster = ({ open, onClose, selected }) => {
       })),
     };
 
+    if (saving) return;
     setSaving(true);
+    notify.clear();
     try {
       const res = await fetch(isEditing ? '/api/price-list-update' : '/api/price-list-add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = await res.json();
-      if (result.success) {
+      const { ok, body: result, message } = await readResponse(res);
+      if (ok && result.success) {
         onClose(true);
       } else {
-        alert(`Failed to save price list: ${result.error}`);
+        notify.error(`The price list was not saved. ${message}`);
       }
     } catch (err) {
       console.error('Error saving price list:', err);
-      alert('Error saving price list');
+      notify.error(`The price list was not saved. ${NETWORK_ERROR}`);
     } finally {
       setSaving(false);
     }
-  }, [party, date, remark, rows, filledRows, isEditing, selected, onClose]);
+  }, [party, date, remark, rows, filledRows, isEditing, selected, onClose, saving, notify]);
 
   // The shortcuts printed along the bottom of the old software's screen, kept
   // so the shop's muscle memory carries over.
@@ -351,6 +359,7 @@ const PriceListMaster = ({ open, onClose, selected }) => {
           </table>
         </div>
 
+        <Notice notice={notice} onClose={notify.clear} className='mb-0' />
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
           <p className="text-xs text-muted-foreground">
             {filledRows.length} item{filledRows.length === 1 ? '' : 's'}. A blank Sale Price

@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { connect } from "@/lib/mongodb";
+import Company from "@/models/companyModel";
 import Invoice from "@/models/invoiceModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import { companyAddress, companyFrom } from "@/lib/company.mjs";
+import { formatOf, isReportFormat, reportResponse } from "@/lib/reportHttp.js";
+import { salesReportSheets } from "@/lib/reportSheets.mjs";
 import {
   DEFAULT_GRAIN,
   DEFAULT_SCOPE,
@@ -35,6 +39,7 @@ export const dynamic = "force-dynamic";
  *         &scope=invoices|returns|both     (the book and the item sheet)
  *         &grain=month|date|document       (the book)
  *         &month=YYYY-MM                   (the zoom: dates inside a month)
+ *         &format=json|csv|xlsx            (the download: the SAME rows)
  *
  * One route for all six -- three shapes over two sides -- because they are
  * one body of documents looked at three ways. Three routes would be three
@@ -59,6 +64,16 @@ async function handleGET(req, auth) {
     const scope = (params.get("scope") || DEFAULT_SCOPE).trim();
     const grain = (params.get("grain") || DEFAULT_GRAIN).trim();
     const month = (params.get("month") || "").trim();
+    // json | csv | xlsx. The SAME route and the same rows, so a download is
+    // the report on screen and inherits this route's permission and tenant.
+    const format = formatOf(params);
+
+    if (!isReportFormat(format)) {
+      return NextResponse.json(
+        { success: false, error: `"${format}" is not a format. Use json, csv or xlsx.` },
+        { status: 400 }
+      );
+    }
 
     if (!isSalesView(view)) {
       return NextResponse.json(
@@ -128,22 +143,53 @@ async function handleGET(req, auth) {
     const covers = scopeName(scope, side);
     const shell = { success: true, view, side, scope, covers, title };
 
+    // One exit for every sheet: JSON for the screen, or the same rows and
+    // totals as a CSV or workbook (lib/reportSheets.mjs lays them out).
+    const respond = async (payload) => {
+      if (format === "json") return NextResponse.json(payload);
+      const companyDoc = await Company.findById(auth.companyId).lean();
+      const company = companyFrom(companyDoc);
+      return reportResponse({
+        format,
+        payload,
+        sheets: salesReportSheets({
+          view,
+          side,
+          grain,
+          month: payload.month || "",
+          rows: payload.rows,
+          totals: payload.totals,
+          covers,
+          from,
+          to,
+          company,
+          companyAddressLine: companyAddress(company),
+        }),
+        filename: {
+          report: `${title}${view === "book" ? `-${grain}` : ""}`,
+          subject: payload.month || "",
+          from,
+          to,
+        },
+      });
+    };
+
     if (view === "item") {
       const rows = itemWise({ invoices, side, from, to, scope });
-      return NextResponse.json({ ...shell, rows, totals: itemTotals(rows) });
+      return respond({ ...shell, rows, totals: itemTotals(rows) });
     }
 
     const documents = documentsFor({ invoices, side, from, to, scope });
 
     if (view === "party") {
       const rows = partyWise(documents);
-      return NextResponse.json({ ...shell, rows, totals: partyTotals(rows) });
+      return respond({ ...shell, rows, totals: partyTotals(rows) });
     }
 
     // The book. A period sheet unless the bill-by-bill register was asked
     // for, and the zoom when a month was named.
     if (grain === "document") {
-      return NextResponse.json({
+      return respond({
         ...shell,
         grain,
         rows: documents,
@@ -154,7 +200,7 @@ async function handleGET(req, auth) {
     const rows =
       grain === "date" && month ? zoomInto(documents, month) : periodWise(documents, grain);
 
-    return NextResponse.json({ ...shell, grain, month: month || null, rows, totals: periodTotals(rows) });
+    return respond({ ...shell, grain, month: month || null, rows, totals: periodTotals(rows) });
   } catch (err) {
     console.error("Sales report error:", err);
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });

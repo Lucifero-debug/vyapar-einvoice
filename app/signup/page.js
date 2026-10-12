@@ -5,6 +5,7 @@ import Link from 'next/link'
 // From passwordRules, not password.mjs: that one imports node:crypto and
 // this is a client component, so the import has to stay browser-safe.
 import { MIN_PASSWORD_LENGTH } from '@/lib/passwordRules.mjs'
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs'
 
 /**
  * First run for a firm: creates the company and its owner together.
@@ -29,14 +30,14 @@ export default function SignupPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       })
-      const data = await res.json()
-      if (!res.ok || !data.success) {
-        setError(data.message || 'Could not create the account.')
+      const { ok, body: data, message } = await readResponse(res)
+      if (!ok || !data.success) {
+        setError(message || 'Could not create the account.')
         return
       }
       window.location.assign('/')
     } catch {
-      setError('Could not reach the server.')
+      setError(NETWORK_ERROR)
     } finally {
       setBusy(false)
     }

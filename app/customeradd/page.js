@@ -4,6 +4,8 @@ import { useSearchParams } from 'next/navigation'
 import { toDisplay } from '@/lib/balance.mjs'
 import { normalizeStateCode } from '@/lib/gst.mjs'
 import MasterShortcuts from '@/components/masters/MasterShortcuts'
+import { Notice, useNotice } from '@/components/ui/notice'
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs'
 import { Button } from "../../components/ui/button"
 import {
   Card, CardContent, CardDescription,
@@ -30,6 +32,8 @@ const PageContent = () => {
   // be typed into it, and here 0 and "nothing entered" mean the same thing: the
   // schema defaults openingBal to 0 and toSigned() already reads a blank as 0.
   const [openBal, setOpenBal] = useState('');
+  const [notice, notify] = useNotice();
+  const [saving, setSaving] = useState(false);
   const [openingMode,setOpeningMode] = useState('')
   const [lastMode,setLastMode] = useState('')
   // Display only: what the books currently say this party owes.
@@ -116,6 +120,7 @@ const PageContent = () => {
   }, [value]);
 
   const handleSave = async () => {
+    if (saving) return;
     // Blank means "not set". Sending 0 is what gave every party a 0% discount
     // and a 0% interest rate they never asked for. The schema keeps these as
     // Numbers -- a rate is arithmetic, not a label.
@@ -135,6 +140,8 @@ const PageContent = () => {
 
     const endpoint = value ? '/api/customer-alter' : '/api/customer-add';
 
+    setSaving(true);
+    notify.clear();
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -142,18 +149,19 @@ const PageContent = () => {
         body: JSON.stringify(customerData),
       });
 
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      const { ok, message } = await readResponse(response);
+      if (!ok) {
         // e.g. renaming onto a customer that already exists
-        alert(result.error || result.message || 'Failed to save customer data.');
+        notify.error(`The party was not saved. ${message}`);
         return;
       }
 
-      alert(`Customer data ${value ? 'updated' : 'saved'} successfully!`);
-      console.log(result);
+      notify.success(`Party ${value ? 'updated' : 'saved'}.`);
     } catch (error) {
       console.error('Error saving customer data:', error);
-      alert('Failed to save customer data.');
+      notify.error(`The party was not saved. ${NETWORK_ERROR}`);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -188,6 +196,7 @@ const PageContent = () => {
       <p className="page-subtitle">Name, balances and address.</p>
     </div>
   </header>
+  <Notice notice={notice} onClose={notify.clear} />
   <Tabs value={tab} onValueChange={setTab} className="panel flex w-full flex-col overflow-hidden md:flex-row">
     {/* Tabs List */}
     <TabsList className="flex h-auto w-full shrink-0 flex-row gap-1 overflow-x-auto rounded-none border-b border-border bg-transparent p-2 md:w-[210px] md:flex-col md:border-b-0 md:border-r">
@@ -373,7 +382,7 @@ const PageContent = () => {
             </div>
           </CardContent>
           <CardFooter className="justify-end px-0 pb-0">
-            <Button onClick={handleSave}>Save</Button>
+            <Button onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
           </CardFooter>
         </Card>
       </TabsContent>

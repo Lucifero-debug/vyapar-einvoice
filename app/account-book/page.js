@@ -1,11 +1,14 @@
 'use client';
-import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCompany } from '@/context/CompanyContext';
 import { companyAddress } from '@/lib/company.mjs';
 import DateFilter from '@/components/reports/DateFilter';
 import { resolvePeriod } from '@/lib/reportPeriods.mjs';
 import AccountBookSearchParams from '@/components/AccountBookSearchParams';
+import ReportUrlSync from '@/components/reports/ReportUrlSync';
+import { REPORT_QUERIES } from '@/lib/reportQuery.mjs';
+import { isPreset } from '@/lib/reportPeriods.mjs';
 import {
   BOOK_KINDS,
   BOOK_NAMES,
@@ -16,6 +19,8 @@ import {
   periodText,
   toCsv,
 } from '@/lib/accountBooks.mjs';
+import { Notice } from '@/components/ui/notice';
+import { useReportDownload } from '@/components/reports/useReportDownload';
 
 export const dynamic = 'force-dynamic';
 
@@ -102,30 +107,55 @@ function AccountBooks() {
   // rows would be drawn under the bank book's heading.
   const [loadedFor, setLoadedFor] = useState(null);
 
+  // A deep link's account and group, held until the book they belong to has
+  // loaded its accounts. They used to be applied with a setTimeout and then
+  // overwritten -- the group by the tab effect below, the account by
+  // `loadAccounts` opening on the book's first account -- so a link to one
+  // ledger opened another. Now that the URL follows the screen, that would
+  // also have rewritten the link itself.
+  const linked = useRef(null);
+  // The tab whose accounts are wanted, so a slow reply for a tab already
+  // left cannot fill the picker with another book's accounts.
+  const latestKind = useRef(kind);
+
   /** The accounts this book offers. Also runs when the tab changes. */
   const loadAccounts = useCallback(async (nextKind) => {
     setError('');
     try {
       const res = await fetch(`/api/account-book?kind=${encodeURIComponent(nextKind)}`);
       const data = await res.json();
+      if (latestKind.current !== nextKind) return;
       if (!data.success) {
         setError(data.error || 'Could not load the accounts.');
         return;
       }
       setAccounts(data.accounts || []);
       setGroups(data.groups || []);
-      // Open on the first account rather than on nothing: a cash book with one
-      // cash account should not need a choice made before it shows anything.
-      setAccount((data.accounts || [])[0]?.name || '');
+      const link = linked.current;
+      if (link && link.kind === nextKind && link.account) {
+        // The link's account, once. A link naming an account this book does
+        // not offer still opens on it, and the route answers "No account
+        // named ...", which is the right error to show.
+        setAccount(link.account);
+        linked.current = { ...link, account: '' };
+      } else {
+        // Open on the first account rather than on nothing: a cash book with
+        // one cash account should not need a choice made before it shows
+        // anything.
+        setAccount((data.accounts || [])[0]?.name || '');
+      }
     } catch (err) {
       setError(err.message || 'Could not load the accounts.');
     }
   }, []);
 
   useEffect(() => {
+    latestKind.current = kind;
     setBooks([]);
     setGroupTotals(null);
-    setGroup('');
+    const link = linked.current;
+    setGroup(link && link.kind === kind && link.group ? link.group : '');
+    if (link && link.kind === kind) linked.current = { ...link, group: '' };
     setLoadedFor(null);
     loadAccounts(kind);
   }, [kind, loadAccounts]);
@@ -179,6 +209,10 @@ function AccountBooks() {
     [kind, account, group]
   );
 
+  // Downloads fetch first, so a refusal is a message here rather than a
+  // page of raw JSON in place of the app. lib/downloadFile.mjs.
+  const exporter = useReportDownload();
+
   /** Whatever is on screen, as a workbook, from the same route. */
   const downloadXlsx = () => {
     if (!shown.length) return;
@@ -186,9 +220,9 @@ function AccountBooks() {
     if (group) qs.set('group', group);
     else qs.set('account', account);
     if (wantDayWise) qs.set('daywise', '1');
-    // A plain navigation: the browser's own download handles the file, and
+    // Fetched, then handed to the browser (lib/downloadFile.mjs);
     // Content-Disposition on the route names it.
-    window.location.href = `/api/account-book?${qs.toString()}`;
+    exporter.download(`/api/account-book?${qs.toString()}`);
   };
 
   /**
@@ -203,20 +237,22 @@ function AccountBooks() {
    * somebody else's ledger.
    */
   const applyLink = useCallback((values) => {
-    if (values.kind && BOOK_KINDS.includes(values.kind)) setKind(values.kind);
-    if (values.group) setGroup(values.group);
-    if (values.from || values.to) {
+    const linkKind = values.kind && BOOK_KINDS.includes(values.kind) ? values.kind : latestKind.current;
+    // Held for the tab effect and `loadAccounts` above, which apply them once
+    // the linked book is the one open.
+    linked.current = { kind: linkKind, account: values.account || '', group: values.group || '' };
+    if (linkKind !== latestKind.current) setKind(linkKind);
+    if (isPreset(values.preset) && values.preset !== 'custom') {
+      // A preset keeps its meaning: resolved now, in IST, by the one resolver.
+      setPeriod(resolvePeriod({ preset: values.preset }));
+    } else if (values.from || values.to) {
       setPeriod((current) => ({
         preset: 'custom',
         from: values.from || current.from,
         to: values.to || current.to,
       }));
     }
-    if (values.account) {
-      // After the kind-change effect has had its turn, or `loadAccounts`
-      // would overwrite it with the book's first account.
-      setTimeout(() => setAccount(values.account), 0);
-    }
+    if (values.daywise === '1') setWantDayWise(true);
   }, []);
 
   const exportCsv = () => {
@@ -242,6 +278,21 @@ function AccountBooks() {
     <div className="doc-sheet report-sheet">
       {/* A deep link from the statement or the Reports hub. */}
       <AccountBookSearchParams onValues={applyLink} />
+      {/* And back: the book on screen, written to the URL. A group book names
+          the group and not the account the picker happens to hold. */}
+      <ReportUrlSync
+        schema={REPORT_QUERIES.accountBook}
+        values={{
+          kind,
+          account: group ? '' : account,
+          group,
+          preset: period.preset,
+          from,
+          to,
+          daywise: wantDayWise,
+        }}
+        restore={false}
+      />
       <div className="doc-head">
         <h2 className="doc-org">{company?.name || ''}</h2>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -371,6 +422,7 @@ function AccountBooks() {
         </div>
       </div>
 
+      <Notice notice={exporter.notice} onClose={exporter.notify.clear} />
       {error && (
         <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}

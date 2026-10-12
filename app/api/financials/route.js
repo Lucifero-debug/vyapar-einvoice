@@ -5,6 +5,10 @@ import Item from "@/models/itemModel";
 import ItemLedger from "@/models/itemLedgerModel";
 import Ledger from "@/models/ledgerModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import Company from "@/models/companyModel";
+import { companyAddress, companyFrom } from "@/lib/company.mjs";
+import { formatOf, isReportFormat, reportResponse } from "@/lib/reportHttp.js";
+import { financialSheets } from "@/lib/reportSheets.mjs";
 import { buildStockIndex } from "@/lib/itemStock.mjs";
 import { istDayWindow } from "@/lib/istDate.mjs";
 import {
@@ -17,6 +21,7 @@ import {
   stockValue,
   tradingAccount,
   trialBalance,
+  isStatementKind,
 } from "@/lib/financials.mjs";
 
 // Every posting changes these, so a cached statement is a wrong statement.
@@ -50,6 +55,26 @@ async function handleGET(req, auth) {
     const expand = searchParams.get("expand") === "1";
     const closingOverride = searchParams.get("closingStock");
     const openingOverride = searchParams.get("openingStock");
+    // json | csv | xlsx -- the SAME figures as the screen. `kind` only
+    // decides which statement leads the workbook (and is the CSV).
+    const format = formatOf(searchParams);
+    const kind = searchParams.get("kind") || "trial";
+
+    if (!isReportFormat(format)) {
+      return NextResponse.json(
+        { success: false, error: `"${format}" is not a format. Use json, csv or xlsx.` },
+        { status: 400 }
+      );
+    }
+    // Checked for downloads only: the screen's own JSON request carries no
+    // `kind`, and an API caller that sent something else before this existed
+    // must not start getting 400s.
+    if (format !== "json" && !isStatementKind(kind)) {
+      return NextResponse.json(
+        { success: false, error: `"${kind}" is not one of the statements.` },
+        { status: 400 }
+      );
+    }
 
     // The window's end, as a UTC instant, for the stock movements query. Via
     // istDayWindow so "up to the 31st" means the 31st in Delhi -- the same
@@ -150,7 +175,7 @@ async function handleGET(req, auth) {
       );
     }
 
-    return NextResponse.json({
+    const payload = {
       success: true,
       from: from || null,
       to: to || null,
@@ -173,6 +198,24 @@ async function handleGET(req, auth) {
         differs: profitDiffers(pl.net, accumulated),
       },
       warnings,
+    };
+
+    if (format === "json") return NextResponse.json(payload);
+
+    const companyDoc = await Company.findById(auth.companyId).lean();
+    const company = companyFrom(companyDoc);
+    return reportResponse({
+      format,
+      payload,
+      sheets: financialSheets({
+        kind,
+        data: payload,
+        from,
+        to,
+        company,
+        companyAddressLine: companyAddress(company),
+      }),
+      filename: { report: kind === "balance" ? "balance-sheet" : `financials-${kind}`, from, to },
     });
   } catch (err) {
     console.error("Financials error:", err);

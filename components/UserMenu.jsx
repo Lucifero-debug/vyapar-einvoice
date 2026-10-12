@@ -16,6 +16,8 @@ import { useEffect, useState } from 'react'
 export default function UserMenu() {
   const [me, setMe] = useState(null)
   const [open, setOpen] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
+  const [signOutError, setSignOutError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -58,7 +60,18 @@ export default function UserMenu() {
   if (!me) return null
 
   const signOut = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
+    setSigningOut(true)
+    setSignOutError('')
+    // Only the server can clear the session cookie (it is httpOnly). The
+    // failure used to be swallowed and the page sent to /login anyway --
+    // where the gate, still seeing a valid session, sent it straight back
+    // home: a sign-out that silently did nothing, on a shared counter PC.
+    const res = await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null)
+    if (!res || !res.ok) {
+      setSigningOut(false)
+      setSignOutError(res ? 'Not signed out -- the server refused. Try again.' : 'Not signed out -- the server could not be reached. Check the connection and try again.')
+      return
+    }
     // Full navigation: the gate has to see the cleared cookie.
     window.location.assign('/login')
   }
@@ -95,10 +108,14 @@ export default function UserMenu() {
           <button
             type='button'
             onClick={signOut}
+            disabled={signingOut}
             className='btn btn-secondary btn-sm mt-2 w-full'
           >
-            Sign out
+            {signingOut ? 'Signing out…' : 'Sign out'}
           </button>
+          {signOutError && (
+            <p className='field-hint mt-2 text-destructive' role='alert'>{signOutError}</p>
+          )}
         </div>
       )}
     </div>

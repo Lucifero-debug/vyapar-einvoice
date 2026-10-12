@@ -6,7 +6,7 @@ import {
   printableOrderRefs,
 } from '@/lib/orderStatus.mjs';
 import { splitGst } from '@/lib/gst.mjs';
-import { buildHsnSummary, hsnGrandTotal, lineTaxable } from '@/lib/hsnTotals.mjs';
+import { buildHsnSummary, hsnGrandTotal } from '@/lib/hsnTotals.mjs';
 // The firm's identity, framed in one place so the invoice, the statements and
 // the printed reports cannot disagree about which details show.
 import { CompanyBank, CompanyBrand, CompanyLogo, DocumentFooter } from '@/components/CompanyBrand';
@@ -66,26 +66,25 @@ const InvoiceDocument = forwardRef(({ invoice, isRollStationary }, ref) => {
     new Date(d).toLocaleDateString('en-IN')
   );
 
-// Compute total taxable amount and GST totals. `lineTaxable` lives in
-// lib/hsnTotals.mjs so the summary below, and the backfill script, apply the
-// very same rule to a line.
-const totalTaxableAmount = items.reduce((sum, item) => sum + lineTaxable(item), 0);
-const totalGstAmount = items.reduce(
-  (sum, item) => sum + (lineTaxable(item) * (Number(item.gstRate) || 0)) / 100,
-  0
-);
+// DERIVED from the lines, never read back from the stored `hsnTotals` rows --
+// those were truncated by the schema and print as a negative taxable value
+// against a total of zero. lib/hsnTotals.mjs has the full account. One row
+// per HSN code AND rate, each rounded once.
+const hsnSummary = buildHsnSummary(items);
+const hsnRows = Object.values(hsnSummary);
+const hsnGrand = hsnGrandTotal(hsnSummary);
+
+// The taxable value and the tax in the totals box are the HSN table's own
+// footing -- the same figures the GL posts (lib/invoiceGl.mjs lineTotals).
+// They used to be summed raw from the lines here, so the box and the table
+// directly above it could disagree by a paisa.
+const totalTaxableAmount = hsnGrand.taxable;
+const totalGstAmount = hsnGrand.gstAmount;
 
 // SGST and CGST have to add up to the tax actually charged. Halving and
 // rounding each side independently disagreed with the total on half of all
 // amounts, by a paisa.
 const { sgst, cgst } = splitGst(totalGstAmount);
-
-// DERIVED from the lines, never read back from the stored `hsnTotals` rows --
-// those were truncated by the schema and print as a negative taxable value
-// against a total of zero. lib/hsnTotals.mjs has the full account.
-const hsnSummary = buildHsnSummary(items);
-const hsnRows = Object.entries(hsnSummary);
-const hsnGrand = hsnGrandTotal(hsnSummary);
 
 // A seven-column bill does not fit a phone. Rather than let `table-layout:
 // fixed` squeeze item names down to a character per line, the table keeps its
@@ -334,9 +333,9 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
           </tr>
         </thead>
         <tbody>
-          {hsnRows.map(([hsn, data]) => (
-            <tr key={hsn} className="border-b border-gray-200 hover:bg-gray-50">
-              <td className={`${cellPad} tabular-nums`}>{hsn}</td>
+          {hsnRows.map((data) => (
+            <tr key={data.key} className="border-b border-gray-200 hover:bg-gray-50">
+              <td className={`${cellPad} tabular-nums`}>{data.hsn}</td>
               <td className={`${cellPad} text-right tabular-nums`}>{data.gstRate.toFixed(2)}%</td>
               <td className={`${cellPad} text-right tabular-nums`}>₹{data.taxable.toFixed(2)}</td>
               <td className={`${cellPad} text-right tabular-nums`}>₹{data.gstAmount.toFixed(2)}</td>

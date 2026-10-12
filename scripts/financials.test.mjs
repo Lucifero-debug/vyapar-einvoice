@@ -954,8 +954,14 @@ test("the four statements are named", () => {
 
 console.log("\n--- the backfill plan ---");
 
+// Every stored invoice carries its firm (the tenant plugin requires it), and
+// the backfill now refuses one that does not -- scripts/migrations.test.mjs
+// covers that case. These fixtures are one firm's.
 const planFor = (invoices, rowsByInvoice = new Map()) =>
-  planBackfill({ allInvoices: invoices, rowsByInvoice });
+  planBackfill({
+    allInvoices: invoices.map((inv) => ({ companyId: "firmA", ...inv })),
+    rowsByInvoice,
+  });
 
 test("an invoice with no contra rows is planned", () => {
   const r = planFor([{ ...invoice(), _id: "i1" }]);
@@ -1066,7 +1072,13 @@ test("both billing routes drive their balances from the rows", () => {
 test("sale-alter reverses by what was actually posted", () => {
   const src = read("../app/api/sale-alter/route.js");
   assert.ok(/Ledger\.find\(\s*\{ voucherId/.test(src), "it must read the old rows first");
-  assert.ok(/reverse\.delete\(previousName\)/.test(src), "the party is handled separately");
+  // The party is reversed by its derived delta; withPartyCashLeg adds back
+  // only the cash leg, when the bill was raised to the cash account itself
+  // (scripts/posting-invariants.test.mjs, scripts/release-audit.test.mjs).
+  assert.ok(
+    /withPartyCashLeg\(balanceMovesFromRows\(oldRows\), oldRows, previousName, before\.cashDelta\)/.test(src),
+    "the party is handled separately, its cash leg is not lost"
+  );
 });
 
 test("sale-alter settles through the invoice's own payment type", () => {
@@ -1108,8 +1120,13 @@ test("the backfill moves the head balances as well as writing rows", () => {
 
 test("the backfill stamps each row with its invoice's firm", () => {
   // These scripts run outside the tenant context, so the plugin does not
-  // scope them. A row written without a companyId belongs to nobody.
-  assert.ok(/companyId: invoice\?\.companyId/.test(read("../scripts/backfill-gl-legs.mjs")));
+  // scope them. A row written without a companyId belongs to nobody -- and a
+  // head found by name alone is whichever firm's comes back first.
+  const src = read("../scripts/backfill-gl-legs.mjs");
+  assert.ok(/companyId: entry\.companyId,\s*backfillRun: runId/.test(src));
+  assert.ok(/\{ companyId: entry\.companyId, name: stored\(move\.account\) \}/.test(src), "heads are moved per firm");
+  assert.ok(/netMovesByFirm\(plan\)/.test(src));
+  assert.doesNotMatch(src, /customers\.updateOne\(\s*\{ name \}/, "a head is never found by name alone");
 });
 
 test("the statements are behind report:read", () => {

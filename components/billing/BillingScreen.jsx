@@ -2,7 +2,6 @@
 import { useRouter, useSearchParams} from 'next/navigation'
 import React, { Suspense, useEffect, useRef, useState } from 'react'
 import AddIcon from '@mui/icons-material/Add';
-import { saveToLocal, getFromLocal, clearInvoiceDraft } from '@/lib/localStorageHelper'
 import InvoiceSearchParams from '@/components/suspense';
 import { useSaleOptions } from '@/context/SaleOptionContext';
 import { resolveItemPricing, latestPriceListFor } from '@/lib/priceList.mjs';
@@ -10,12 +9,29 @@ import { placeOfSupply, placeOfSupplyLabel } from '@/lib/buyerSnapshot.mjs';
 import PartyBalance from '@/components/PartyBalance';
 import ItemStock from '@/components/ItemStock';
 import EinvoiceLockNotice from '@/components/EinvoiceLockNotice';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 import { editBlockedReason } from '@/lib/einvoiceLock.mjs';
 import { prefillFromOrder, pickFromOrder } from '@/lib/orderPrefill.mjs';
-import { IMPORT_DRAFT_KEY, MATCH_APPLIED } from '@/lib/invoiceImport.mjs';
+import {
+    IMPORT_DRAFT_KEY,
+    MATCH_APPLIED,
+    importParcelVerdict,
+    importScopeOf,
+} from '@/lib/invoiceImport.mjs';
+import { istToday } from '@/lib/istDate.mjs';
+
+// Why a read-in bill was not filled in. See `importParcelVerdict`.
+const IMPORT_REFUSED = {
+    missing: 'That read-in bill has gone. Read the photo again.',
+    'wrong-screen': 'A read-in bill opens on the Purchase Invoice screen, not this one. It is still waiting there.',
+    'wrong-owner': 'That read-in bill was read for a different company or user, so it was not filled in. Read the photo again.',
+    unverified: 'Could not confirm who is signed in, so the read-in bill was not filled in. Reload to try again.',
+};
 import { trim as trimQty } from '@/lib/orderStatus.mjs';
 import { billingType, canBillFromOrder } from '@/lib/billingTypes.mjs';
 import { buildHsnTotals, buildInvoicePayload, recalcItem, saveEndpoint } from '@/lib/billingMath.mjs';
+import { hsnKey } from '@/lib/hsnTotals.mjs';
 import ItemSearch from '@/components/billing/ItemSearch';
 import QuickMaster from '@/components/billing/QuickMaster';
 import ShortcutHelp from '@/components/billing/ShortcutHelp';
@@ -73,6 +89,10 @@ export default function BillingScreen({ typeKey }) {
 
    const [value, setValue] = useState('');
    const [hsnTotals, setHsnTotals] = useState({});
+   // Messages for this screen (lib/apiResponse.mjs, components/ui/notice.jsx),
+   // in place of the browser alert() boxes it used to raise.
+   const [notice, notify] = useNotice();
+   const [saving, setSaving] = useState(false);
    const [isValueReady,setIsValueReady]=useState(false)
    // What the IRP holds against the invoice being edited, if anything.
    // Null on a new bill, which is why a new bill is never locked.
@@ -104,7 +124,8 @@ const [noOfPack, setNoOfPack] = useState(0);
       const [showQuantityPack, setShowQuantityPack] = useState(false);
   const [descriptionText, setDescriptionText] = useState('');
     const [invoiceNo, setInvoiceNo] = useState(4)
-    const [date, setDate] = useState(new Date().toISOString().substring(0, 10))
+    // Today in India: the UTC date is yesterday until 05:30 IST. lib/istDate.mjs.
+    const [date, setDate] = useState(() => istToday())
     const [customer, setCustomer] = useState([])
     const [customerLoaded, setCustomerLoaded] = useState(false)
     const [selectedCustomer, setSelectedCustomer] = useState({})
@@ -164,9 +185,10 @@ useEffect(() => {
       const response = await fetch('/api/next-invoice-no');
       const data = await response.json();
       if (!cancelled && data.invoiceNo) {
+        // Held in state only. It used to be copied to localStorage under the
+        // bare key 'invoiceNo' -- shared by all four screens, every company and
+        // every user of this browser -- and never read back.
         setInvoiceNo(data.invoiceNo);
-        console.log("✅ New Invoice:", data.invoiceNo);
-        localStorage.setItem('invoiceNo', data.invoiceNo);
       }
     } catch (err) {
       console.error('Failed to fetch invoice number:', err);
@@ -192,7 +214,6 @@ useEffect(() => {
             .then(res => res.json())
             .then(res => {
                 const data = res.final;
-                console.log("transformer", data)
 
                 const normalizedItems = (data.items || []).map((item) => {
                     const cost      = Number(item.cost || item.salePrice || 0);
@@ -211,7 +232,7 @@ useEffect(() => {
 
                 setGst(data.gst || normalizedItems.reduce((sum, i) => sum + (i.gstAmount || 0), 0));
                 setInvoiceNo(data.invoiceNo || 4);
-                setDate(data.date ? formatDate(data.date) : new Date().toISOString().substring(0, 10));
+                setDate(data.date ? formatDate(data.date) : istToday());
                 setId(data._id);
                 // Carried on the invoice itself, so an edit opened from
                 // any list knows straight away that it is read only.
@@ -255,8 +276,11 @@ useEffect(() => {
 
                 setPartyTaxes(normalizedPartyTaxes);
 
+                // Keyed by code AND rate, as lib/hsnTotals.mjs groups them, so
+                // two stored rows for one HSN at two rates both survive.
                 const hsnTotalsObject = (data.hsnTotals || []).reduce((acc, row) => {
-                    acc[row.hsn] = {
+                    acc[hsnKey(row.hsn, row.gstRate)] = {
+                        hsn:       row.hsn,
                         gstRate:   Number(row.gstRate || 0),
                         gstAmount: Number(row.amount  || 0),
                         total:     Number(row.total   || 0),
@@ -283,18 +307,10 @@ useEffect(() => {
         }
     }, [value]);
 
-    // Load customer data from localStorage after customers are loaded
-    useEffect(() => {
-        if (customerLoaded && customer.length > 0) {
-            const savedCustomer = getFromLocal('selectedCustomer');
-            if (savedCustomer && savedCustomer.id) {
-                const match = customer.find((c) => c.id === savedCustomer.id);
-                if (match) {
-                    setSelectedCustomer(match);
-                }
-            }
-        }
-    }, [customerLoaded, customer]);
+    // (A party used to be pre-selected here from localStorage 'selectedCustomer'
+    // -- one browser-wide key read by all four screens, for every company and
+    // user, and written by nothing in this app. Removed; the party comes from
+    // the invoice being edited, an order, or a read-in bill, each checked.)
 
     // ─── Carrying a sales/purchase order onto this form ──────────────────────
     //
@@ -486,17 +502,45 @@ useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         if (params.get('import') !== '1') return;
 
+        let cancelled = false;
+        (async () => {
+        // Whose screen is this? The parcel names the screen it is for and
+        // the firm and user who read the photo; it is applied only when all
+        // three match (lib/invoiceImport.mjs `importParcelVerdict`).
+        let scope = null;
+        try {
+            const res = await fetch('/api/auth/me');
+            scope = res.ok ? importScopeOf(await res.json()) : null;
+        } catch {
+            scope = null;
+        }
+        if (cancelled) return;
+
         let parcel = null;
         try {
-            const raw = sessionStorage.getItem(IMPORT_DRAFT_KEY);
-            sessionStorage.removeItem(IMPORT_DRAFT_KEY);
-            parcel = raw ? JSON.parse(raw) : null;
+            parcel = JSON.parse(sessionStorage.getItem(IMPORT_DRAFT_KEY) || 'null');
         } catch {
             parcel = null;
         }
 
-        if (!parcel?.draft) {
-            setImportPrefill({ note: 'That read-in bill has gone. Read the photo again.' });
+        const verdict = importParcelVerdict(parcel, {
+            type: config.type,
+            isReturn: config.isReturn,
+            scope,
+        });
+
+        // Read once and removed -- except when it is still good for its
+        // owner: opened on the wrong screen, or the sign-in lookup failed.
+        if (verdict === 'ok' || verdict === 'wrong-owner' || verdict === 'missing') {
+            try {
+                sessionStorage.removeItem(IMPORT_DRAFT_KEY);
+            } catch {
+                // Storage refused; nothing was applied, nothing to undo.
+            }
+        }
+
+        if (verdict !== 'ok') {
+            setImportPrefill({ note: IMPORT_REFUSED[verdict] || IMPORT_REFUSED.missing });
             return;
         }
 
@@ -527,6 +571,10 @@ useEffect(() => {
             blocking: (parcel.warnings || []).filter((w) => w.severity === 'blocking'),
             checks: (parcel.warnings || []).filter((w) => w.severity === 'check'),
         });
+        })();
+        return () => {
+            cancelled = true;
+        };
     }, [customerLoaded, customer, importPrefill]);
 
     // ─── FIX 2: Rebuild HSN totals from selectedItem whenever it changes ──────
@@ -573,12 +621,12 @@ useEffect(() => {
 
 const addPartyTax = () => {
   if (!newTaxName || (!newTaxRate && !newTaxAmount)) {
-    alert("Enter Tax Name and either Rate or Amount");
+    notify.error("Enter a tax name and either a rate or an amount.");
     return;
   }
 
   if (newTaxRate && newTaxAmount) {
-    alert("Use either Rate or Amount, not both");
+    notify.error("Use either a rate or an amount, not both.");
     return;
   }
 
@@ -636,11 +684,10 @@ const addPartyTax = () => {
             try {
                 const response = await fetch('/api/get-item')
                 const result = await response.json()
-                setItem(result.item)
-                console.log("Fetched Items:", result.item);
+                setItem(result.item || [])
             } catch (error) {
                 console.error('Error fetching Item data:', error);
-                alert('Failed to fetch item.');
+                notify.error('Could not load the item list. Reload the page to try again.');
             }
         }
         
@@ -648,11 +695,11 @@ const addPartyTax = () => {
             try {
                 const response = await fetch('/api/get-customer')
                 const result = await response.json()
-                setCustomer(result.customer)
+                setCustomer(result.customer || [])
                 setCustomerLoaded(true);
             } catch (error) {
                 console.error('Error fetching Customer data:', error);
-                alert('Failed to fetch customer.');
+                notify.error('Could not load the party list. Reload the page to try again.');
             }
         }
         
@@ -705,10 +752,15 @@ const addPartyTax = () => {
     // master fills the rest. Its three discount columns apply one after
     // another, and reach the line as the single
     // percentage an invoice carries -- see lib/priceList.mjs.
+    //
+    // `side` makes a purchase line start from the master's PURCHASE price
+    // (falling back to the sale price when none is set); it used to start
+    // every purchase from the sale price.
     const defaultPricing = (sourceItem) =>
         resolveItemPricing(
             sourceItem,
-            options.usePriceList ? latestPriceListFor(priceLists, selectedCustomer?._id) : null
+            options.usePriceList ? latestPriceListFor(priceLists, selectedCustomer?._id) : null,
+            { side: config.type }
         );
 
     const buildNewItem = (sourceItem, overrides = {}) => {
@@ -814,10 +866,13 @@ const saveItem = (e) => {
     const submitInvoice = async () => {
         // sale-alter refuses this with a 409 as well. Stopping here is so the
         // user is told before retyping a bill, not after.
-        if (einvoiceLock) {
-            alert(einvoiceLock);
-            return;
-        }
+        // The reason is already on screen, right above the (disabled) Save
+        // button, in EinvoiceLockNotice; reached here only by the keyboard
+        // shortcut. Saying it twice is noise.
+        if (einvoiceLock) return;
+        // One save at a time. A double click (or Enter held down) used to
+        // post the bill twice.
+        if (saving) return;
 
 
         // === The request body ===
@@ -867,6 +922,8 @@ const saveItem = (e) => {
             config
         );
 
+        setSaving(true);
+        notify.clear();
         try {
             const apiRoute = saveEndpoint(Boolean(value));
             const response = await fetch(apiRoute, {
@@ -875,9 +932,11 @@ const saveItem = (e) => {
                 body: JSON.stringify(invoiceData),
             });
 
-            const result = await response.json();
+            // Never throws, and reads `error` or `message` -- a timed-out
+            // session used to report "Failed to save invoice: undefined".
+            const { ok, body: result, message } = await readResponse(response);
 
-            if (result.success) {
+            if (ok && result.success) {
                 setSelectedItem([]);
                 setPartyTaxes([]);
                 // The server settles the number -- a clash with a concurrent
@@ -895,11 +954,13 @@ const saveItem = (e) => {
                 // or reloading it failed.
                 router.push(`/invoice?invoiceNo=${savedNo}`);
             } else {
-                alert('Failed to save invoice: ' + result.error);
+                notify.error(`The invoice was not saved. ${message || 'Try again.'}`);
             }
         } catch (err) {
             console.error('Error saving invoice:', err);
-            alert('Error saving invoice');
+            notify.error(`The invoice was not saved. ${NETWORK_ERROR}`);
+        } finally {
+            setSaving(false);
         }
     };
 
@@ -1042,20 +1103,22 @@ const handleDispatchSave = () => {
         const source = priceSourceFor(action);
         if (!source) return;
         if (activeRow === null || !selectedItem[activeRow]) {
-            alert('Choose a line first — click into its quantity or rate.');
+            notify.error('Choose a line first — click into its quantity or rate.');
             return;
         }
         const line = selectedItem[activeRow];
         const master = item.find((i) => i.name === line.name);
         const price = Number(master?.[source.field]);
         if (!master || !Number.isFinite(price) || price <= 0) {
-            alert(`No ${source.label} is set on "${line.name}" in the item master.`);
+            notify.error(`No ${source.label} is set on "${line.name}" in the item master.`);
             return;
         }
         // Sigfa warns rather than refuses: "Sale Price Is More Than MRP".
         const mrp = Number(master?.mrp);
         if (source.field !== 'mrp' && Number.isFinite(mrp) && mrp > 0 && price > mrp) {
-            alert(`Note: that ${source.label} (${price}) is more than the MRP (${mrp}).`);
+            notify.info(`Note: that ${source.label} (${price}) is more than the MRP (${mrp}).`);
+        } else {
+            notify.clear();
         }
         handleItemFieldChange(activeRow, 'cost', String(price));
     };
@@ -1361,7 +1424,7 @@ const handleDispatchSave = () => {
                                 </p>
                             )}
                             {!selectedCustomer?.name && (
-                                <p className='field-hint'>From the party's master.</p>
+                                <p className='field-hint'>From the party&apos;s master.</p>
                             )}
                         </div>
                     </div>
@@ -1718,9 +1781,9 @@ const handleDispatchSave = () => {
                                 </tr>
                             </thead>
                             <tbody>
-                                {Object.entries(hsnTotals).map(([hsnCode, data]) => (
-                                    <tr key={hsnCode}>
-                                        <td>{hsnCode}</td>
+                                {Object.entries(hsnTotals).map(([key, data]) => (
+                                    <tr key={key}>
+                                        <td>{data.hsn ?? key}</td>
                                         <td className='num'>
                                             {((data.total || 0) - (data.gstAmount || 0)).toFixed(2)}
                                         </td>
@@ -1960,13 +2023,15 @@ const handleDispatchSave = () => {
                 {/* Save Button */}
                 <div className='sticky bottom-0 -mx-4 mt-2 flex flex-col border-t border-border bg-card/90 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur sm:-mx-6 sm:px-6'>
                 <EinvoiceLockNotice reason={einvoiceLock} />
+                <Notice notice={notice} onClose={notify.clear} className='mb-2' />
                 <button 
                     className='btn btn-primary mx-auto h-11 w-fit px-8 text-base' 
                     onClick={handleSave}
-                    disabled={Boolean(einvoiceLock)}
+                    disabled={Boolean(einvoiceLock) || saving}
+                    aria-busy={saving}
                     title={einvoiceLock || undefined}
                 >
-                    Save Invoice
+                    {saving ? 'Saving…' : 'Save Invoice'}
                 </button>
                 </div>
 

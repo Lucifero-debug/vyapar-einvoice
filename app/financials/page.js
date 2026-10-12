@@ -1,10 +1,15 @@
 'use client';
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useCompany } from '@/context/CompanyContext';
 import { companyAddress } from '@/lib/company.mjs';
 import { STATEMENT_KINDS, STATEMENT_TITLES } from '@/lib/financials.mjs';
 import { periodText } from '@/lib/accountBooks.mjs';
+import ReportUrlSync from '@/components/reports/ReportUrlSync';
+import { REPORT_QUERIES, parseReportQuery } from '@/lib/reportQuery.mjs';
+import { Notice } from '@/components/ui/notice';
+import { useReportDownload } from '@/components/reports/useReportDownload';
+import { istToday } from '@/lib/istDate.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +44,8 @@ const fyStart = () => {
   return `${year}-04-01`;
 };
 
-const todayISO = () => new Date().toISOString().substring(0, 10);
+// Today in India, not in UTC (which is yesterday until 05:30 IST).
+const todayISO = () => istToday();
 
 /** One side of a horizontal account: rows, then a total. */
 function Side({ heading, rows, total, label }) {
@@ -87,12 +93,20 @@ function Financials() {
   const router = useRouter();
   const { company } = useCompany();
 
-  const [kind, setKind] = useState('trial');
-  const [from, setFrom] = useState(fyStart());
-  const [to, setTo] = useState(todayISO());
-  const [expand, setExpand] = useState(false);
-  const [closingStock, setClosingStock] = useState('');
-  const [openingStock, setOpeningStock] = useState('');
+  // A shared link's filters, read BEFORE the first render and used as the
+  // initial state -- so the first fetch is already the link's report. Read in
+  // an effect instead, the page would fetch its defaults first and the two
+  // responses would race (lib/reportQuery.mjs validates every value; anything
+  // invalid or absent keeps the page's own default).
+  const searchParams = useSearchParams();
+  const [link] = useState(() => parseReportQuery(REPORT_QUERIES.financials, searchParams).values);
+
+  const [kind, setKind] = useState(link.kind ?? 'trial');
+  const [from, setFrom] = useState(() => link.from ?? fyStart());
+  const [to, setTo] = useState(() => link.to ?? todayISO());
+  const [expand, setExpand] = useState(link.expand ?? false);
+  const [closingStock, setClosingStock] = useState(link.closingStock ?? '');
+  const [openingStock, setOpeningStock] = useState(link.openingStock ?? '');
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -139,10 +153,31 @@ function Financials() {
   const busy = loading || loadedFor !== signature;
   const shown = loadedFor === signature ? data : null;
 
+  // Downloads fetch first, so a refusal is a message here rather than a
+  // page of raw JSON in place of the app. lib/downloadFile.mjs.
+  const exporter = useReportDownload();
+
+  /**
+   * The statements as a spreadsheet, from the SAME route and query as the
+   * screen. The statement on screen leads the workbook, and is the CSV.
+   */
+  const download = (format) => {
+    const qs = new URLSearchParams({ from, to, kind, format });
+    if (expand) qs.set('expand', '1');
+    if (closingStock.trim() !== '') qs.set('closingStock', closingStock.trim());
+    if (openingStock.trim() !== '') qs.set('openingStock', openingStock.trim());
+    exporter.download(`/api/financials?${qs.toString()}`);
+  };
+
   const title = useMemo(() => STATEMENT_TITLES[kind] || STATEMENT_TITLES.trial, [kind]);
 
   return (
     <div className="doc-sheet report-sheet">
+      <ReportUrlSync
+        schema={REPORT_QUERIES.financials}
+        values={{ kind, from, to, expand, closingStock: closingStock.trim(), openingStock: openingStock.trim() }}
+        restore={false}
+      />
       <div className="doc-head">
         <h2 className="doc-org">{company?.name || ''}</h2>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -238,10 +273,17 @@ function Financials() {
             <button type="button" className="btn btn-secondary" onClick={() => window.print()}>
               Print
             </button>
+            <button type="button" className="btn btn-secondary" onClick={() => download('xlsx')} disabled={!shown}>
+              Download Excel
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => download('csv')} disabled={!shown}>
+              Download CSV
+            </button>
           </div>
         </div>
       </div>
 
+      <Notice notice={exporter.notice} onClose={exporter.notify.clear} />
       {error && (
         <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}

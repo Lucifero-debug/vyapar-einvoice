@@ -17,7 +17,6 @@ async function handlePOST(req, auth) {
   try {
     const data = await req.json();
 
-    console.log("Received body:", data);
 
     const { id, acName, date, againstBill, acType, paymentType, narration, customers } = data;
 

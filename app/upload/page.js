@@ -21,7 +21,13 @@ export const dynamic = 'force-dynamic';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatINR } from '@/lib/currency.mjs';
-import { IMPORT_DRAFT_KEY, MATCH_APPLIED, MATCH_SUGGESTED } from '@/lib/invoiceImport.mjs';
+import {
+  IMPORT_DRAFT_KEY,
+  MATCH_APPLIED,
+  MATCH_SUGGESTED,
+  importParcel,
+  importScopeOf,
+} from '@/lib/invoiceImport.mjs';
 
 /** What the route accepts, and what the picker should therefore offer. */
 const ACCEPT = 'image/png,image/jpeg,image/webp';
@@ -101,6 +107,16 @@ const SEVERITY = {
   check: { label: 'Worth a look', className: 'border-border bg-muted/50 text-foreground' },
 };
 
+/** The signed-in firm and user, as lib/invoiceImport.mjs `importScopeOf` reads them. Null if unknown. */
+async function whoAmI() {
+  try {
+    const res = await fetch('/api/auth/me');
+    return res.ok ? importScopeOf(await res.json()) : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function UploadInvoicePage() {
   const router = useRouter();
 
@@ -109,12 +125,16 @@ export default function UploadInvoicePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+  // Who was signed in when the photo was read. The server matched the bill
+  // against THAT firm's masters, so that is the firm the draft belongs to.
+  const [readBy, setReadBy] = useState(null);
   const inputRef = useRef(null);
 
   const pick = (event) => {
     const chosen = event.target.files?.[0] || null;
     setFile(chosen);
     setResult(null);
+    setReadBy(null);
     setError('');
     if (preview) URL.revokeObjectURL(preview);
     setPreview(chosen ? URL.createObjectURL(chosen) : '');
@@ -125,7 +145,9 @@ export default function UploadInvoicePage() {
     setLoading(true);
     setError('');
     setResult(null);
+    setReadBy(null);
     try {
+      const scope = await whoAmI();
       const scaled = (await downscale(file)) || file;
       const res = await fetch('/api/invoice-extract', {
         method: 'POST',
@@ -138,6 +160,7 @@ export default function UploadInvoicePage() {
         return;
       }
       setResult(body);
+      setReadBy(scope);
     } catch (err) {
       setError('Could not reach the server.');
     } finally {
@@ -152,12 +175,38 @@ export default function UploadInvoicePage() {
    * items array through encodeURIComponent into a query string, which is a
    * bill's worth of data in the address bar, the browser history and every
    * server log that records a URL.
+   *
+   * The parcel is TAGGED with the screen it is for and the firm and user who
+   * read it (lib/invoiceImport.mjs `importParcel`), and the purchase screen
+   * checks both before filling anything in. The key is one per browser tab,
+   * and a tab can be signed in to another firm by the time it is opened.
    */
-  const openInForm = () => {
+  const openInForm = async () => {
+    // Still the same firm and user as when the photo was read? A tab can be
+    // signed out and into another company in between.
+    const scope = await whoAmI();
+    if (
+      !scope ||
+      !readBy ||
+      scope.companyId !== readBy.companyId ||
+      scope.user !== readBy.user
+    ) {
+      setError(
+        scope && readBy
+          ? 'You are signed in as a different user or company from when this bill was read. Read the photo again.'
+          : 'Could not confirm who is signed in. Sign in again, then read the photo again.'
+      );
+      return;
+    }
     try {
       sessionStorage.setItem(
         IMPORT_DRAFT_KEY,
-        JSON.stringify({ draft: result.draft, warnings: result.warnings, newMasters: result.newMasters })
+        JSON.stringify(
+          importParcel(
+            { draft: result.draft, warnings: result.warnings, newMasters: result.newMasters },
+            scope
+          )
+        )
       );
     } catch {
       setError('This browser would not hold the draft. Type the bill in instead.');

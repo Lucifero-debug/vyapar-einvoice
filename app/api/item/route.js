@@ -7,7 +7,6 @@ async function handlePOST(req, auth) {
     try {
         await connect()
         const itemdata=await req.json(); 
-        console.log("fool",itemdata)
         const value=itemdata.value
         const item= await Item.find({   
             $or: [

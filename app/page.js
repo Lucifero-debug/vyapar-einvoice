@@ -57,6 +57,8 @@ import CustomerGroupMaster from '@/components/CustomerGroupMaster';
 import StateMaster from '@/components/StateMaster';
 import PriceListMaster from '@/components/PriceListMaster';
 import { priceListLabel } from '@/lib/priceList.mjs';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 
 const currency = (n) =>
   `₹${Number(n || 0).toLocaleString('en-IN', {
@@ -91,6 +93,7 @@ const Page = () => {
   const [alter, setAlter] = useState(false);
   const [del, setDel] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [notice, notify] = useNotice();
   const [selectedHsn, setSelectedHsn] = useState(null);
   const [groups, setGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
@@ -229,7 +232,7 @@ const Page = () => {
         // Each endpoint already degrades on its own, so reaching here means
         // something in the shaping above broke. Say so, and name it.
         console.error('Error building the dashboard:', error);
-        alert(`Could not build the dashboard.\n\n${error.message}`);
+        notify.error('Could not build the dashboard. Reload the page; if it keeps happening, report it.');
       } finally {
         setLoading(false);
       }
@@ -302,7 +305,7 @@ const Page = () => {
           break;
         default:
           console.warn('Unsupported alterState:', alterState);
-          alert(`Navigation not supported for ${alterState}`);
+          notify.error(`Editing ${alterState} is not available from here.`);
       }
     }
   };
@@ -341,23 +344,25 @@ const Page = () => {
         endpoint = `/api/delete-voucher?id=${currentValue}&type=Cash`;
         break;
       default:
-        alert(`Delete not supported for ${deleteState}`);
+        notify.error(`Deleting ${deleteState} is not available from here.`);
         return;
     }
 
+    notify.info('Deleting…');
     try {
       const response = await fetch(endpoint, { method: 'POST' });
-      const result = await response.json();
-      if (result.success) {
+      // `success` is not sent by every delete route (delete-invoice answers
+      // with its counts), so a 2xx without `success: false` is a success.
+      const { ok, message } = await readResponse(response);
+      if (ok) {
         window.location.reload();
       } else {
-        const reason = result.error || result.message;
-        console.error('Failed to delete:', reason);
-        alert(`Failed to delete: ${reason}`);
+        console.error('Failed to delete:', response.status);
+        notify.error(`Not deleted. ${message}`);
       }
     } catch (error) {
       console.error('Error during delete request:', error);
-      alert('Error during delete');
+      notify.error(`Not deleted. ${NETWORK_ERROR}`);
     }
   };
 
@@ -669,6 +674,7 @@ const Page = () => {
 
   return (
     <div className="page-shell space-y-6">
+      <Notice notice={notice} onClose={notify.clear} className="" />
       {/* Headline figure */}
       <section className="overflow-hidden rounded-xl bg-primary text-primary-foreground shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-6 p-6 sm:p-7">

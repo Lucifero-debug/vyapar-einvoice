@@ -1,7 +1,8 @@
 'use client';
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import OrderSearchParams from '@/components/OrderSearchParams';
+import { useRouter, useSearchParams } from 'next/navigation';
+import ReportUrlSync from '@/components/reports/ReportUrlSync';
+import { REPORT_QUERIES, parseReportQuery } from '@/lib/reportQuery.mjs';
 import { useCompany } from '@/context/CompanyContext';
 import { companyAddress } from '@/lib/company.mjs';
 import { ORDER_TYPES } from '@/lib/orderStatus.mjs';
@@ -20,6 +21,7 @@ import {
   toCsv,
   trim,
 } from '@/lib/orderReports.mjs';
+import { istToday } from '@/lib/istDate.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,7 +65,8 @@ const financialYearStart = () => {
   return `${year}-04-01`;
 };
 
-const todayISO = () => new Date().toISOString().substring(0, 10);
+// Today in India, not in UTC (which is yesterday until 05:30 IST).
+const todayISO = () => istToday();
 
 /** Hand the browser a file without a round trip to the server. */
 const downloadCsv = (filename, csv) => {
@@ -84,12 +87,23 @@ function OrderReports() {
   const router = useRouter();
   const { company } = useCompany();
 
-  const [type, setType] = useState('Sale');
-  const [view, setView] = useState('register');
-  const [from, setFrom] = useState(financialYearStart());
-  const [to, setTo] = useState(todayISO());
-  const [party, setParty] = useState('');
-  const [item, setItem] = useState('');
+  // A shared link's filters, read BEFORE the first render and used as the
+  // initial state -- so the first fetch is already the link's report. Read in
+  // an effect instead, the page would fetch its defaults first and the two
+  // responses would race (lib/reportQuery.mjs validates every value; anything
+  // invalid or absent keeps the page's own default).
+  // `type` and `customer` are the two this page always read from a link
+  // (via OrderSearchParams); the view, the register's dates and the item are
+  // new.
+  const searchParams = useSearchParams();
+  const [link] = useState(() => parseReportQuery(REPORT_QUERIES.orderReport, searchParams).values);
+
+  const [type, setType] = useState(link.type ?? 'Sale');
+  const [view, setView] = useState(link.view ?? 'register');
+  const [from, setFrom] = useState(() => link.from ?? financialYearStart());
+  const [to, setTo] = useState(() => link.to ?? todayISO());
+  const [party, setParty] = useState(link.party ?? '');
+  const [item, setItem] = useState(link.item ?? '');
 
   const [rows, setRows] = useState([]);
   // WHICH VIEW THESE ROWS BELONG TO.
@@ -119,10 +133,7 @@ function OrderReports() {
   const isPending = view === 'party-pending' || view === 'item-pending';
   const isReconcile = view === 'reconcile';
 
-  const readParams = useCallback((q) => {
-    if (ORDER_TYPES.includes(q.type)) setType(q.type);
-    if (q.customer) setParty(q.customer);
-  }, []);
+
 
   useEffect(() => {
     fetch('/api/get-customer')
@@ -237,7 +248,11 @@ function OrderReports() {
   return (
     <>
       <Suspense fallback={null}>
-        <OrderSearchParams onValue={readParams} />
+        <ReportUrlSync
+          schema={REPORT_QUERIES.orderReport}
+          values={{ type, view, from, to, party, item }}
+          restore={false}
+        />
       </Suspense>
 
       <div className="doc-sheet report-sheet">

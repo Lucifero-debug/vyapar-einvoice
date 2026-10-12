@@ -850,7 +850,9 @@ test("the route computes nothing itself", () => {
   const src = code(read("../app/api/analytics/route.js"));
   for (const fn of [
     "trendMetrics", "trendSeries", "partyRows", "partySummary",
-    "lowStockRows", "stockSummary", "comparisonRows", "periodFigures", "vouchersIn",
+    // `alertConditions` is lowStockRows less services (lib/stockAlerts.mjs),
+    // so the low-stock rule is still the module's, not the route's.
+    "alertConditions", "stockSummary", "comparisonRows", "periodFigures", "vouchersIn",
   ]) {
     assert.ok(src.includes(fn), `${fn} is not used`);
   }

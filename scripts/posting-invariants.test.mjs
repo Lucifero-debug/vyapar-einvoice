@@ -22,8 +22,13 @@
  */
 
 import assert from "node:assert/strict";
-import { applyDelta, modeOf, round2, voucherDelta } from "../lib/balance.mjs";
-import { buildInvoiceLedgerRows, invoicePostingDeltas } from "../lib/invoicePosting.mjs";
+import { applyDelta, modeOf, round2 } from "../lib/balance.mjs";
+import {
+  balanceMovesFromRows,
+  buildInvoiceLedgerRows,
+  invoicePostingDeltas,
+  withPartyCashLeg,
+} from "../lib/invoicePosting.mjs";
 import { buildVoucherBalanceDeltas, buildVoucherLedgerRows } from "../lib/voucherLedger.mjs";
 import { defaultAccountName, paymentAccountGroup } from "../lib/paymentType.mjs";
 import { splitGst } from "../lib/gst.mjs";
@@ -184,14 +189,6 @@ function deleteInvoice(db, invoiceNo) {
   const rows = db.ledger.filter((r) => r.voucherId === invoice._id);
   const partyName = invoice.customer?.name;
 
-  const settlement = new Map();
-  for (const row of rows) {
-    if (!row.customerName || row.customerName === partyName) continue;
-    settlement.set(row.customerName, round2(
-      (settlement.get(row.customerName) || 0) + voucherDelta({ debit: row.debit, credit: row.credit })
-    ));
-  }
-
   db.ledger = db.ledger.filter((r) => r.voucherId !== invoice._id);
 
   // Reversed from the same function the posting used, not from a stored figure.
@@ -200,6 +197,11 @@ function deleteInvoice(db, invoiceNo) {
     finalAmount: invoice.finalAmount ?? Number(invoice.balanceDue || 0) + Number(invoice.received || 0),
     received: invoice.received,
   });
+
+  // As app/api/delete-invoice/route.js: every account by its rows, the party
+  // by the derived delta -- plus, when the bill was raised to the cash
+  // account itself, the cash leg written under the party's own name.
+  const settlement = withPartyCashLeg(balanceMovesFromRows(rows), rows, partyName, deltas.cashDelta);
 
   const moves = new Map();
   moveInto(moves, partyName, -deltas.partyDelta);
@@ -345,6 +347,19 @@ test("a sale billed to the cash account does not lose a leg", () => {
   // Document +1000, receipt -1000, cash +1000 -- all on one account.
   assert.equal(db.customers.get("Cash").lastBal, 1000);
   assertReconciles(db, "self-billed cash sale");
+});
+
+test("...and deleting it takes the money back out of the till", () => {
+  // The cash leg sits under the party's own name here. Skipping the party's
+  // rows on delete left 1,000 in the till for a bill that no longer existed.
+  for (const received of [1000, 400, 0]) {
+    const db = newDb();
+    addAccount(db, "Cash", 0, "Cash");
+    saveInvoice(db, inv({ invoiceNo: 1, customer: { name: "Cash" }, finalAmount: 1000, received, balanceDue: 1000 - received }));
+    deleteInvoice(db, 1);
+    assert.equal(db.customers.get("Cash").lastBal, 0, `received ${received}`);
+    assertReconciles(db, `cash-party delete, received ${received}`);
+  }
 });
 
 test("a client that sends a wrong balanceDue cannot create drift", () => {

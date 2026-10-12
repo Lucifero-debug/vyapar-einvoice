@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { internalErrorBody } from "@/lib/serverError.mjs";
 import { connect } from "@/lib/mongodb";
 import Company from "@/models/companyModel";
 import User from "@/models/userModel";
@@ -10,6 +11,8 @@ import {
   sessionCookieOptions,
 } from "@/lib/session.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
+import { clientIp, tooManyResponse } from "@/lib/rateLimit.mjs";
+import { hitRateLimit } from "@/lib/rateLimitStore.mjs";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +64,18 @@ export async function POST(req) {
     }
 
     await connect();
+
+    // Each sign-up creates a firm. Counted after the form is valid, so a
+    // person fixing a typo in their own form is not charged for it, and
+    // before the password is hashed. lib/rateLimit.mjs.
+    // Skipped when the caller's address cannot be trusted (lib/rateLimit.mjs
+    // clientIp); set SIGNUP_DISABLED on such a host instead.
+    const ip = clientIp(req.headers);
+    const allowance = ip ? await hitRateLimit("signup-ip", ip) : { allowed: true };
+    if (!allowance.allowed) {
+      const { status, body, headers } = tooManyResponse(allowance, "sign-ups from this network");
+      return NextResponse.json(body, { status, headers });
+    }
 
     const passwordHash = await hashPassword(password);
 
@@ -119,6 +134,10 @@ export async function POST(req) {
         { status: 409 }
       );
     }
-    return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+    // The exception to the log, a reference to the screen: a database that
+    // will not connect names its host in the message. lib/serverError.mjs.
+    const { ref, payload } = internalErrorBody();
+    console.error(`[api ${ref}] Sign-up error:`, error);
+    return NextResponse.json(payload, { status: 500 });
   }
 }

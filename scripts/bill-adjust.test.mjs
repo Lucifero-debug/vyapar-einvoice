@@ -756,8 +756,10 @@ test("the form sends them, and shows the server's refusal", () => {
   const src = read("../app/voucheradd/page.js");
   assert.ok(/allocations: entry\.allocations/.test(src));
   // "Failed to save voucher" tells the user nothing they can act on; the
-  // server names the bill and the figure.
-  assert.ok(/result\.error \|\| "Failed to save voucher"/.test(src));
+  // server names the bill and the figure. Read through lib/apiResponse.mjs,
+  // which takes the route's `error` (or `message`) and shows it as-is.
+  assert.ok(/const \{ ok, message \} = await readResponse\(res\)/.test(src));
+  assert.ok(/The voucher was not saved\. \$\{message\}/.test(src));
 });
 
 test("ticking the box changes something the user can see", () => {

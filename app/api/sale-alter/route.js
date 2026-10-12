@@ -10,6 +10,7 @@ import { glDeltas } from "@/lib/invoiceGl.mjs";
 import { resolveGlAccounts } from "@/lib/glAccounts.mjs";
 import {
   balanceMovesFromRows,
+  withPartyCashLeg,
   buildInvoiceLedgerRows,
   invoicePostingDeltas,
 } from "@/lib/invoicePosting.mjs";
@@ -29,26 +30,47 @@ import {
 import { stampItemLines } from "@/lib/uqc.mjs";
 import { LOCKED_STATUS, editBlockedReason } from "@/lib/einvoiceLock.mjs";
 import { reconcileOrderQty } from "@/lib/orderClaims.mjs";
+import { settledBillProblem } from "@/lib/billAdjust.mjs";
+import { settledAgainst } from "@/lib/openBillsFor.mjs";
+import Order from "@/models/orderModel";
+import {
+  linesNeedingMaster,
+  orderLineProblems,
+  orderRefsOf,
+  partyProblem,
+  paymentAccountProblem,
+  prepareInvoiceInput,
+  unknownItems,
+} from "@/lib/invoiceInput.mjs";
 
 async function handlePOST(req, auth) {
   try {
-    const invoiceData = await req.json();
+    const body = await req.json().catch(() => null);
+
+    // Validated and recomputed before anything is read or written: the same
+    // allowlist and the same arithmetic as save-invoice (lib/invoiceInput.mjs).
+    // This route used to store `balanceDue`, `totalAmount`, `gst`, the HSN
+    // summary, the party taxes and every line figure exactly as sent.
+    const prepared = prepareInvoiceInput(body, { mode: "edit" });
+    if (!prepared.ok) {
+      return NextResponse.json({ success: false, error: prepared.error }, { status: 400 });
+    }
+    const invoiceData = prepared.invoice;
+
+    const notAParty = partyProblem(invoiceData.customer.name);
+    if (notAParty) {
+      return NextResponse.json({ success: false, error: notAParty }, { status: 400 });
+    }
 
     // The invoice number is an editable field on the form, so it cannot also be
     // the lookup key: changing #5 to #6 used to find invoice SIX and overwrite
     // it with #5's contents, leaving #5 untouched. The page sends the number it
     // opened with, and that is what identifies the row.
-    const lookupNo = Number(
-      invoiceData.originalInvoiceNo ?? invoiceData.invoiceNo
-    );
-    const nextNo = Number(invoiceData.invoiceNo);
-
-    if (!Number.isFinite(lookupNo)) {
-      return NextResponse.json(
-        { success: false, error: "Invoice number missing." },
-        { status: 400 }
-      );
-    }
+    //
+    // Both are positive whole numbers by now -- a 0, a fraction or a negative
+    // used to be accepted as the new number.
+    const lookupNo = invoiceData.originalInvoiceNo;
+    const nextNo = invoiceData.invoiceNo ?? lookupNo;
 
     // Edit and every posting it implies commit together: a failure between them
     // used to leave the party's balance reflecting an invoice that no longer
@@ -76,7 +98,7 @@ async function handlePOST(req, auth) {
       }
 
       // Renumbering onto an invoice that already exists would destroy it.
-      if (Number.isFinite(nextNo) && nextNo !== lookupNo) {
+      if (nextNo !== lookupNo) {
         const clash = await Invoice.findOne({ invoiceNo: nextNo })
           .session(session)
           .lean();
@@ -93,12 +115,48 @@ async function handlePOST(req, auth) {
       // written here used to list name, phone and email only, which silently
       // dropped `custId` from every invoice that was ever edited.
       const buyer = await Customer.findOne(
-        { name: invoiceData.customer?.name },
+        { name: invoiceData.customer.name },
         BUYER_PROJECTION,
         { session }
       ).lean();
 
+      // Refused before the update rather than after it. The old order wrote
+      // the invoice with an empty buyer block first and relied on the
+      // rollback; nothing should be written for a party this firm does not
+      // have.
+      if (!buyer) {
+        throw new AbortTransaction({ success: false, error: "Customer not found" });
+      }
+      const headProblem = partyProblem(buyer.name);
+      if (headProblem) {
+        throw new AbortTransaction({ success: false, error: headProblem }, 400);
+      }
+
       const buyerBlock = buyerSnapshot(buyer, invoiceData.customer);
+
+      // Vouchers that settled this bill name it by type and number, and are
+      // counted against its party and amount due. Renumbering it, moving it
+      // to another party or kind, or cutting what is due below what has been
+      // settled would orphan or double that money. lib/billAdjust.mjs.
+      const settled = await settledAgainst({
+        invoiceNo: previousInvoice.invoiceNo,
+        type: previousInvoice.type,
+        session,
+      });
+      const settledProblem = settledBillProblem({
+        before: previousInvoice,
+        after: {
+          invoiceNo: nextNo,
+          type: invoiceData.type,
+          return: invoiceData.return,
+          customer: { name: buyerBlock?.name ?? buyer.name },
+          balanceDue: invoiceData.balanceDue,
+        },
+        ...settled,
+      });
+      if (settledProblem) {
+        throw new AbortTransaction({ success: false, error: settledProblem }, 409);
+      }
 
       // The place of supply is the party's own state, from their master -- not
       // whatever the form sent. It used to be a dropdown picked per bill, and
@@ -117,15 +175,49 @@ async function handlePOST(req, auth) {
       // unit code is corrected next year must not change the unit on a bill
       // already reported to the IRP. lib/uqc.mjs.
       const itemMasters = await Item.find(
-        { name: { $in: (invoiceData.items || []).map((i) => i?.name).filter(Boolean) } },
+        { name: { $in: invoiceData.items.map((i) => i.name) } },
         { name: 1, uqc: 1, isService: 1 },
         { session }
       ).lean();
 
+      // Every line must be one of THIS firm's items -- the query is
+      // tenant-scoped, so another firm's item is simply not found.
+      const missing = unknownItems(linesNeedingMaster(invoiceData.items), itemMasters);
+      if (missing.length) {
+        throw new AbortTransaction(
+          {
+            success: false,
+            error: `Not in your item master: ${missing.join(", ")}. Add the item first.`,
+          },
+          400
+        );
+      }
+
+      // Every order line a bill settles must exist on THIS firm's order and
+      // name the same item. Read tenant-scoped, so another firm's order is
+      // simply absent. lib/orderClaims.mjs then settles by line id.
+      const refs = orderRefsOf(invoiceData.items);
+      if (refs.length) {
+        const orders = await Order.find(
+          { $or: refs.map((r) => ({ orderNo: r.orderNo, type: r.type })) },
+          { orderNo: 1, type: 1, "items._id": 1, "items.name": 1 },
+          { session }
+        ).lean();
+        const orderProblems = orderLineProblems(invoiceData.items, orders);
+        if (orderProblems.length) {
+          throw new AbortTransaction({ success: false, error: orderProblems.join(" ") }, 400);
+        }
+      }
+
       const updatedInvoice = await Invoice.findOneAndUpdate(
         { invoiceNo: lookupNo },
+        // The same fields this route has always written, now from the
+        // validated input, with every figure recomputed from the lines.
+        // `shippedTo`, `dispatchFrom` and `partyBillNo` stay out, as they
+        // always have: the edit screen does not reload the first two, so
+        // writing them would blank what the bill was saved with.
         {
-          invoiceNo: Number.isFinite(nextNo) ? nextNo : lookupNo,
+          invoiceNo: nextNo,
           date: invoiceData.date,
           customer: buyerBlock,
           paymentType: invoiceData.paymentType,
@@ -135,28 +227,27 @@ async function handlePOST(req, auth) {
           gst: invoiceData.gst,
           totalAmount: invoiceData.totalAmount,
           // finalAmount used to be left out entirely, so an edited invoice kept
-          // its original grand total while every other figure moved.
-          finalAmount: Number(invoiceData.finalAmount) || 0,
-          received: Number(invoiceData.received) || 0,
+          // its original grand total while every other figure moved. `??`
+          // throughout: a bill of zero is a bill of zero.
+          finalAmount: invoiceData.finalAmount,
+          received: invoiceData.received,
           balanceDue: invoiceData.balanceDue,
           items: stampItemLines(invoiceData.items, itemMasters),
-          partyTaxes: invoiceData.partyTaxes || [],
-          hsnTotals: invoiceData.hsnTotals || [],
-          weight: Number(invoiceData.weight) || 0,
-          transport: invoiceData.transport || "",
-          grNo: invoiceData.grNo || "",
-          grDate: invoiceData.grDate ? new Date(invoiceData.grDate) : null,
-          orderNo: Number(invoiceData.orderNo) || 0,
-          orderDate: invoiceData.orderDate ? new Date(invoiceData.orderDate) : null,
-          pvtMark: invoiceData.pvtMark || "",
-          caseDetails: invoiceData.caseDetails || "",
-          freight: invoiceData.freight || "",
-          ewayBillNo: invoiceData.ewayBillNo || "",
-          ewayBillDate: invoiceData.ewayBillDate
-            ? new Date(invoiceData.ewayBillDate)
-            : null,
+          partyTaxes: invoiceData.partyTaxes,
+          hsnTotals: invoiceData.hsnTotals,
+          weight: invoiceData.weight,
+          transport: invoiceData.transport,
+          grNo: invoiceData.grNo,
+          grDate: invoiceData.grDate,
+          orderNo: invoiceData.orderNo ?? 0,
+          orderDate: invoiceData.orderDate,
+          pvtMark: invoiceData.pvtMark,
+          caseDetails: invoiceData.caseDetails,
+          freight: invoiceData.freight,
+          ewayBillNo: invoiceData.ewayBillNo,
+          ewayBillDate: invoiceData.ewayBillDate,
           type: invoiceData.type,
-          return: invoiceData.return || false,
+          return: invoiceData.return,
         },
         { new: true, session }
       );
@@ -206,10 +297,8 @@ async function handlePOST(req, auth) {
 
       const after = invoicePostingDeltas({
         type: invoiceData.type,
-        isReturn: Boolean(invoiceData.return),
-        finalAmount:
-          invoiceData.finalAmount ??
-          Number(invoiceData.balanceDue || 0) + Number(invoiceData.received || 0),
+        isReturn: invoiceData.return,
+        finalAmount: invoiceData.finalAmount,
         received: invoiceData.received,
       });
 
@@ -246,12 +335,15 @@ async function handlePOST(req, auth) {
       // any whose rows were lost.
       const oldRows = await Ledger.find(
         { voucherId: updatedInvoice._id },
-        { customerName: 1, debit: 1, credit: 1 },
+        { customerName: 1, account: 1, debit: 1, credit: 1 },
         { session }
       ).lean();
 
-      const reverse = balanceMovesFromRows(oldRows);
-      reverse.delete(previousName);
+      // The party was already reversed by `before.partyDelta`. Its cash leg,
+      // when the invoice was billed to the cash account itself, still has to
+      // be -- by the derived amount, not the party's row total, which an
+      // older edit may have left stale. lib/invoicePosting.mjs.
+      const reverse = withPartyCashLeg(balanceMovesFromRows(oldRows), oldRows, previousName, before.cashDelta);
       for (const [name, posted] of reverse) {
         await Customer.findOneAndUpdate({ name }, balancePipeline(-posted), { session });
       }
@@ -267,6 +359,12 @@ async function handlePOST(req, auth) {
       let payAccount = null;
       if (after.cashDelta !== 0) {
         payAccount = await resolvePaymentAccount(invoiceData.paymentType, session);
+        // A payment type naming a party instead of a cash or bank account
+        // would book the receipt to that party. lib/invoiceInput.mjs.
+        const badAccount = paymentAccountProblem(payAccount, invoiceData.paymentType);
+        if (badAccount) {
+          throw new AbortTransaction({ success: false, error: badAccount }, 400);
+        }
       }
 
       const stored = await resolveGlAccounts(
@@ -295,8 +393,7 @@ async function handlePOST(req, auth) {
 
       // Apply the new side from the rows, party excluded -- it was already
       // moved by `after.partyDelta` above.
-      const apply = balanceMovesFromRows(rows);
-      apply.delete(invoiceData.customer.name);
+      const apply = withPartyCashLeg(balanceMovesFromRows(rows), rows, invoiceData.customer.name, after.cashDelta);
       for (const [name, delta] of apply) {
         await Customer.findOneAndUpdate({ name }, balancePipeline(delta), { session });
       }
@@ -307,13 +404,13 @@ async function handlePOST(req, auth) {
       // Stock was not maintained here either: changing a quantity left the old
       // one in the stock ledger. Clear the old number's rows too, in case the
       // invoice was renumbered.
-      if (Number.isFinite(nextNo) && nextNo !== lookupNo) {
+      if (nextNo !== lookupNo) {
         await writeItemLedgerRows({
           session,
           invoiceNo: lookupNo,
           date: updatedInvoice.date || new Date(),
           type: invoiceData.type,
-          isReturn: Boolean(invoiceData.return),
+          isReturn: invoiceData.return,
           items: [],
           partyName: invoiceData.customer.name,
         });
@@ -324,7 +421,7 @@ async function handlePOST(req, auth) {
         invoiceNo: updatedInvoice.invoiceNo,
         date: updatedInvoice.date || new Date(),
         type: invoiceData.type,
-        isReturn: Boolean(invoiceData.return),
+        isReturn: invoiceData.return,
         items: invoiceData.items,
         partyName: invoiceData.customer.name,
       });
@@ -381,6 +478,14 @@ async function handlePOST(req, auth) {
   } catch (error) {
     if (error instanceof AbortTransaction) {
       return NextResponse.json(error.payload, { status: error.status });
+    }
+    // A renumber racing another save onto the same number. The transaction
+    // rolled back; nothing changed.
+    if (error?.code === 11000 && error?.keyPattern?.invoiceNo) {
+      return NextResponse.json(
+        { success: false, error: "That invoice number was just used by another save. Choose another." },
+        { status: 409 }
+      );
     }
     console.error(error);
     return NextResponse.json({ error: error.message }, { status: 500 });

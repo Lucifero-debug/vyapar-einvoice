@@ -177,11 +177,19 @@ await test("every inserted document gets the firm", () => {
   assert.deepEqual(docs.map((d) => d.companyId), [FIRM_A, FIRM_A]);
 });
 
-await test("a document that already names a firm is left alone", () => {
-  // The migration sets companyId explicitly; it must not be overwritten.
-  const docs = [{ name: "A", companyId: FIRM_B }, { name: "B" }];
+await test("inside a request, a document naming ANOTHER firm is refused", () => {
+  // It used to be left alone, so a create built from a request body could
+  // write into another firm's books. The migrations run unscoped, where the
+  // hooks never stamp, so they still set companyId explicitly.
+  assert.throws(() => stampDocs([{ name: "A", companyId: FIRM_B }, { name: "B" }], FIRM_A), /different firm/);
+  const ops = [{ insertOne: { document: { name: "A", companyId: FIRM_B } } }];
+  assert.throws(() => scopeBulkOps(ops, FIRM_A), /different firm/);
+});
+
+await test("a document naming the caller's own firm is fine", () => {
+  const docs = [{ name: "A", companyId: FIRM_A }, { name: "B" }];
   stampDocs(docs, FIRM_A);
-  assert.deepEqual(docs.map((d) => d.companyId), [FIRM_B, FIRM_A]);
+  assert.deepEqual(docs.map((d) => String(d.companyId)), [String(FIRM_A), String(FIRM_A)]);
 });
 
 await test("stamping with no firm throws rather than writing an orphan", () => {
@@ -342,7 +350,9 @@ await test("the auth routes are deliberately not wrapped", () => {
 
 await test("no tenant model is used without the plugin", () => {
   const dir = fileURLToPath(new URL("../models/", import.meta.url));
-  const EXEMPT = ["companyModel.js", "userModel.js", "totalSales.js"];
+  // rateLimitModel.js: sign-in and sign-up are counted before there is a
+  // firm, and its rows hold only hashed keys (lib/rateLimit.mjs).
+  const EXEMPT = ["companyModel.js", "userModel.js", "totalSales.js", "rateLimitModel.js"];
   const offenders = [];
   for (const f of fs.readdirSync(dir).filter((n) => n.endsWith(".js"))) {
     if (EXEMPT.includes(f)) continue;

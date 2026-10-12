@@ -3,6 +3,10 @@ import { connect } from "@/lib/mongodb";
 import Company from "@/models/companyModel";
 import Invoice from "@/models/invoiceModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import { companyAddress, companyFrom } from "@/lib/company.mjs";
+import { formatOf, isReportFormat, reportResponse } from "@/lib/reportHttp.js";
+import { gstReturnSheets } from "@/lib/reportSheets.mjs";
+import { isIsoDate } from "@/lib/reportQuery.mjs";
 import {
   eReturnGaps,
   eReturnProblem,
@@ -23,6 +27,13 @@ export const dynamic = "force-dynamic";
  * Sigfa's GST returns.
  *
  *   GET /api/gst-return?view=gstr1|gstr3|gstr3b|gstr1-ereturn&from=&to=
+ *                       &format=json|csv|xlsx
+ *
+ * `format` downloads the SAME return the screen shows. GSTR-3 and GSTR-3B are
+ * one label-and-figure table each, so they come as CSV or Excel. GSTR-1 is
+ * ten tables of different shapes and comes as Excel only -- a CSV holds one
+ * table, and its first sheet would be a summary pretending to be the return.
+ * The e-return is the portal's JSON and nothing else.
  *
  * One route for all four, because they are one body of documents cut four
  * ways and every figure has to agree across them: the outward tax GSTR-1
@@ -44,10 +55,29 @@ async function handleGET(req, auth) {
     const view = (params.get("view") || "gstr1").trim();
     const from = (params.get("from") || "").trim();
     const to = (params.get("to") || "").trim();
+    const format = formatOf(params);
 
     if (!isReturnKey(view)) {
       return NextResponse.json(
         { success: false, error: `"${view}" is not one of the GST returns.` },
+        { status: 400 }
+      );
+    }
+    if (!isReportFormat(format)) {
+      return NextResponse.json(
+        { success: false, error: `"${format}" is not a format. Use json, csv or xlsx.` },
+        { status: 400 }
+      );
+    }
+    if (format !== "json" && view === "gstr1-ereturn") {
+      return NextResponse.json(
+        { success: false, error: "The e-return is the portal's JSON. Download it from the screen." },
+        { status: 400 }
+      );
+    }
+    if (format === "csv" && view === "gstr1") {
+      return NextResponse.json(
+        { success: false, error: "GSTR-1 is ten tables; a CSV holds one. Download it as Excel." },
         { status: 400 }
       );
     }
@@ -57,9 +87,17 @@ async function handleGET(req, auth) {
         { status: 400 }
       );
     }
-    if (!taxPeriod(from)) {
+    // Strict yyyy-mm-dd that exists: "2026-02-30" used to roll into March,
+    // and "2026-6-1" passed here only to fail as a 500 in the query.
+    if (!isIsoDate(from) || !isIsoDate(to)) {
       return NextResponse.json(
-        { success: false, error: `"${from}" is not a date.` },
+        { success: false, error: `"${!isIsoDate(from) ? from : to}" is not a date (use yyyy-mm-dd).` },
+        { status: 400 }
+      );
+    }
+    if (from > to) {
+      return NextResponse.json(
+        { success: false, error: "The From date is after the To date." },
         { status: 400 }
       );
     }
@@ -70,9 +108,14 @@ async function handleGET(req, auth) {
     // calendar days, and on a return a day out is a period out.
     const outwardOnly = view === "gstr1" || view === "gstr1-ereturn";
     const filter = outwardOnly ? { type: "Sale" } : { type: { $in: ["Sale", "Purchase"] } };
+    // Widened on BOTH sides: a document dated just after midnight IST on the
+    // first day is stored on the previous UTC day. The module then keeps
+    // exactly the IST days asked for (documentsIn).
+    const start = new Date(`${from}T00:00:00.000Z`);
+    start.setUTCDate(start.getUTCDate() - 1);
     const end = new Date(`${to}T00:00:00.000Z`);
     end.setUTCDate(end.getUTCDate() + 2);
-    filter.date = { $gte: new Date(`${from}T00:00:00.000Z`), $lt: end };
+    filter.date = { $gte: start, $lt: end };
 
     const invoices = await Invoice.find(filter, {
       invoiceNo: 1,
@@ -97,7 +140,7 @@ async function handleGET(req, auth) {
       // tenant list, so the tenant plugin deliberately does not apply to it.
       // Only the GSTIN is asked for -- it is the one field the upload needs.
       const company = await Company.findById(auth.companyId).select("gstin name").lean();
-      const problem = eReturnProblem({ company: company || {}, from });
+      const problem = eReturnProblem({ company: company || {}, from, to });
       if (problem) {
         return NextResponse.json({ success: false, error: problem }, { status: 400 });
       }
@@ -121,7 +164,24 @@ async function handleGET(req, auth) {
           ? gstr3bSheet({ invoices, from, to })
           : gstr1Sheet({ invoices, from, to });
 
-    return NextResponse.json({ success: true, view, title, ...sheet });
+    if (format === "json") {
+      return NextResponse.json({ success: true, view, title, ...sheet });
+    }
+
+    const companyDoc = await Company.findById(auth.companyId).lean();
+    const company = companyFrom(companyDoc);
+    return reportResponse({
+      format,
+      sheets: gstReturnSheets({
+        view,
+        sheet,
+        from,
+        to,
+        company,
+        companyAddressLine: companyAddress(company),
+      }),
+      filename: { report: view, subject: sheet.period, from, to },
+    });
   } catch (err) {
     console.error("GST return error:", err);
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });

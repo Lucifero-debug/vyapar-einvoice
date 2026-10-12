@@ -25,6 +25,10 @@ export default function StatementSearchParams({ onValues }) {
 
   useEffect(() => {
     if (done.current) return;
+    // Once, whatever the URL held. The page now writes its filters back to the
+    // URL (components/reports/ReportUrlSync.jsx); a reader still waiting for
+    // values would pick up that write-back and apply it as if it were a link.
+    done.current = true;
     const values = {
       side: searchParams.get('side') || '',
       account: searchParams.get('account') || '',
@@ -34,7 +38,6 @@ export default function StatementSearchParams({ onValues }) {
       to: searchParams.get('to') || '',
     };
     if (Object.values(values).some(Boolean)) {
-      done.current = true;
       onValues?.(values);
     }
   }, [searchParams, onValues]);

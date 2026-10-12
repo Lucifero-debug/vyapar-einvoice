@@ -10,6 +10,7 @@ import { withTransaction, AbortTransaction } from '@/lib/withTransaction.mjs'
 import { findNameClash, normalizeName } from "@/lib/uniqueName.mjs";
 import { normalizeStateCode } from '@/lib/gst.mjs'
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
+import { headNameProblem } from "@/lib/invoiceGl.mjs";
 
 async function handlePOST(req, auth) {
     try {
@@ -31,6 +32,18 @@ async function handlePOST(req, auth) {
             const previousName = existing.name;
             const nextName = (customerData.name || "").trim() || previousName;
             const renamed = nextName !== previousName;
+
+            // A ledger head keeps its name, and a party may not take one.
+            // lib/invoiceGl.mjs.
+            const headProblem = headNameProblem({
+                name: nextName,
+                group: customerData.group,
+                previousName,
+                previousGroup: existing.group,
+            });
+            if (headProblem) {
+                throw new AbortTransaction({ error: headProblem }, 400);
+            }
 
             // Merging two parties' history by renaming one onto the other is
             // never what anybody means.
@@ -92,40 +105,40 @@ async function handlePOST(req, auth) {
             // rename used to orphan the customer's entire history: nothing
             // under the new name, and the old rows unreachable.
             if (renamed) {
-                await Promise.all([
-                    Ledger.updateMany(
-                        { customerName: previousName },
-                        { $set: { customerName: nextName } },
-                        { session }
-                    ),
-                    // The contra side of somebody else's row can name this
-                    // party too.
-                    Ledger.updateMany(
-                        { account: previousName },
-                        { $set: { account: nextName } },
-                        { session }
-                    ),
-                    ItemLedger.updateMany(
-                        { partyName: previousName },
-                        { $set: { partyName: nextName } },
-                        { session }
-                    ),
-                    Invoice.updateMany(
-                        { "customer.name": previousName },
-                        { $set: { "customer.name": nextName } },
-                        { session }
-                    ),
-                    Voucher.updateMany(
-                        { acName: previousName },
-                        { $set: { acName: nextName } },
-                        { session }
-                    ),
-                    Voucher.updateMany(
-                        { "customers.name": previousName },
-                        { $set: { "customers.$[line].name": nextName } },
-                        { session, arrayFilters: [{ "line.name": previousName }] }
-                    ),
-                ]);
+                // One after another: parallel operations on one session inside a
+                // transaction are not supported by MongoDB.
+                await Ledger.updateMany(
+                    { customerName: previousName },
+                    { $set: { customerName: nextName } },
+                    { session }
+                );
+                // The contra side of somebody else's row can name this
+                // party too.
+                await Ledger.updateMany(
+                    { account: previousName },
+                    { $set: { account: nextName } },
+                    { session }
+                );
+                await ItemLedger.updateMany(
+                    { partyName: previousName },
+                    { $set: { partyName: nextName } },
+                    { session }
+                );
+                await Invoice.updateMany(
+                    { "customer.name": previousName },
+                    { $set: { "customer.name": nextName } },
+                    { session }
+                );
+                await Voucher.updateMany(
+                    { acName: previousName },
+                    { $set: { acName: nextName } },
+                    { session }
+                );
+                await Voucher.updateMany(
+                    { "customers.name": previousName },
+                    { $set: { "customers.$[line].name": nextName } },
+                    { session, arrayFilters: [{ "line.name": previousName }] }
+                );
             }
 
             return existing;

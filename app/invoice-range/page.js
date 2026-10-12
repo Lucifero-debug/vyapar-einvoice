@@ -3,8 +3,12 @@ import React, { useMemo, useState } from 'react'
 import { Printer } from 'lucide-react';
 import InvoiceDocument from '@/components/InvoiceDocument';
 import { useSaleOptions } from '@/context/SaleOptionContext';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
+import { istToday } from '@/lib/istDate.mjs';
 
-const today = () => new Date().toISOString().substring(0, 10);
+// Today in India, not in UTC (which is yesterday until 05:30 IST).
+const today = () => istToday();
 const firstOfMonth = () => `${today().substring(0, 8)}01`;
 
 const TYPE_OPTIONS = [
@@ -29,6 +33,7 @@ const Page = () => {
   const [invoices, setInvoices] = useState(null);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [notice, notify] = useNotice();
   // Ids ticked for printing. Everything loaded starts ticked, so the default
   // is the batch behaviour this page had before.
   const [picked, setPicked] = useState(() => new Set());
@@ -42,20 +47,21 @@ const Page = () => {
 
   const loadInvoices = async () => {
     if (!from || !to) {
-      alert('Please pick both dates');
+      notify.error('Pick both a From and a To date.');
       return;
     }
     if (from > to) {
-      alert('The From date must be on or before the To date');
+      notify.error('The From date must be on or before the To date.');
       return;
     }
 
     setLoading(true);
+    notify.clear();
     try {
       const res = await fetch(`/api/invoices-by-date?from=${from}&to=${to}&type=${type}`);
-      const data = await res.json();
-      if (!data.success) {
-        alert(`Failed to load invoices: ${data.error}`);
+      const { ok, body: data, message } = await readResponse(res);
+      if (!ok || !data.success) {
+        notify.error(`Could not load the invoices. ${message}`);
         return;
       }
       setInvoices(data.invoices);
@@ -63,7 +69,7 @@ const Page = () => {
       setPicked(new Set(data.invoices.map((inv) => inv._id)));
     } catch (err) {
       console.error('Error loading invoices:', err);
-      alert('Error loading invoices');
+      notify.error(`Could not load the invoices. ${NETWORK_ERROR}`);
     } finally {
       setLoading(false);
     }
@@ -103,6 +109,7 @@ const Page = () => {
             </p>
           </div>
         </header>
+        <Notice notice={notice} onClose={notify.clear} className='' />
 
         <div className="panel panel-body flex flex-wrap items-end gap-4">
           <div className="field w-44">

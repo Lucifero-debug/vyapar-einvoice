@@ -8,7 +8,6 @@ export default function LedgerSearchParams({ onValue }) {
   useEffect(() => {
     const value = searchParams.get('customerId');
     if (value && onValue) onValue(value);
-    console.log("JHULA",value)
   }, [searchParams, onValue]);
 
   return null;

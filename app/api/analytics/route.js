@@ -7,6 +7,8 @@ import ItemLedger from "@/models/itemLedgerModel";
 import Voucher from "@/models/voucherModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { buildStockIndex } from "@/lib/itemStock.mjs";
+import { alertConditions, alertCounts, alertView } from "@/lib/stockAlerts.mjs";
+import { syncStockAlerts } from "@/lib/stockAlertSync.mjs";
 import { documentsFor } from "@/lib/salesReports.mjs";
 import {
   comparisonRows,
@@ -14,7 +16,6 @@ import {
   grainFor,
   isPartySide,
   isPreset,
-  lowStockRows,
   movedInPeriod,
   onSide,
   paginate,
@@ -133,7 +134,7 @@ async function handleGET(req, auth) {
         {},
         { name: 1, group: 1, city: 1, phone: 1, lastBal: 1, lastMode: 1 }
       ).lean(),
-      Item.find({}, { name: 1, unit: 1, hsn: 1, openingQuantity: 1, minQuantity: 1 }).lean(),
+      Item.find({}, { name: 1, unit: 1, hsn: 1, openingQuantity: 1, minQuantity: 1, isService: 1 }).lean(),
       // The one aggregation that matters for cost: the stock ledger summed in
       // the database, as /api/item-stock does it.
       ItemLedger.aggregate([
@@ -190,7 +191,25 @@ async function handleGET(req, auth) {
     /* ── stock ─────────────────────────────────────────────────── */
 
     const stock = buildStockIndex({ items, movements });
-    const lowStock = lowStockRows({ stock, items });
+    // The same rows as before, less services: a service has stock-ledger rows
+    // (every invoice line writes one) but nothing on a shelf, so it used to
+    // read as "negative stock" here. lib/stockAlerts.mjs.
+    const lowStock = alertConditions({ stock, items });
+
+    // And the stored alerts behind them: since when each item has been short,
+    // and whether anyone has seen it. Best effort -- a failure to record an
+    // alert must not cost the owner the dashboard, which is computed above
+    // either way.
+    let storedAlerts = [];
+    try {
+      // Handed the stock just computed, so the ledger is summed once.
+      ({ alerts: storedAlerts } = await syncStockAlerts({ items, stock }));
+    } catch (err) {
+      console.error("Stock alert sync failed:", err);
+    }
+    const alertFor = new Map(
+      alertView(storedAlerts).map((a) => [a.itemName.toLowerCase(), a])
+    );
 
     /* ── the comparison ────────────────────────────────────────── */
 
@@ -234,7 +253,14 @@ async function handleGET(req, auth) {
       },
       side,
       sideCount: chosen.rows.length,
-      stock: { ...stockSummary({ rows: lowStock, stock, items }), rows: lowStock.slice(0, 50) },
+      stock: {
+        ...stockSummary({ rows: lowStock, stock, items }),
+        alertCounts: alertCounts(storedAlerts),
+        rows: lowStock.slice(0, 50).map((row) => ({
+          ...row,
+          alert: alertFor.get(String(row.name).toLowerCase()) || null,
+        })),
+      },
       comparison: comparisonRows({ current, previous: before }),
     });
   } catch (err) {

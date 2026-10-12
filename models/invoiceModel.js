@@ -183,6 +183,37 @@ customer: {
     },
     einvoiceCancelledAt: { type: Date },
     einvoiceError: { type: String },
+    // === Every time this bill was emailed ===
+    //
+    // Append-only, and written by `/api/send-email` AFTER the provider accepts
+    // the message — never by the browser. "Did you send me the bill?" is a
+    // daily question in a trading business and nothing could answer it before.
+    //
+    // `by` is the signed-in user from the session, not from the request body:
+    // a log that records who sent something, where the sender is whoever the
+    // request claimed to be, is worse than no log.
+    //
+    // Declared, or Mongoose strict mode drops it — and a dropped send log is a
+    // feature that silently never records anything.
+    emailLog: [
+      {
+        _id: false,
+        to: [{ type: String }],
+        cc: [{ type: String }],
+        // The provider's own id, so a bounce can be traced back to this row.
+        messageId: { type: String, default: "" },
+        by: { type: String, default: "" },
+        at: { type: Date },
+      },
+    ],
+    // === Who raised this bill ===
+    //
+    // The signed-in user's id, from the session, written by save-invoice and
+    // never accepted from a request (lib/invoiceInput.mjs PROTECTED_FIELDS).
+    // It is what lets the double-submit check tell one clerk's double-click
+    // from two clerks billing the same sale. Absent on bills raised before it
+    // existed, which are simply never treated as duplicates.
+    createdBy: { type: String },
     type:{ type: String, required: true },
     return:{type:Boolean,default:false}
   },

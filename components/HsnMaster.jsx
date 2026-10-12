@@ -8,6 +8,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Notice, useNotice } from '@/components/ui/notice';
+import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 
 const HsnMaster = ({ open, onClose, selected }) => {
   const [hsnForm, setHsnForm] = useState({
@@ -17,6 +19,8 @@ const HsnMaster = ({ open, onClose, selected }) => {
     gstunit: '',
   });
   const [isEditing, setIsEditing] = useState(false);
+  const [notice, notify] = useNotice();
+  const [saving, setSaving] = useState(false);
 
 
   useEffect(() => {
@@ -27,32 +31,44 @@ const HsnMaster = ({ open, onClose, selected }) => {
   }, [selected]);
 
   useEffect(() => {
+    notify.clear();
     if (!open) {
       setHsnForm({ hsncode: '', hsnname: '', gst: '', gstunit: '' });
       setIsEditing(false);
     }
-  }, [open]);
+  }, [open, notify]);
 
   const handleSaveHsn = async () => {
     if (!hsnForm.hsncode || !hsnForm.hsnname || hsnForm.gst === '') {
-      alert('Please fill HSN Code, HSN Name and GST %');
+      notify.error('Fill in the HSN code, the HSN name and the GST %.');
       return;
     }
+    if (saving) return;
 
     const endpoint = isEditing ? '/api/hsn-update' : '/api/hsn-add';
-    console.log("looser",hsnForm)
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(hsnForm),
-    });
-    const result = await res.json();
-    if (result.success) {
-      setHsnForm({ hsncode: '', hsnname: '', gst: '', gstunit: '' });
-      setIsEditing(false);
-      onClose(true);
-    } else {
-      alert(result.error || result.message || 'Could not save HSN');
+    // There was no try/catch here: a dropped connection rejected silently and
+    // the button simply did nothing.
+    setSaving(true);
+    notify.clear();
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(hsnForm),
+      });
+      const { ok, body: result, message } = await readResponse(res);
+      if (ok && result.success) {
+        setHsnForm({ hsncode: '', hsnname: '', gst: '', gstunit: '' });
+        setIsEditing(false);
+        onClose(true);
+      } else {
+        notify.error(`The HSN code was not saved. ${message}`);
+      }
+    } catch (err) {
+      console.error('Error saving HSN:', err);
+      notify.error(`The HSN code was not saved. ${NETWORK_ERROR}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -111,11 +127,13 @@ const HsnMaster = ({ open, onClose, selected }) => {
           </div>
         </div>
 
+        <Notice notice={notice} onClose={notify.clear} className='mb-0' />
         <Button
           onClick={handleSaveHsn}
           className="w-full"
+          disabled={saving}
         >
-          {isEditing ? 'Update HSN' : 'Save HSN'}
+          {saving ? 'Saving…' : isEditing ? 'Update HSN' : 'Save HSN'}
         </Button>
       </DialogContent>
     </Dialog>

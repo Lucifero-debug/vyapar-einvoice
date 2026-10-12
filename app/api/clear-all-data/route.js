@@ -47,22 +47,30 @@ async function handleDELETE(req, auth) {
     // All or nothing. Clearing seven collections with an unawaited Promise.all
     // could fail half way and leave, say, invoices gone but their ledger rows
     // behind -- the exact orphaned state the rest of the app works to avoid.
+    //
+    // One after another, not Promise.all: MongoDB does not support parallel
+    // operations on one session inside a transaction, and these would be its
+    // FIRST operations -- several racing to start the same transaction.
     const cleared = await withTransaction(async (session) => {
-      const results = await Promise.all([
-        Item.deleteMany({}, { session }),
-        Customer.deleteMany({}, { session }),
-        Invoice.deleteMany({}, { session }),
-        Hsn.deleteMany({}, { session }),
-        PriceList.deleteMany({}, { session }),
-        Voucher.deleteMany({}, { session }),
-        ItemLedger.deleteMany({}, { session }),
-        Ledger.deleteMany({}, { session }),
+      const models = [
+        Item,
+        Customer,
+        Invoice,
+        Hsn,
+        PriceList,
+        Voucher,
+        ItemLedger,
+        Ledger,
         // Without this the invoice counter survives the wipe and numbering
         // carries on from wherever it left off instead of starting again.
-        Counter.deleteMany({}, { session }),
-      ]);
-
-      return results.reduce((sum, r) => sum + (r.deletedCount || 0), 0);
+        Counter,
+      ];
+      let removed = 0;
+      for (const Model of models) {
+        const result = await Model.deleteMany({}, { session });
+        removed += result.deletedCount || 0;
+      }
+      return removed;
     });
 
     return NextResponse.json({
