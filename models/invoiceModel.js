@@ -142,6 +142,25 @@ customer: {
     // customer calls their paperwork, that one settles a pending quantity.
     // (The comment here used to read "// Weight", copied from the line above.)
     orderNo: { type: Number },
+    // === The OTHER party's own bill number ===
+    //
+    // On a purchase, the number the SUPPLIER printed on the bill they sent:
+    // "BS/2026-27/4417". Not a number, and not ours.
+    //
+    // `invoiceNo` above is this firm's own sequence, with a unique index on
+    // { companyId, invoiceNo }. The AI import used to do
+    // `parseInt(aiInvoice.invoiceNo)` and put the supplier's number there,
+    // which collided with a real invoice when it parsed and wrote NaN into a
+    // required field when it did not. There was nowhere else for it to go,
+    // which is why this field exists.
+    //
+    // A String, because a bill number is an identifier and most of them
+    // carry a series prefix, a financial year and slashes. The same
+    // reasoning custModel gives for `phone` and `pincode`.
+    //
+    // Declared, or Mongoose strict mode drops it -- and a dropped supplier
+    // bill number is a purchase you cannot find again when they chase it.
+    partyBillNo: { type: String, trim: true },
     ewayBillNo: { type: String },        // E-Way No.
     ewayBillDate: { type: Date },
     // === E-invoicing (IRN) ===

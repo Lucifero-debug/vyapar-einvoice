@@ -147,6 +147,18 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
             <div className="text-right sm:mt-2">
               <p className="text-xs text-gray-500 sm:text-sm">Date:</p>
               <p className="font-semibold">{date}</p>
+              {/* The other party's own bill number, where there is one. On a
+                  purchase this is the supplier's number and it is how the
+                  shop finds this bill again when the supplier chases it --
+                  so it prints beside ours rather than only being stored. */}
+              {invoice?.partyBillNo ? (
+                <>
+                  <p className="mt-2 text-xs text-gray-500 sm:text-sm">
+                    {invoice?.type === 'Purchase' ? 'Supplier Bill No:' : 'Their Bill No:'}
+                  </p>
+                  <p className="font-semibold">{invoice.partyBillNo}</p>
+                </>
+              ) : null}
             </div>
           </div>
         </header>

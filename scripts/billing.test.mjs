@@ -211,8 +211,15 @@ test("there are only two directions, and no third slips in", () => {
 
 console.log("\n--- the payload contract, frozen before anything moved ---");
 
-test("the frozen list is the 31 keys the pages actually sent", () => {
-  assert.equal(PAYLOAD_KEYS.length, 31);
+test("the frozen list is the 31 keys the pages sent, plus the one added since", () => {
+  // 31 was the count extracted mechanically from all four pages before
+  // anything moved. `partyBillNo` is the one deliberate addition since: the
+  // other party's own bill number, which had nowhere to go before and which
+  // the AI import was putting in `invoiceNo` -- this firm's own sequence,
+  // with a unique index on it. A change to this number should be a change
+  // somebody meant to make, which is the point of asserting it.
+  assert.equal(PAYLOAD_KEYS.length, 32);
+  assert.ok(PAYLOAD_KEYS.includes("partyBillNo"));
   // Spot-checked against the extract: the ones whose absence would be silent.
   for (const key of ["return", "type", "hsnTotals", "balanceDue", "originalInvoiceNo"]) {
     assert.ok(PAYLOAD_KEYS.includes(key), `${key} is missing from the contract`);

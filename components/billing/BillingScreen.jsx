@@ -12,6 +12,7 @@ import ItemStock from '@/components/ItemStock';
 import EinvoiceLockNotice from '@/components/EinvoiceLockNotice';
 import { editBlockedReason } from '@/lib/einvoiceLock.mjs';
 import { prefillFromOrder, pickFromOrder } from '@/lib/orderPrefill.mjs';
+import { IMPORT_DRAFT_KEY, MATCH_APPLIED } from '@/lib/invoiceImport.mjs';
 import { trim as trimQty } from '@/lib/orderStatus.mjs';
 import { billingType, canBillFromOrder } from '@/lib/billingTypes.mjs';
 import { buildHsnTotals, buildInvoicePayload, recalcItem, saveEndpoint } from '@/lib/billingMath.mjs';
@@ -90,6 +91,10 @@ const [caseDetails, setCaseDetails] = useState('');
 const [freight, setFreight] = useState('');
 const [weight, setWeight] = useState(0);
 const [ewayBillNo, setEwayBillNo] = useState('');
+    // The OTHER party's own bill number -- on a purchase, the number the
+    // supplier printed on the bill they sent. Not `invoiceNo`, which is this
+    // firm's own sequence. See models/invoiceModel.js.
+    const [partyBillNo, setPartyBillNo] = useState('');
 const [ewayBillDate, setEwayBillDate] = useState('');
 const [showDispatchPopup, setShowDispatchPopup] = useState(false);
 const [dispatchFrom, setDispatchFrom] = useState('');
@@ -271,6 +276,7 @@ useEffect(() => {
                 setOrderDate(data.orderDate ? formatDate(data.orderDate) : '');
                 setWeight(data.weight || '');
                 setEwayBillNo(data.ewayBillNo || '');
+                setPartyBillNo(data.partyBillNo || '');
                 setEwayBillDate(data.ewayBillDate ? formatDate(data.ewayBillDate) : '');
             })
             .catch(err => console.error('Error:', err));
@@ -305,6 +311,8 @@ useEffect(() => {
     // and the party taxes all recompute off `selectedItem`.
     const ORDER_DOC = config.orderDoc;
     const [orderPrefill, setOrderPrefill] = useState(null);
+    // A bill read off a photograph, handed over by /upload. See the effect.
+    const [importPrefill, setImportPrefill] = useState(null);
 
     // ─── The order-item picker ───────────────────────────────────────────────
     //
@@ -457,6 +465,69 @@ useEffect(() => {
             })
             .catch((err) => setOrderPrefill({ note: err.message }));
     }, [customerLoaded, item, customer, orderPrefill]);
+
+    /**
+     * A bill read off a photograph (app/upload/page.js).
+     *
+     * The draft comes through sessionStorage, not the URL -- the old import
+     * put the whole items array through encodeURIComponent into a query
+     * string. It is READ ONCE AND REMOVED: a refresh must not re-apply it
+     * over whatever the person has since typed, and an abandoned import must
+     * not be sitting there tomorrow waiting to land on a different bill.
+     *
+     * Everything applied here has already been matched and recomputed by
+     * lib/invoiceImport.mjs. Nothing is saved: this is the ordinary purchase
+     * screen with its fields filled in, and the save is the same one a typed
+     * bill takes. The blocking warnings are carried onto the strip so the
+     * person can see what still needs settling without going back.
+     */
+    useEffect(() => {
+        if (!customerLoaded || importPrefill) return;
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('import') !== '1') return;
+
+        let parcel = null;
+        try {
+            const raw = sessionStorage.getItem(IMPORT_DRAFT_KEY);
+            sessionStorage.removeItem(IMPORT_DRAFT_KEY);
+            parcel = raw ? JSON.parse(raw) : null;
+        } catch {
+            parcel = null;
+        }
+
+        if (!parcel?.draft) {
+            setImportPrefill({ note: 'That read-in bill has gone. Read the photo again.' });
+            return;
+        }
+
+        const draft = parcel.draft;
+
+        // The party, only when it was an EXACT match. A near-miss is left for
+        // the person to pick from the dropdown -- see the note about
+        // MATCH_APPLIED atop lib/invoiceImport.mjs. Note the place of supply
+        // follows from whoever is picked, through lib/placeOfSupply.mjs, so
+        // nothing here sets a state or a tax type.
+        if (draft.party?.how === MATCH_APPLIED && draft.party.name) {
+            const party = customer.find((c) => c.name === draft.party.name);
+            if (party) setSelectedCustomer(party);
+        }
+
+        if (draft.lines?.length) setSelectedItem(draft.lines);
+        if (draft.date) setDate(draft.date);
+        if (draft.partyBillNo) setPartyBillNo(draft.partyBillNo);
+        if (draft.paymentType) setPaymentType(draft.paymentType);
+        if (draft.transport) setTransport(draft.transport);
+        if (draft.grNo) setGrNo(draft.grNo);
+        if (draft.ewayBillNo) setEwayBillNo(draft.ewayBillNo);
+        if (draft.freight) setFreight(String(draft.freight));
+
+        setImportPrefill({
+            count: draft.lines?.length || 0,
+            supplier: draft.party?.how === MATCH_APPLIED ? draft.party.name : '',
+            blocking: (parcel.warnings || []).filter((w) => w.severity === 'blocking'),
+            checks: (parcel.warnings || []).filter((w) => w.severity === 'check'),
+        });
+    }, [customerLoaded, customer, importPrefill]);
 
     // ─── FIX 2: Rebuild HSN totals from selectedItem whenever it changes ──────
     // This replaces the old useEffect that used item.salePrice instead of item.cost
@@ -791,6 +862,7 @@ const saveItem = (e) => {
                 ewayBillDate,
                 orderDate,
                 orderNo,
+                partyBillNo,
             },
             config
         );
@@ -1175,6 +1247,38 @@ const handleDispatchSave = () => {
                 </header>
 
                 {/* Brought across from an order */}
+                {/* A bill read off a photograph. Amber rather than green:
+                    this is a draft somebody has to check, not a confirmed
+                    prefill from the firm's own order. */}
+                {importPrefill && (
+                    <div className='mb-1 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm'>
+                        {importPrefill.count ? (
+                            <div className='font-medium'>
+                                Read off a photo: {importPrefill.count} line
+                                {importPrefill.count === 1 ? '' : 's'}
+                                {importPrefill.supplier ? `, ${importPrefill.supplier}` : ''}. Nothing is
+                                saved yet — check it and save as usual.
+                            </div>
+                        ) : (
+                            <div className='font-medium'>{importPrefill.note}</div>
+                        )}
+                        {importPrefill.blocking?.length ? (
+                            <ul className='mt-1.5 list-disc pl-5'>
+                                {importPrefill.blocking.map((w) => (
+                                    <li key={`${w.field}-${w.message}`}>{w.message}</li>
+                                ))}
+                            </ul>
+                        ) : null}
+                        {importPrefill.checks?.length ? (
+                            <ul className='mt-1.5 list-disc pl-5 text-muted-foreground'>
+                                {importPrefill.checks.map((w) => (
+                                    <li key={`${w.field}-${w.message}`}>{w.message}</li>
+                                ))}
+                            </ul>
+                        ) : null}
+                    </div>
+                )}
+
                 {orderPrefill?.orderNo && (
                     <div className='mb-1 rounded-lg border border-success/40 bg-success/10 px-4 py-3 text-sm'>
                         Billing {orderPrefill.orderType} order {orderPrefill.orderNo} —{' '}
@@ -1514,6 +1618,18 @@ const handleDispatchSave = () => {
                     <div className="flex flex-col">
                         <label className="field-label mb-1">Order Date</label>
                         <input type="date" className="field-input" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} />
+                    </div>
+                    <div className="flex flex-col">
+                        <label className="field-label mb-1">
+                            {config.type === 'Purchase' ? 'Supplier Bill No' : 'Their Bill No'}
+                        </label>
+                        <input
+                            type="text"
+                            className="field-input"
+                            value={partyBillNo}
+                            onChange={(e) => setPartyBillNo(e.target.value)}
+                            placeholder="BS/2026-27/4417"
+                        />
                     </div>
                     <div className="flex flex-col">
                         <label className="field-label mb-1">Order No</label>
