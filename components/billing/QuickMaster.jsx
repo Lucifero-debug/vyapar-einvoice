@@ -1,8 +1,9 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
+import { alterPayload, masterSpec } from '@/lib/masterActions.mjs';
 
 /**
- * Sigfa's "Alt + A -- Create New Masters In Transaction".
+ * Sigfa's "Create [ Alt + A ]" and "Alter [ Alt + M ]", in one dialog.
  *
  * The one shortcut worth the whole exercise. A walk-in customer or an item
  * nobody has entered yet currently stops a bill dead: you abandon the form,
@@ -20,6 +21,26 @@ import React, { useEffect, useRef, useState } from 'react';
  * against the master. So the dialog can stay small -- the few fields a bill
  * actually needs -- and anything else is filled in later on the real master
  * screen, where it belongs.
+ *
+ *
+ * ALTER SENDS THE WHOLE RECORD BACK, AND THAT IS NOT OPTIONAL
+ * ----------------------------------------------------------
+ * A create may send only what was filled in. An ALTER may not. The alter
+ * routes end in `existing.set({...})` with every field assigned, and two of
+ * those turn a missing value into a WRONG one rather than leaving it be:
+ *
+ *     isService: Boolean(itemData.isService)          // undefined -> false
+ *     uqc: normalizeUqc(itemData.uqc) || UQC_DEFAULT  // undefined -> "OTH"
+ *
+ * `uqc` is reported to the IRP, so a partial alter is a wrong e-invoice and
+ * not a cosmetic loss. So an alter is handed the LOADED RECORD, shows the
+ * same few fields, and posts `alterPayload()` -- the record mapped to the
+ * names the route reads, with the edits over it. lib/masterActions.mjs owns
+ * that mapping and scripts/master-actions.test.mjs sweeps each route's source
+ * to prove no field it reads has been left out.
+ *
+ * It alters IN PLACE rather than navigating to the master screen, which is
+ * what this used to do: Alt+M on a half-typed bill threw the bill away.
  */
 
 /**
@@ -123,8 +144,25 @@ export const missingRequired = (values, fields) =>
     .filter((f) => f.required && String(values[f.name] ?? '').trim() === '')
     .map((f) => `${f.label} is needed.`);
 
-export default function QuickMaster({ kind, prefill, onClose, onCreated }) {
+/**
+ * The dialog's own fields, filled from a loaded record.
+ *
+ * Only the fields on the form: everything else rides along inside
+ * `alterPayload` at its stored value, unseen.
+ */
+export const valuesFromRecord = (record, fields) => {
+  const out = {};
+  for (const field of fields) {
+    const value = record?.[field.name];
+    if (value === undefined || value === null) continue;
+    out[field.name] = String(value);
+  }
+  return out;
+};
+
+export default function QuickMaster({ kind, mode = 'create', record, prefill, onClose, onSaved, onCreated }) {
   const spec = kind ? MASTER_FORMS[kind] : null;
+  const altering = mode === 'alter';
   const [values, setValues] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -133,14 +171,19 @@ export default function QuickMaster({ kind, prefill, onClose, onCreated }) {
   useEffect(() => {
     if (!spec) return;
     setError('');
-    // The name already typed into the billing field carries across, so Alt+A
-    // after typing an unknown item does not ask for it again.
-    setValues(prefill ? { ...prefill } : {});
+    // Altering: the record's own values, so an untouched box shows what is
+    // stored rather than blank -- a blank box on an alter form is how
+    // somebody clears a field by not noticing it.
+    // Creating: the name already typed into the billing field carries across,
+    // so Alt+A after typing an unknown item does not ask for it again.
+    setValues(
+      altering ? valuesFromRecord(record, spec.fields) : prefill ? { ...prefill } : {}
+    );
     // Focus the first field, and only then -- never on a render where the
     // dialog is already open, which would yank the caret mid-typing.
     const id = setTimeout(() => first.current?.focus(), 0);
     return () => clearTimeout(id);
-  }, [kind, prefill, spec]);
+  }, [kind, mode, record, prefill, spec, altering]);
 
   if (!spec) return null;
 
@@ -155,10 +198,23 @@ export default function QuickMaster({ kind, prefill, onClose, onCreated }) {
     setSaving(true);
     setError('');
     try {
-      const res = await fetch(spec.endpoint, {
+      // A CREATE posts only what was filled in; an ALTER posts the loaded
+      // record with the edits over it. See the header -- a partial alter body
+      // resets `uqc` and `isService`.
+      const endpoint = altering ? masterSpec(kind)?.alterEndpoint : spec.endpoint;
+      const body = altering
+        ? alterPayload(kind, record, filledOnly(values, spec.fields))
+        : filledOnly(values, spec.fields);
+
+      if (!endpoint || !body) {
+        setError('That record cannot be altered from here.');
+        return;
+      }
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(filledOnly(values, spec.fields)),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       // These endpoints answer in two shapes: some send { success }, some
@@ -168,7 +224,9 @@ export default function QuickMaster({ kind, prefill, onClose, onCreated }) {
         setError(data?.error || 'Could not save.');
         return;
       }
-      onCreated?.({ kind, created: data?.item || data?.customer || data?.data || data, values });
+      const saved = data?.item || data?.customer || data?.data || data;
+      onSaved?.({ kind, mode, record: saved, values });
+      if (!altering) onCreated?.({ kind, created: saved, values });
       onClose?.();
     } catch (err) {
       setError(err.message || 'Could not save.');
@@ -177,11 +235,17 @@ export default function QuickMaster({ kind, prefill, onClose, onCreated }) {
     }
   };
 
+  // "New item" is wrong on an alter. Derived from the kind's own label so a
+  // new master gets both titles for free.
+  const heading = altering
+    ? `Alter ${masterSpec(kind)?.label || kind}`
+    : spec.title;
+
   if (spec.unavailable) {
     return (
-      <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={spec.title}>
+      <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={heading}>
         <div className="modal-card max-w-md">
-          <div className="modal-title">{spec.title}</div>
+          <div className="modal-title">{heading}</div>
           <p className="text-sm text-muted-foreground">{spec.unavailable}</p>
           <div className="mt-5 flex justify-end">
             <button type="button" className="btn btn-primary" onClick={() => onClose?.()} ref={first}>
@@ -194,7 +258,7 @@ export default function QuickMaster({ kind, prefill, onClose, onCreated }) {
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={spec.title}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={heading}>
       <form
         className="modal-card max-w-lg"
         onSubmit={submit}
@@ -209,9 +273,11 @@ export default function QuickMaster({ kind, prefill, onClose, onCreated }) {
         }}
       >
         <div className="modal-title">
-          {spec.title}
+          {heading}
           <span className="block text-sm font-normal text-muted-foreground">
-            Saved straight to the master. You can fill in the rest later on the master screen.
+            {altering
+              ? 'Only these fields change. Everything else on the record is kept exactly as it is.'
+              : 'Saved straight to the master. You can fill in the rest later on the master screen.'}
           </span>
         </div>
 

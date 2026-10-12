@@ -7,7 +7,7 @@ rules that must not be broken, the UI vocabulary, and the known landmines.
 
 Paste the whole file, or paste §1–§6 plus the section relevant to your task.
 
-**Last verified: 8 October 2026.** When you change the shape of the data, the
+**Last verified: 12 October 2026.** When you change the shape of the data, the
 posting rules, the auth or tenancy rules, or the page conventions, update this
 file in the same commit. A stale context file is worse than none — it will
 confidently mislead.
@@ -15,6 +15,10 @@ confidently mislead.
 > **If you read nothing else, read §6.14 and §6.15.** This app now serves more
 > than one firm from one deployment. Every query is scoped to the signed-in
 > firm, and the mechanism that does it is not obvious from reading a route.
+>
+> **Then read §6.16 and §6.17.** They are the two traps that have each cost a
+> working day: dates are compared as IST calendar days by one of two different
+> day numbers, and `Invoice.totalAmount` is **tax-inclusive** despite its name.
 
 ---
 
@@ -27,19 +31,33 @@ HSN summaries.
 
 It is **multi-tenant**: one deployment serves many firms, each signing in to
 see only its own books. Sign-in, roles and per-firm data scoping all exist —
-see §6.14 and §6.15. It is still young; §9 is the honest list of what is not
-finished.
+see §6.14 and §6.15. §9 is the honest list of what is not finished.
+
+**SIGFA is the specification, not an inspiration.** The client runs SIGFA
+(a VB6 + Jet4 package) and this app is replacing it. Where a question comes up
+about a feature's behaviour, its field names, its report headings or its
+keyboard shortcuts, the answer is **whatever SIGFA does** — read out of
+`SIGFA105.exe` and its `.mdb` files rather than chosen. §6.19 says how, and
+several modules quote SIGFA's own SQL in their header to show why they net or
+group the way they do. Do not redesign a screen that already matches it.
 
 What it does:
 
 | Area | Screens |
 |---|---|
-| Masters | Customers/parties, Items, HSN codes, Party price lists |
+| Masters | Customers/parties, Items, HSN codes, Party price lists, Customer groups, GST states, Bill of Material |
 | Transactions | Sale, Sale Return, Purchase, Purchase Return invoices |
-| Money | Receipt/payment vouchers |
-| Reports | Party ledger, Stock (item) ledger, Voucher register, Invoice print, Date-range invoice print |
-| Extras | AI invoice-image import (separate Python service), email invoice |
-| Account | Sign in, sign up a new firm, roles (owner / accountant / biller) |
+| Orders | Sale/Purchase orders, order cancellation, order→invoice linkage, pending-order reports |
+| Production | Production (from a BOM), Goods Issued, Goods Received, Production planning |
+| Money | Receipt/payment vouchers, bill-wise adjustment ("Against Bill") |
+| Books | Cash Book, Bank Book, A/C Ledger |
+| Statements | Trial Balance, Trading A/c, Profit & Loss, Balance Sheet |
+| Reports | Party ledger, Stock (item) ledger, Voucher register, Invoice print, Date-range print, Sales/Purchase Book, Party-wise, Item-wise |
+| GST | GSTR-1 (e-return JSON + readable tables), GSTR-3, GSTR-3B |
+| Analytics | Business dashboard — sales trends, receivables, payables, low stock, month-on-month |
+| E-invoicing | IRN payload build, credential vault, per-invoice lock |
+| Extras | AI invoice-image import (separate Python service), email invoice, today's-orders reminder |
+| Account | Sign in, sign up a firm, company profile, staff management, change password, roles (owner / accountant / biller) |
 
 **Vocabulary.** "Party" = customer or supplier; both live in the same
 `customers` collection. "Voucher" = a receipt or payment entry, not an invoice.
@@ -73,6 +91,12 @@ RESEND_API_KEY=...               # optional, only for emailing an invoice
 INVOICE_FROM_EMAIL=...           # optional; an address on a Resend-verified domain.
                                  # Without it, mail only reaches the Resend account owner.
 NEXT_PUBLIC_AI_IMPORT_URL=...    # optional; the backend/ invoice-image service
+SECRET_BOX_KEY=<32 random bytes> # optional; required ONLY to store e-invoicing
+                                 # credentials. lib/secretBox.mjs seals the IRP
+                                 # password with it; without the key the
+                                 # company profile accepts everything else and
+                                 # reports the credential as not set, rather
+                                 # than storing a password in the clear.
 ```
 
 **First run.** There is no seeded account, by design — a shipped
@@ -114,13 +138,19 @@ cd backend && pip install -r requirements.txt && uvicorn app:app --reload
 - **Path alias:** `@/*` → repo root. `import X from '@/lib/balance.mjs'`.
 - `.mjs` files in `lib/` are **pure, dependency-free modules** that must run
   under bare `node` (the tests import them directly). **Never import Mongoose
-  or a model into a `.mjs` file in `lib/`** unless it is already there —
-  `lib/cashAccount.mjs`, `lib/itemLedger.mjs`, `lib/runningBalances.mjs`,
-  `lib/tenantPlugin.mjs`, `lib/tenantRoute.mjs` and `lib/authServer.mjs` are
-  the ones that do, and they are therefore not unit-testable. Each of them has
-  its decisions split into a pure neighbour that *is* tested
-  (`tenantPlugin` → `tenantScope.mjs`, auth → `roles/session/password`).
-  Do the same if you add another.
+  or a model into a `.mjs` file in `lib/`** unless it is already there. The
+  documented exceptions — the only files allowed to touch a model — are:
+
+  `cashAccount.mjs`, `itemLedger.mjs`, `runningBalances.mjs`,
+  `tenantPlugin.mjs`, `tenantRoute.mjs`, `authServer.mjs`, `orderClaims.mjs`,
+  `bomSave.mjs`, `glAccounts.mjs`, `openBillsFor.mjs`, `staffStore.mjs`,
+  `productionSave.mjs`, `clearData.mjs`, `uniqueName.mjs`.
+
+  They are therefore not unit-testable, and each has its decisions split into
+  a pure neighbour that *is* tested (`tenantPlugin` → `tenantScope.mjs`, auth
+  → `roles`/`session`/`password`, `bomSave` → `bom.mjs`, `staffStore` →
+  `staffRules.mjs`, `productionSave` → `stockVoucher.mjs`). **Do the same if
+  you add another**, and say so here — `tenant-scope.test.mjs` sweeps this list.
 - **Three modules have a runtime constraint beyond purity:**
   `lib/session.mjs` and `lib/roles.mjs` are imported by `middleware.js`, which
   runs on the **edge**, where `node:crypto` does not exist — that is why
@@ -143,19 +173,34 @@ cd backend && pip install -r requirements.txt && uvicorn app:app --reload
 app/
   layout.js              Root layout: header, nav, SaleOptionProvider
   globals.css            Design tokens + the component class vocabulary (§8.1)
-  page.js                Dashboard / home — nav tiles, master pickers, counts
-  saleadd/               Sale invoice entry          ─┐
-  salereturn/            Sale return entry            │ four near-identical
-  purchaseadd/           Purchase invoice entry       │ ~1,100-line pages
-  purchasereturn/        Purchase return entry       ─┘ (see §9.8 — change all four)
+  page.js                Home — nav tiles, master pickers, counts
+  saleadd/               Sale invoice entry          ─┐ all four are ~25-line
+  salereturn/            Sale return entry            │ stubs around
+  purchaseadd/           Purchase invoice entry       │ components/billing/
+  purchasereturn/        Purchase return entry       ─┘ BillingScreen (§8.4)
   invoice/               Printable invoice (loads by ?invoiceNo=N)
   invoice-range/         Batch print invoices over a date range
-  ledger/                Party ledger report
-  item-ledger/           Stock ledger report
+  ledger/                Party ledger report       (?customerId=)
+  item-ledger/           Stock ledger report       (?itemId=)
   voucher/               Voucher register
-  voucheradd/            Voucher entry
+  voucheradd/            Voucher entry — incl. bill-wise adjustment (§6.18)
+  account-book/          Cash Book / Bank Book / A/C Ledger
+  financials/            Trial Balance, Trading A/c, P&L, Balance Sheet
+  order/                 Order register and alter
+  orderadd/              Sale/Purchase order entry
+  order-report/          Pending orders — party-wise and item-wise
+  bom/                   Bill of Material register
+  bomadd/                BOM entry (nested formulas)
+  production/            Production / Goods Issued / Goods Received slips
+  production-plan/       What to make, and what it needs
+  sales-report/          Sales & Purchase Book, Party-wise, Item-wise (§6.18)
+  gst-return/            GSTR-1 e-return + GSTR-1/3/3B tables
+  dashboard/             Business dashboard — trends, dues, stock, comparison
   customeradd/           Party master form
   itemadd/               Item master form
+  company/               The firm's own profile + e-invoicing credentials
+  staff/                 Owner-only: add and manage accountant/biller accounts
+  change-password/       Forced on first sign-in for a staff account
   setup/                 Feature toggles + the danger zone (§7)
   upload/                AI invoice-image import
   login/                 Sign-in
@@ -168,6 +213,14 @@ middleware.js            The gate. Runs at the EDGE on every request: verifies
                          the role may reach the path. No database — see §6.15.
 
 components/
+  billing/BillingScreen.jsx
+                         THE billing screen. One component, parameterised by
+                         `typeKey` ('sale' | 'purchase' | 'saleReturn' |
+                         'purchaseReturn'). `app/saleadd` is 22 lines around
+                         it; the other three pages are not migrated yet (§9.8).
+                         It was produced by TRANSFORMING saleadd/page.js
+                         programmatically, not by retyping it, so the posting
+                         behaviour is byte-for-byte what it always was.
   InvoiceDocument.jsx    The printable invoice body. `forwardRef`, props
                          `{ invoice, isRollStationary }` — takes a whole saved
                          invoice document and renders it. Shared by /invoice and
@@ -187,19 +240,74 @@ components/
 lib/                     ← THE DOMAIN LAYER. Read §6 before touching any of it.
   balance.mjs            Signed-balance arithmetic. The single source of truth.
   invoicePosting.mjs     What one invoice posts (deltas + ledger rows)
+  invoiceGl.mjs          Its general-ledger legs (sales, GST, party)
+  glAccounts.mjs         Resolve/create a GL head     (imports Mongoose)
+  glBackfill.mjs         Add GL legs to invoices raised before they existed
   voucherLedger.mjs      What one voucher posts
+  billAdjust.mjs         "Against Bill": FIFO allocation of a receipt to open
+                         bills, and every refusal, in words (§6.18)
+  openBillsFor.mjs       A party's unsettled bills      (imports Mongoose)
   itemLedger.mjs         Stock rows for an invoice      (imports Mongoose)
+  itemStock.mjs          Current stock = opening + receipts − issues (§9.9)
   runningBalances.mjs    Recompute stored running figures (imports Mongoose)
   cashAccount.mjs        Resolve the cash/bank account   (imports Mongoose)
   paymentType.mjs        Cash vs bank decision (pure)
   withTransaction.mjs    MongoDB transaction wrapper
   getNextInvoiceNo.js    Atomic invoice-number reservation
+  getNextOrderNo.js      …and for orders
+  getNextProductionNo.js …and for each stock-voucher kind (§6.20)
+  istDate.mjs            IST calendar days. TWO day numbers — read §6.16
   gst.mjs                CGST/SGST split, GST state-code normalisation
   hsnTotals.mjs          HSN code-wise summary, derived from line items
+  uqc.mjs                The GST unit code, stamped onto each saved line
+  placeOfSupply.mjs      Place of supply from the party master
+  buyerSnapshot.mjs      The buyer block frozen onto an invoice at save
   priceList.mjs          Party price list resolution
-  company.mjs            ⚠ LEGACY. A hard-coded single firm's letterhead. With
-                         more than one firm this is wrong — the letterhead
-                         should come from the firm's `companies` row (§9.1)
+  uniqueName.mjs         Case-insensitive name clash check (imports Mongoose)
+
+  billingTypes.mjs       The 2×2 of type × return, and every route/title for it
+  billingMath.mjs        recalcItem + buildHsnTotals, copied VERBATIM from the
+                         pages, quirks preserved and documented (§9.17)
+  billingKeys.mjs        SIGFA's keyboard shortcuts, and quick master creation
+
+  orderStatus.mjs        Order lifecycle, cancellation, restore
+  orderClaims.mjs        Which order line an invoice line fulfils (Mongoose)
+  orderPrefill.mjs       Building a bill from an order
+  orderReports.mjs       Pending orders, party-wise and item-wise (SIGFA's
+                         exact column headings)
+  todaysOrders.mjs       The once-a-day reminder of orders dated today
+
+  bom.mjs                Bill of Material: nested explosion, wastage, by-product
+  bomSave.mjs            BOM persistence                (imports Mongoose)
+  stockVoucher.mjs       SIGFA's three stock MKEYs — FR Production, IS Goods
+                         Issued, RS Goods Received — and their slip fields
+  productionSave.mjs     Production/issue/receipt posting (imports Mongoose)
+  productionPlan.mjs     What to make for pending orders, net of stock
+
+  accountGroups.mjs      SIGFA's 35 account groups; which statement each is on
+  accountBooks.mjs       Cash Book, Bank Book, A/C Ledger
+  financials.mjs         Trial Balance, Trading A/c, P&L, Balance Sheet
+  salesReports.mjs       Sales/Purchase Book (month, date or bill), Party-wise,
+                         Item-wise. Quotes SIGFA's netting SQL (§6.18)
+  gstReturns.mjs         GSTR-1 tables + the portal's JSON, GSTR-3, GSTR-3B
+  dashboard.mjs          The business dashboard's arithmetic. Defers to
+                         salesReports / lastBal / itemStock — never a second
+                         opinion about the firm's money
+
+  einvoicePayload.mjs    The IRP payload for one invoice
+  einvoiceCredentials.mjs Which IRP credentials a firm has set
+  einvoiceLock.mjs       An invoice reported to the IRP is read-only
+  secretBox.mjs          AEAD seal for the stored IRP password
+
+  staffRules.mjs         Who an owner may add, and what they may do to them
+  staffStore.mjs         The ONLY door to `User`      (imports Mongoose)
+  clearData.mjs          What the danger zone deletes  (imports Mongoose)
+  indexAudit.mjs         Schema indexes against the ones the database has
+  company.mjs            The firm's letterhead, read from its `companies` row
+  partyBalance.mjs       The balance shown under a party picker
+  customerGroups.mjs     Group master rules; Cash and Bank reserved
+  states.mjs             GST state master
+  phone.mjs, currency.mjs, blankZeros.mjs
   tenantContext.mjs      Which firm this request is for (AsyncLocalStorage)
   tenantScope.mjs        The scoping decisions, pure and tested
   tenantPlugin.mjs       Mongoose plugin: adds companyId and scopes every query
@@ -223,7 +331,7 @@ backend/                 FastAPI + Gemini invoice-image extraction (separate ser
 
 ## 5. Data model
 
-Thirteen collections. **There are no foreign keys — parties and items are
+Seventeen collections. **There are no foreign keys — parties and items are
 joined by NAME**, which is why renames cascade (§6.10) and why name uniqueness
 matters.
 
@@ -251,12 +359,22 @@ bank accounts (distinguished by `group` being `cash` or `bank`).
 ### `items` (`models/itemModel.js`)
 
 `name` (**join key**, no unique index), `hsn`, `short`, `group`, `unit`,
-`mrp`, `cost`, `salePrice`, `purchasePrice`, `discount`, `gst`, `weight`,
-`itemType`, `openingQuantity`, `lastQuantity`.
+`uqc`, `isService`, `mrp`, `cost`, `salePrice`, `purchasePrice`, `discount`,
+`gst`, `weight`, `itemType`, `openingQuantity`, `lastQuantity`, `minQuantity`.
 
 > **`lastQuantity` is dead data.** Nothing updates it from stock movement; only
 > the item form writes it. Real stock comes from the item ledger. Never display
 > it as "current stock".
+
+- `uqc` is the **GST unit code** the IRP accepts (`KGS`, `NOS`, `MTR`…),
+  deliberately not guessed from the free-text `unit`. `lib/uqc.mjs` stamps it
+  onto every saved invoice line, so a bill keeps the code it was reported with.
+- `minQuantity` is the **reorder level, and is optional with no default.** An
+  item that has never had one set is left out of the dashboard's "below
+  minimum" alert rather than compared against an invented number — a
+  wholesaler's minimum for steel plate is not a shop's for washers. Such an
+  item is still reported when its stock runs out or goes negative, which needs
+  no threshold.
 
 ### `Invoice` (`models/invoiceModel.js`)
 
@@ -270,8 +388,31 @@ One document per sale / purchase / return.
 - `hsnTotals[]` — `{ hsn, gstRate, amount, total }`. ⚠ **`amount` is the GST
   charged, not the taxable value.** Taxable = `total - amount`. Prefer deriving
   this with `lib/hsnTotals.mjs` rather than trusting the stored array.
-- Money: `totalAmount`, `finalAmount`, `received`, `balanceDue`
-- `paymentType` (`Cash`/`Cheque`), `stateOfSupply`, `taxType` (`local`/`central`), `gst`
+- Money — **read §6.17 before using any of these:**
+
+  | Field | What it actually is |
+  |---|---|
+  | `gst` | the tax: Σ of the lines' `gstAmount` |
+  | `totalAmount` | **TAX-INCLUSIVE.** Σ of the lines' `total`, and a line's total is `taxableAmount + gstAmount`. The taxable value is `totalAmount − gst` |
+  | `finalAmount` | `totalAmount` + the party taxes + freight — what the party was charged, and what hits their ledger |
+  | `received`, `balanceDue` | derived on the server, never trusted from the client (§6.5) |
+
+  There is **no round-off field**: `finalAmount` is exactly
+  `totalAmount` + `partyTaxes` + `freight`, so anything describing itself as
+  "rounding" would be zero on every row.
+
+- `paymentType` (`Cash`/`Cheque`), `stateOfSupply`, `stateCode`,
+  `taxType` (`local`/`central`)
+- E-invoicing: `irn`, `ackNo`, `einvoiceStatus`, `einvoiceCancelledAt`,
+  `einvoiceError`. An invoice with an IRN is **read-only** — `lib/einvoiceLock.mjs`
+  and the alter/delete routes refuse it with 409
+- `customer` also carries a **frozen buyer snapshot** — `gstin`, `address`,
+  `city`, `state`, `pincode`, `stateCode` — written by `lib/buyerSnapshot.mjs`.
+  A party who moves next year must not retroactively change the address on a
+  bill already filed
+- Per line: `orderNo`, `orderType`, `orderLineId`, `orderDate` — which order
+  line this fulfils, if any. All four or none; only `lib/orderClaims.mjs`
+  acts on them
 - Dispatch: `shippedTo`, `dispatchFrom`, `transport`, `grNo`, `grDate`,
   `pvtMark`, `caseDetails`, `freight`, `weight`, `orderNo`, `orderDate`,
   `ewayBillNo`, `ewayBillDate`
@@ -297,7 +438,15 @@ One document per sale / purchase / return.
 ### `Voucher` (`models/voucherModel.js`) — receipts and payments
 
 `acName` (the account money moved through), `date`, `paymentType`, `narration`,
-`againstBill`, `acType`, and `customers[]` of `{ name, debit, credit, custId, narration }`.
+`againstBill`, `acType`, and `customers[]` of
+`{ name, debit, credit, custId, narration, allocations[] }`.
+
+`allocations[]` is SIGFA's **Against Bill**: `{ invoiceNo, invoiceType,
+invoiceDate, amount }`, saying which open bills this line settles and by how
+much. `lib/billAdjust.mjs` owns the rules — FIFO by age, never more than a
+bill owes, never more than the line is for, no bill twice — and every refusal
+is a sentence it returns rather than a code. A line may be partly allocated and
+partly on account; what is left over is deliberately not forced onto a bill.
 
 ### `pricelists` (`models/priceListModel.js`) — per-party item rates
 
@@ -312,6 +461,55 @@ One document per sale / purchase / return.
   documents load. Nothing writes them. `lib/priceList.mjs` collapses an old
   three-discount chain into the one equivalent percentage.
 
+### `orders` (`models/orderModel.js`) — sale and purchase orders
+
+`orderNo`, `type` (`Sale`/`Purchase`), `date`, `customer`, `items[]` of
+`{ name, quantity, rate, despatchedQuantity, cancelledQuantity, … }`,
+and the cancellation block (`cancelled`, `cancelReason`, `cancelledBy`,
+`cancelledAt`).
+
+An order line is **claimed** by an invoice line, not consumed: `despQty` and
+`canQty` accumulate and `balance = quantity − despQty − canQty`, which is what
+the pending-order reports show. `lib/orderClaims.mjs` is the only thing that
+writes the claim, and it keys on the order subdocument's own `_id` so an order
+edit does not detach an invoice that already billed against it.
+
+### `boms` (`models/bomModel.js`) — bill of material
+
+The formula for making one item: the output, and `components[]` of
+`{ name, quantity, kind }` where kind is material, wastage or by-product.
+**Nested** — a component may itself have a BOM, and `lib/bom.mjs` explodes the
+tree. Rates are read live from the item master rather than frozen.
+
+### `productions` (`models/productionModel.js`) — the three stock vouchers
+
+One model, three kinds, which are SIGFA's own MKEYs:
+
+| `kind` | SIGFA | Slip | Prefix | Counter |
+|---|---|---|---|---|
+| `FR` | Production | Production | `PRD-` | `productionNo` |
+| `IS` | Goods Issued | Issue Slip | `GI-` | `goodsIssueNo` |
+| `RS` | Goods Received | Receipt Slip | `GR-` | `goodsReceiptNo` |
+
+`kind` is an enum defaulting to `FR`; `outputItem`/`outputQuantity` are
+conditionally required (only `FR` has an output). `series` and `store` are
+SIGFA's header fields. The unique index is `{ companyId, kind, docNo }`, so the
+three kinds number independently. `lib/stockVoucher.mjs` owns every decision
+about them — direction of movement, slip columns, what a reversal undoes.
+
+> Rows written before `kind` existed need
+> `node scripts/backfill-stock-kind.mjs` (dry run) then `--apply`.
+
+### `customergroups`, `states`
+
+`customergroups`: the party group master. **`Cash` and `Bank` are reserved** —
+`lib/customerGroups.mjs` refuses to let either be renamed or deleted, because
+`lib/cashAccount.mjs` resolves the money account by group.
+
+`states`: the GST state master — `name` and the two-digit `code`. The place of
+supply and its code on every invoice come from here via the party, never typed
+(`lib/placeOfSupply.mjs`).
+
 ### `hsn`, `Counter`, `TotalSale`
 
 - `hsn`: `hsncode`, `hsnname`, `gst`, `gstunit`. Unique per firm
@@ -324,14 +522,32 @@ One document per sale / purchase / return.
 One row per subscribing firm: `name`, `gstin`, `phone`, `email`, `address`,
 `city`, `state`, `stateCode`, `pincode`, bank details, `active`.
 
-This is what `lib/company.mjs` used to be as a constant. Deliberately **not**
-unique on `name` — two unrelated shops may genuinely share one.
+Also the e-invoicing block: `einvoiceEnabled`, `einvoiceUsername`,
+`einvoicePasswordEnc` (`select: false`, sealed by `lib/secretBox.mjs`),
+`einvoiceEnv`.
+
+Deliberately **not** unique on `name` — two unrelated shops may genuinely
+share one. `companies` **is** the tenant list, so it is the one collection the
+tenant plugin must not apply to; the two routes that read it
+(`api/company`, `api/company-update`) scope by `auth.companyId` explicitly and
+say so in a comment.
 
 ### `users` (`models/userModel.js`) — who can sign in
 
 `email` (lowercased), `name`, `passwordHash` (`select: false`, so it is never
 returned unless asked for), `role`, `companyId`, `tokenVersion`, `active`,
-`lastLoginAt`.
+`lastLoginAt`, `mustChangePassword`.
+
+`mustChangePassword` is set when an owner creates a staff account with a
+password they chose. Until the staff member sets their own,
+`lib/authServer.mjs` refuses every path except the handful in
+`PASSWORD_CHANGE_PATHS` — so they can change it and nothing else.
+
+**`lib/staffStore.mjs` is the only module allowed to query `User`.** Every
+function on it takes `companyId` first and throws `StaffScopeError` without
+one: `users` carries no tenant plugin (login has to find a user *before* a
+tenant exists), so the scoping that the plugin does everywhere else has to be
+done by hand here, in one place, fail-closed.
 
 A user belongs to exactly **one** firm; staff at two firms get two accounts.
 `{ companyId, email }` is unique, case-insensitively — scoped to the firm, not
@@ -602,6 +818,138 @@ with the cost parameters stored inside the hash so raising them later does not
 lock anyone out. Sign-in verifies against a dummy hash even when no account
 exists, so a wrong address and a wrong password take the same time.
 
+### 6.16 Dates are IST calendar days — and there are TWO day numbers
+
+**Nothing compares dates with the server's clock.** The dev container runs
+`Asia/Calcutta` and Vercel runs UTC, so a local-clock comparison puts a bill
+saved at 19:00 UTC on 30 June into June on one machine and July on the other.
+On a report that is embarrassing; on a GST return it is a late filing.
+
+Everything goes through `lib/istDate.mjs`:
+
+| Export | What it gives | Use it to |
+|---|---|---|
+| `istParts(v)` | `{year, month, day, hour, minute}` in IST | build a label or a key |
+| `istDayNumber(v)` | `yyyymmdd` as a Number | **compare** and **sort** |
+| `istDayIndex(v)` | days since 1 Jan 1970 | **count**, **step through**, take a modulus |
+| `dayKeyToUtcMs(n)` | a `yyyymmdd` key back to that midnight | convert |
+| `dayIndexToIso(i)` | a day count back to `yyyy-mm-dd` | convert |
+| `istDayWindow(v)` | the UTC instants bounding that IST day | narrow a Mongo query |
+
+> **`istDayNumber` is NOT a count of days.** 1 January to 31 December differs
+> by **1130** under it, not 364. Subtracting it produces a plausible wrong
+> number, which is the worst kind: it made a one-year chart decide the period
+> was three years long. If you are subtracting, stepping or taking a modulus,
+> you want `istDayIndex`.
+
+**Narrowing in Mongo is a coarse filter, not the rule.** Stored dates are UTC
+midnights and the comparison is of IST days, so a database filter must be
+**widened by a day at each edge** and the real cut made in the pure module:
+
+```js
+const end = new Date(`${to}T00:00:00.000Z`);
+end.setUTCDate(end.getUTCDate() + 2);   // then compare IST days in lib/
+```
+
+Narrowing exactly drops a late-evening invoice before the real comparison ever
+sees it.
+
+### 6.17 `Invoice.totalAmount` is tax-INCLUSIVE
+
+This has been got wrong twice. The name reads like a pre-tax subtotal. It is
+not:
+
+```
+line.total      = taxableAmount + gstAmount        (lib/billingMath.mjs)
+totalAmount     = Σ line.total                      ← tax-INCLUSIVE
+finalAmount     = totalAmount + partyTaxes + freight
+taxable value   = totalAmount − gst                 ← what you probably wanted
+```
+
+So a report that prints `totalAmount` under a "Taxable" heading prints the
+gross. `lib/salesReports.mjs` shipped with exactly that bug and
+`taxableOf()` is now the one place the subtraction happens — use it, or
+`netOf()` / `othersOf()` beside it, rather than reading the field raw.
+
+Note also that **`recalcItem` does not round** (§9.17), so a stored `gstAmount`
+can differ by paise from `taxableAmount × rate / 100`. **Read what was stored.**
+The bill the client printed and sent is the truth; a report that recomputes it
+will disagree with the document in the customer's hand.
+
+### 6.18 A return subtracts — it is not a register of its own
+
+Not a judgement call. SIGFA settles it, and its own SQL is quoted in
+`lib/salesReports.mjs`:
+
+```sql
+And S.Mkey in ('SI','SR')
+
+Sum(IIF(S.Mkey='SI' or S.Mkey='SC' or S.Mkey='PI' or S.Mkey='PC', Amount, 0))
+  - Sum(IIF(S.Mkey='SR' Or S.Mkey='PR', Amount, 0))
+```
+
+An invoice adds and a return subtracts, **inside one report**, and every money
+column nets the same way. So:
+
+- A return is **listed at the value printed on it** — a credit note for 500 is
+  a credit note for 500, not for −500 — and **totalled with a minus**. That is
+  why a book row carries both `taxable/gst/total` (as printed) and
+  `signedTaxable/signedGst/signedTotal` (as totalled). Total the signed ones.
+- `documentSign()` is the whole rule in one function, so no report can write
+  the subtraction out again and get it backwards.
+- **One thing of SIGFA's is deliberately NOT copied:** it wraps the
+  subtraction in `Abs()`, which turns a net of −500 into +500. A party who
+  returned more than they bought would be reported as having bought. The
+  netting is kept; the `Abs` is not, and a negative net prints as negative.
+- SIGFA's Sales Book screen has a four-way selector — *Sales Book : Sales
+  Return : Sales And Sales Return : Sales Challan* — so the netting is what its
+  **third** option does. Three of the four are offered here (this app has no
+  challan), and the netted one is the default.
+
+### 6.19 When SIGFA's behaviour is the question, read SIGFA
+
+The client's own software is the specification (§1). Its `.exe` and `.mdb`
+files are the authority, and the tooling to read them is in
+`/home/claude/mdb/` on the machine this was developed on: a hand-written Jet4
+MDB parser plus helpers for the menu strings, the shortcut table and the MKEY
+seeds.
+
+What has actually been recovered this way, and is quoted in the module that
+uses it:
+
+- the **menu tree** and every caption, verbatim — VB6 marks accelerators with
+  `&`, so `'&Item Wise Sales'` is a menu item;
+- the **MkeyMaster seeds** (`SI`, `SR`, `PI`, `PR`, `SO`, `PO`, `FR`, `IS`,
+  `RS`, `CA`, `BA`…), which is where `lib/stockVoucher.mjs`'s three kinds and
+  their labels come from;
+- **report SQL**, including the netting above and the bracket aliases that are
+  a grid's column headings (`select Voucher as [INVOICE NO], … as [P A R T Y]`);
+- the **column-caption builders** — a report's headings are concatenated from
+  comma-prefixed literals (`'Month,Bill Amount'`, then `',Taxable Amount'`,
+  `',Discount'` …), each behind a flag in its `SetupSB` table;
+- the **shortcut help window**, which is where `lib/billingKeys.mjs` comes from.
+
+**What cannot be recovered:** the `RPTWRT`/`RPTWRT1` tables are empty in every
+copy of the client's data — those hold *user-defined* reports, not the built-in
+ones, so a built-in report's drawing code is compiled and its exact printed
+layout is not reconstructable. For those, ask the client for a screenshot. Do
+not guess a heading and do not quietly invent one.
+
+### 6.20 A stock voucher is not an invoice
+
+`productions` holds three kinds (§5) and they move stock without a party
+balance: no money, no ledger row, no `lastBal` delta. `lib/stockVoucher.mjs`
+decides everything about them and **`lib/productionSave.mjs` is the only thing
+that writes one.**
+
+- Direction comes from `lineDirection(kind)`, never from a hand-written
+  comparison. `reversalOf()` is what an alter or delete undoes, and it agrees
+  with `stockDirection` for every kind by construction — a by-product going
+  *back into* stock on a reversal was a real bug here once.
+- Each kind has **its own counter**, so the three number independently.
+- A `FR` row freezes its component rates at the time it was made; `IS` and
+  `RS` carry no formula and no output.
+
 ---
 
 ## 7. API routes
@@ -635,11 +983,65 @@ Most mutations are `POST`, including deletes (id in the query string).
 `voucher` (POST, lookup), `get-voucher` (GET, all). All transactional; all
 derive their balance deltas from `buildVoucherBalanceDeltas()`.
 
+### Orders
+| Route | Method | Notes |
+|---|---|---|
+| `order-add` / `order-alter` | POST | Create and edit. One screen serves sale and purchase orders |
+| `order-cancel` | POST | Cancels a whole order or one line, recording reason, who and when. Restorable |
+| `delete-order` | POST `?id` | |
+| `order` / `get-order` | POST / GET | Lookup, and all |
+| `order-pending` | GET | A party's open order lines, for prefilling a bill |
+| `order-report` | GET `?view=party\|item&side=` | Pending orders. SIGFA's exact headings, plus current stock on the item view |
+| `order-reconcile` | POST | Recompute `despQty`/`canQty` from the invoices that claim each line |
+| `next-order-no` | GET | Peek, like `next-invoice-no` (§6.12) |
+| `todays-orders` | GET | Orders dated today — the once-a-day reminder |
+
+### Production, BOM and stock vouchers
+`bom-add`, `bom-alter`, `delete-bom`, `bom`, `get-bom`, `bom-explode`
+(the nested tree for one output);
+`production-add`, `production-alter`, `delete-production`, `production`,
+`get-production`, `next-production-no` (per kind — §6.20);
+`production-plan` (GET — what to make for pending orders, net of stock).
+
+`production*` serve all three kinds (`FR`/`IS`/`RS`) through `?kind=`.
+
+### Books, statements and reports
+| Route | Method | Notes |
+|---|---|---|
+| `account-book` | GET `?kind=cash\|bank\|ledger&account=&from=&to=` | Cash Book, Bank Book, A/C Ledger |
+| `financials` | GET `?kind=trial\|trading\|pl\|balance&from=&to=` | All four statements from one route, so they agree with each other |
+| `sales-report` | GET `?view=book\|party\|item&side=&grain=&scope=&month=` | Sales/Purchase Book (month/date/bill), Party-wise, Item-wise (§6.18) |
+| `gst-return` | GET `?view=gstr1-ereturn\|gstr1\|gstr3\|gstr3b&from=&to=` | The e-return returns the portal's JSON and the filename; the rest return numbered tables |
+| `analytics` | GET `?preset=&from=&to=&grain=&side=&search=&page=` | The whole dashboard in one response, so the cards and the tables cannot disagree |
+| `open-bills` | GET `?party=&type=` | A party's unsettled bills, for Against Bill (§6.18) |
+
+**The four report routes compute nothing themselves.** Every figure comes from
+the matching `lib/*.mjs`, and `scripts/*.test.mjs` asserts the route contains
+no `reduce(` of its own. Keep it that way: a route that totals is a route whose
+total can disagree with the module the tests exercise.
+
+### Account and staff
+| Route | Method | Notes |
+|---|---|---|
+| `company` | GET | The firm's own profile. Readable by any role — a biller cannot print a bill without the letterhead. Projects by field name, so a credential column added later is not served to the browser |
+| `company-update` | POST | Owner-only. Seals the IRP password with `lib/secretBox.mjs` |
+| `staff` | GET | The firm's staff list. Owner-only (`user:manage`) |
+| `staff-add` / `staff-alter` | POST | Create, rename, change role. Refuses `owner` — it is a whitelist of assignable roles, not a blacklist |
+| `staff-status` | POST | Activate / deactivate. Refuses the firm's **last active owner**, and refuses self |
+| `change-password` | POST | The one route reachable while `mustChangePassword` is set |
+
+> Both staff guards exist because a firm that reaches zero active owners can
+> never add one back from inside the app — nobody is left who may open the
+> page. It is not a recoverable mistake. `lib/staffRules.mjs` refuses it, and
+> the **routes** ask the same functions the screen does, so the two cannot drift.
+
 ### Masters
 `customer-add`, `customer-alter`, `delete-cust`, `customer` (lookup),
 `get-customer`; `item-add`, `item-alter`, `delete-item`, `item`, `get-item`;
 `hsn-add`, `hsn-update`, `delete-hsn`, `get-hsn`;
-`price-list-add`, `price-list-update`, `delete-price-list`, `get-price-list`.
+`price-list-add`, `price-list-update`, `delete-price-list`, `get-price-list`;
+`group-add`, `group-update`, `delete-group`, `get-group`;
+`state-add`, `state-update`, `delete-state`, `get-state`.
 
 Delete routes refuse with **409** when history references the record:
 `delete-cust` checks invoices, vouchers and ledger rows; `delete-hsn` checks
@@ -653,7 +1055,8 @@ the rate they were billed at and nothing else references a list.
 `send-email` (POST, Resend),
 `clear-all-data` (DELETE — body `{"confirm": "DELETE ALL DATA"}`),
 `clear-transactions` (DELETE — body `{"confirm": "CLEAR TRANSACTIONS"}`),
-`item-stock` (GET — current stock per item, summed from the stock ledger).
+`item-stock` (GET — current stock per item, summed from the stock ledger in
+**one** `$group`; never a query per item).
 
 **The danger zone** lives in `/setup` and is owner-only. Two buttons, two
 different confirmation phrases on purpose, so habit from typing one cannot fire
@@ -800,6 +1203,60 @@ export default function MyPage() {
   node to paper width during capture so a phone produces the same sheet as a
   desktop.
 
+### 8.4 The billing screen is one component now (mostly)
+
+`components/billing/BillingScreen.jsx` takes a single prop, `typeKey`, and
+`lib/billingTypes.mjs` turns it into everything that differs between the four:
+route, `type`, `return`, title, subtitle, which order document it can bill
+from. `app/saleadd/page.js` is **22 lines** around it.
+
+Two things about how it was made, which matter if you touch it:
+
+- It was produced by **transforming `saleadd/page.js` programmatically**, not
+  by retyping it. The posting behaviour is byte-for-byte what it was, and
+  `lib/billingMath.mjs` carries `recalcItem` and `buildHsnTotals` **verbatim**,
+  quirks and all, each one documented (§9.17). Do not "clean up" that
+  arithmetic: it decides what prints on a GST return.
+- `PAYLOAD_KEYS` in `billingMath.mjs` is the **frozen list of 31 fields** the
+  save request carries. The server derives what it must (§6.5), but adding a
+  key here changes what four screens send — check the route reads it, and
+  remember Mongoose strict mode silently drops an undeclared field (§9.18).
+
+**All four pages now delegate**, and `scripts/billing.test.mjs` fails if one
+stops: it checks each page imports BillingScreen, passes a key the table
+knows, and has grown no `useState`, no `useEffect`, no `fetch`, no arithmetic
+and no form of its own. A billing change is made **once**.
+
+The audit before replacing the last three compared each page's state, its
+functions and its imports against BillingScreen's and found nothing unique to
+any of them — they were strict subsets. That is what made the migration safe
+to do in one go rather than one screen at a time. **Do that audit again** if
+you ever need to re-derive a page: "they looked similar" is not the same
+finding.
+
+### 8.5 Report pages print, and they compute nothing
+
+Every register in the app prints the same way, and a new one should copy it
+rather than invent a layout:
+
+- `doc-sheet` on the page, `doc-head` / `doc-org` / `doc-meta` / `doc-kind`
+  for the firm's letterhead and the report's title, `no-print` on every
+  control. `Ctrl+P` then gives the same kind of sheet everywhere.
+- The letterhead comes from `useCompany()` and `companyAddress()`, never from
+  a constant.
+- **The page does no arithmetic.** Figures, column captions, totals, CSV
+  columns and the download filename all come from the matching `lib/*.mjs`.
+  The suites assert it (`assert.doesNotMatch(page, /\.reduce\(/)`) — because a
+  page that totals is a page whose footer can disagree with the sheet above it.
+- Column captions live in **one** list, shared by the screen and the CSV
+  (`sheetHeadings()` reads `CSV_COLUMNS`). Two lists is how a column comes to
+  be called "Total" on screen and "Bill Amount" in the download.
+- Charts are **hand-drawn SVG** (`app/dashboard/page.js`). There is no
+  charting dependency and the dashboard suite fails if one is added: a 200 KB
+  library for two series of bars would be the largest thing on the page.
+  Tooltips are a `<title>` inside the bar, which the browser already knows how
+  to show.
+
 ---
 
 ## 9. Known issues, drift and landmines
@@ -808,24 +1265,38 @@ Honest list. Some are deliberate prototype trade-offs; none are secret.
 
 **Blocking**
 
-1. **The letterhead is still one hard-coded firm.** `lib/company.mjs` holds a
-   single firm's name, address and GSTIN, and every printed invoice reads it —
-   so with more than one firm on the instance, **every firm's bills print the
-   wrong name.** The fix is to read the signed-in firm's `companies` row
-   instead and pass it into `InvoiceDocument`. Cosmetic rather than a data
-   leak, but not shippable. ⚠ Its `gstin` and `phone` are also still blank,
-   and a GST invoice without a GSTIN is not a valid tax invoice.
+1. ~~The letterhead is still one hard-coded firm.~~ **Fixed.** `/company`
+   stores the firm's own profile and `lib/company.mjs` reads the signed-in
+   firm's `companies` row. Every register and every printed bill takes its
+   letterhead from `useCompany()`.
 2. **Tenant isolation has not been exercised against a real database.** The
    scoping rules are unit-tested and the audit proves every route and model is
    wired (§10), but nobody has yet signed up a second firm and confirmed its
    customer list comes back empty. **Do that before onboarding a real second
-   customer.**
-3. **There is no way to add a second user from the UI.** An owner is created at
-   sign-up; accountant and biller accounts can currently only be made directly
-   in the database. An owner-only Staff page is the missing piece — the
-   permission (`user:manage`) and the route rule for `/users` already exist.
+   customer.** Still the one blocking item.
+3. ~~There is no way to add a second user from the UI.~~ **Fixed.** `/staff`
+   is owner-only and creates accountant and biller accounts, with a forced
+   password change on first sign-in (§7, §5 `users`).
 4. ~~There is no authentication anywhere.~~ **Fixed.** Sign-in, roles, a gate
    in `middleware.js` and per-firm scoping on every query — §6.14, §6.15.
+
+**Unresolved, and needs a reproduction**
+
+4a. **`TenantMissingError` fires intermittently in dev** on
+   `get-customer`, `get-item`, `next-invoice-no`, `get-state`, `item-stock`
+   and `get-price-list` — the ones a billing screen fires on mount. The
+   diagnostic in `lib/tenantContext.mjs` distinguishes the two causes and
+   prints which: a module instance that has **never** established a context
+   (a route not wrapped, or a second copy of `tenantContext.mjs` serving the
+   wrapper) versus one that has, where a query escaped its async chain. The
+   static sweep proves every route is wrapped, so the second is likelier —
+   probably a Turbopack double-instance in dev.
+
+   To resolve it: `rm -r .next`, `npm run dev`, open a failing page, and
+   capture from the first `[tenant] module instance` line through
+   `[tenant] NO STORE on instance X after N set(s)` **and the stack**. The
+   `console.log`s in `lib/tenantContext.mjs` and `lib/tenantRoute.mjs` are
+   marked TEMPORARY DIAGNOSTIC and should come out once it is understood.
 
 **Data integrity**
 
@@ -847,21 +1318,16 @@ Honest list. Some are deliberate prototype trade-offs; none are secret.
 
 **Duplication — four copies of the billing screen**
 
-8. `saleadd`, `salereturn`, `purchaseadd` and `purchasereturn` are four
-   **~1,200-line copies of the same screen**, currently differing only in the
-   two or three lines that set `type`, `return` and the page heading. All four
-   use `resolveItemPricing()`, take the party's latest price list automatically,
-   honour the `usePriceList` toggle in Setup, and show the party's balance and
-   each line's stock (§8.3).
+8. ~~Four copies of the billing screen.~~ **Fixed.** All four pages are
+   ~25-line stubs around `components/billing/BillingScreen.jsx` (§8.4), and
+   the suite fails if one stops delegating.
 
-   They are in sync today, but nothing keeps them that way — **every change
-   must be made four times, and they have drifted before.** The real fix is to
-   collapse them into one component parameterised by
-   `{ type, isReturn, title, subtitle }`; ~3,300 duplicated lines go away and
-   the drift cannot recur.
-
-   *(`saleadd/page.js` is LF, the other three are CRLF, so a raw `diff` looks
-   like every line changed. Compare with `diff <(tr -d '\r' < a) <(tr -d '\r' < b)`.)*
+   **What the drift had actually cost, as a warning:** the two return pages
+   sat untouched from 8 October while the sale screen gained order linkage,
+   the shared arithmetic and Sigfa's keyboard shortcuts. By the time anyone
+   tried a shortcut on a purchase return, three screens out of four had none —
+   and the symptom reported was "keyboard navigation not working", not "those
+   pages are stale". **A duplicated screen does not announce its own drift.**
 
 **Smaller things**
 
@@ -887,11 +1353,84 @@ Honest list. Some are deliberate prototype trade-offs; none are secret.
     `vyapaar-ten.vercel.app`) and the FastAPI CORS list
     (`vyapaar-aspx.vercel.app`). The AI-import URL is now configurable via
     `NEXT_PUBLIC_AI_IMPORT_URL` (defaulting to the Render deploy).
-15. `capacitor.config.ts` still says `com.example.app`; `README.md` is the
-    untouched `create-next-app` template.
+15. `capacitor.config.ts` still says `com.example.app`. (`README.md` has been
+    written; it points here for anything beyond running the app.)
 16. The Electron build (`main.js`) loads the deployed URL in a window, so it
     now shows the sign-in page like any browser. Nothing stores a session for
     it beyond the embedded browser's own cookie jar.
+
+**Known defects in the billing arithmetic — reported, not repaired**
+
+These are preserved deliberately. Each one changes what prints on a GST
+return, so fixing it is a decision with the client, not a tidy-up.
+`lib/billingMath.mjs` documents all four at the line.
+
+17. **The HSN summary takes the first line's GST rate.** `buildHsnTotals`
+    assigns `grouped[hsn]` only on first sight, so billing a 5% item and an
+    18% item under one HSN code prints both at 5% — while the *amounts* are
+    correct. `lib/hsnTotals.mjs` derives it properly for the print, and
+    `lib/gstReturns.mjs` reads the **lines** rather than the stored array for
+    exactly this reason (its table 12 is per HSN *and* per rate).
+18. **`recalcItem` never rounds.** A stored `taxableAmount`, `gstAmount` or
+    `total` can carry floating-point tail digits, which is why §6.17 says read
+    what was stored rather than recompute from the rate.
+19. **`resolveItemPricing` reads `salePrice` unconditionally**, so a purchase
+    invoice prices from the *sale* price unless the line is edited. The price
+    list is party-wise, not side-wise, and nothing distinguishes the two.
+20. **Invoice-draft `localStorage` keys are global across all four billing
+    screens**, so a half-finished sale and a half-finished purchase can
+    overwrite each other. Keying them by `typeKey` is the fix.
+21. **`againstInvoiceNo` on the Invoice schema is declared and never set.**
+    Harmless, but it looks like a working link. Bill-wise adjustment lives on
+    the **voucher** (§5 `Voucher.allocations`), not here.
+
+**A shipped-and-fixed defect worth remembering**
+
+21a. **A shortcut table listed nineteen keys while ten were wired, and the
+    Alt+H overlay advertised all nineteen.** Nine of Sigfa's keys did nothing
+    and the help window promised they would — which costs the reader their
+    trust in the ten that worked, and gets reported as "no shortcuts work".
+
+    Fixed, and fixed structurally: `useBillingKeys` returns the set of actions
+    it can fire, the overlay greys anything unbound as "not on this screen",
+    and `billing.test.mjs` sweeps the screen's handler object against
+    `ALL_ACTIONS` in both directions. **The lesson generalises:** a table of
+    capabilities and the code that implements them are two lists, and a UI
+    that reads the table rather than the implementation will lie. Derive the
+    advertisement from the binding, never from the catalogue.
+
+**Build warnings, offered and not actioned**
+
+22. `next.config.mjs` still carries an `eslint` key that Next 16 rejects, and
+    `middleware.js` should be renamed `proxy.js` for Next 16. Both are
+    warnings in the Vercel build today, not failures.
+
+**Migrations that have not been run against the live database**
+
+23. `npm run sync:indexes` — `orders`, `boms`, `productions` (now
+    `{companyId, kind, docNo}`) and the voucher-allocation indexes all want
+    building; stale global uniques want dropping (§2).
+24. `node scripts/backfill-stock-kind.mjs` — stamps `kind: "FR"` on production
+    rows written before the field existed (§5).
+25. `npm run backfill:gl-legs` — adds GL legs to invoices raised before
+    `lib/invoiceGl.mjs` existed.
+
+   All three are dry-run by default. Run the dry run, read it, then `--apply`.
+
+**Not yet in the other repo**
+
+26. **`C:\Vs Code\SAAS Project\vyapaar` has none of this.** Orders, BOM,
+    production, books, financials, the planner, bill adjustment, staff, the
+    billing consolidation, stock vouchers, the sales/purchase reports, the GST
+    returns and the dashboard all exist **only** in `vyapaar-einvoice`. The two
+    repos have diverged a long way; treat `vyapaar-einvoice` as the live one.
+
+**E-invoicing is built but not exercised**
+
+27. The payload builder, the credential vault and the per-invoice lock are
+    written and tested, but **no invoice has been reported to a real IRP** —
+    that needs WhiteBooks sandbox credentials, which the client has not
+    supplied. Until then `einvoiceEnabled` stays off and the lock never fires.
 
 ---
 
@@ -901,10 +1440,12 @@ Honest list. Some are deliberate prototype trade-offs; none are secret.
 npm test
 ```
 
-Runs **18 suites** in `scripts/`. **Run it after any change to `lib/`, to a
-posting route, or after adding any route or model at all** — two of the suites
-are static sweeps that fail the build on an unwrapped route. The suites that
-matter most:
+Runs **40 suites** in `scripts/` — about **1,535 assertions**, in roughly a
+minute. **Run it after any change to `lib/`, to a posting route, or after
+adding any route or model at all** — two of the suites are static sweeps that
+fail the build on an unwrapped route.
+
+The suites that matter most:
 
 | Suite | Guards |
 |---|---|
@@ -919,6 +1460,19 @@ matter most:
 | `voucher-ledger.test.mjs` | Voucher rows and deltas |
 | `price-list.test.mjs` | Rate/discount resolution, legacy chain collapse |
 | `backfill-hsn-totals.test.mjs` | HSN summary derivation |
+| `index-audit.test.mjs` | Schema indexes against the ones the database has; catches a stale **global** unique that should be `{companyId, …}` |
+| `orders.test.mjs`, `order-reports.test.mjs` | Order claims and cancellation; the pending-order reports and SIGFA's exact headings |
+| `bom.test.mjs` | Nested explosion, wastage, by-product, and the three stock vouchers' direction and reversal |
+| `account-books.test.mjs`, `financials.test.mjs` | The books, and that all four statements agree with each other |
+| `production-plan.test.mjs` | What to make, net of stock |
+| `bill-adjust.test.mjs` | Against Bill: FIFO, every refusal, and the money tolerance |
+| `staff.test.mjs` | Who may be added, and that a firm cannot reach zero active owners |
+| `billing.test.mjs` | The 2×2 type table, the verbatim arithmetic, SIGFA's shortcuts |
+| `sales-reports.test.mjs` | The Book at three grains, the zoom, the scope selector, and that a return subtracts (§6.18) |
+| `gst-returns.test.mjs` | One table per document, a tax that adds back to the paisa, and that an empty table says **why** |
+| `dashboard.test.mjs` | Gross/returns/net, the sign of a balance, period vs point-in-time, and that nothing is invented where the data does not exist |
+| `einvoice-payload.test.mjs`, `einvoice-credentials.test.mjs`, `einvoice-lock.test.mjs`, `secret-box.test.mjs` | The IRP payload, the credential vault, and that a reported invoice is read-only |
+| `company-profile.test.mjs`, `buyer-snapshot.test.mjs` | The letterhead, and the buyer block frozen onto a bill |
 | `clear-zero-units.test.mjs`, `migrate-balances.test.mjs`, `rebuild-voucher-ledger.test.mjs` | The migration scripts |
 
 Tests are plain `node:assert` with a tiny `test()` helper — no Jest, no Vitest.
@@ -930,27 +1484,100 @@ need `mongoose` installed.
 `posting-invariants.test.mjs`, then verify the test fails without your fix.**
 A test that cannot fail is worth nothing.
 
+### 10.1 Every new module is mutation-tested
+
+A green suite proves nothing on its own — most of this file's assertions were
+written *after* a sweep showed the obvious one did not bite. So each domain
+module has a **mutation harness** beside it: a script that breaks one rule at a
+time and expects the suite to fail.
+
+```bash
+node mutate-sales.mjs      # 150/150 killed
+node mutate-gst.mjs        # 122/122 killed
+node mutate-dash.mjs       # 126/126 killed
+node mutate-bom.mjs        # 136/136
+node mutate-bill.mjs       #  58/58
+node mutate-staff.mjs      #  53/53
+node mutate-billing.mjs    #  57/57
+node mutate-fin.mjs        #  90/90
+node mutate-books.mjs      #  67/67
+node mutate-plan.mjs       #  50/50
+node mutate-sigfa.mjs      #  36/36
+node mutate.mjs, mutate-reports.mjs
+```
+
+> **These harnesses are work-tree only and are NOT committed.** They are a
+> development tool, not part of the product. If you clone the repo fresh they
+> will not be there — write one for the module you are changing.
+
+The rules that make them worth running:
+
+- A **surviving** mutant is a rule nothing is checking. Fix the *test*, not
+  the mutant.
+- An **equivalent** mutant — one that genuinely cannot change behaviour — is
+  retired with a comment saying why and what was checked, never deleted
+  silently. There are several, each explained at the line.
+- Drive every harness to a **full kill** before calling a module done, and
+  re-run it after editing a shared helper.
+
+What the sweeps have actually caught in this codebase, all of them green-suite
+bugs: a fixture of round thousands that could not test money rounding; a
+fixture already in sort order that could not tell a sort from no sort; a
+comparison that read `resolveGroup()`'s **record** against a string, so every
+party landed on neither side and the dashboard showed no receivables at all;
+and `istDayNumber` being subtracted as though it were a day count (§6.16).
+
+Two mechanical habits that save time:
+
+- **Strip comments before grepping source in a test.** These files explain
+  what they avoid, so a naive `assert.doesNotMatch(src, /lastQuantity/)` matches
+  the comment that says never to read it. Every suite has a `code()` helper
+  that removes comments first.
+- **Check anchor uniqueness.** A mutant whose anchor appears twice (or zero
+  times, after a refactor) is reported as `SKIP`, not as a pass. Read the
+  skips.
+
 **Maintenance scripts** all follow one pattern: dry-run by default, `--apply` to
 commit, and a timestamped JSON backup under `backups/`.
 
 ```bash
 npm run adopt:tenant                # stamp pre-tenancy rows with a companyId (§2)
+npm run sync:indexes                # schema indexes vs the database's (§2)
 npm run migrate:balances            # then :apply
 npm run rebuild:voucher-ledger      # rebuild ledger rows from vouchers
 npm run backfill:hsn-totals         # repair hsnTotals on old invoices
+npm run backfill:gl-legs            # add GL legs to pre-invoiceGl invoices
 npm run migrate:phone               # phone/pincode Number -> String
 npm run blank:zeros                 # clear meaningless zero defaults
 npm run seed:groups                 # customer group master, incl. Cash and Bank
 npm run seed:states                 # GST state master
+node scripts/backfill-stock-kind.mjs  # stamp kind:"FR" on old production rows
 node scripts/check-duplicates.mjs   # report duplicate names in every master
                                     # (no npm alias; the only one without one)
 npm run clear:zero-units
 npm run reset:data                  # add --keep-masters for transactions only
 ```
 
+Every one of them is **dry-run by default**; `--apply` commits and writes a
+timestamped JSON backup under `backups/` first. §9.23–9.25 lists the three
+that have not yet been run against the live database.
+
 `adopt-tenant` refuses to guess when more than one firm exists: pass
 `--company <id>`. Picking the wrong one hands one firm's ledger to another and
 nothing in the app would flag it.
+
+**After any deploy that added a model or an index**, run:
+
+```bash
+npm run sync:indexes          # dry run: reports drift
+npm run sync:indexes:apply
+```
+
+Mongoose creates indexes on first connection but never *drops* one that has
+been removed from a schema — including a stale **global** unique index from
+before multi-tenancy. Those are the cause of "duplicate invoice number" errors
+across two unrelated firms: the index is `{ invoiceNo }`, not
+`{ companyId, invoiceNo }`. `sync:indexes` is what finds and replaces them.
 
 ---
 
@@ -1024,6 +1651,29 @@ const Thing = mongoose.models.things || mongoose.model("things", thingSchema);
 A global `unique: true` means the first firm to use a value takes it from every
 other firm. `npm test` fails if the plugin is missing.
 
+### Add a report
+
+1. **The arithmetic goes in `lib/<name>.mjs`, pure.** Every figure, every
+   column caption, every CSV column, the filename. If you are about to write a
+   `reduce` in a route or a page, it belongs here instead.
+2. **Reuse what already decides things.** `documentsFor` for what counts as a
+   sale and which side it is on; `isReturn`/`documentSign` for the netting
+   (§6.18); `taxableOf` for the pre-tax figure (§6.17); `istDayNumber` /
+   `istDayIndex` for dates (§6.16); `buildStockIndex` for stock;
+   `Customer.lastBal` for a balance. A report with its own opinion about any of
+   these is a report that will disagree with the ledger.
+3. **One route for a family of views.** `?view=`, `?side=`, `?grain=` — they
+   share the expensive fetch and they have to agree with each other. Validate
+   every parameter on the server with an `is…()` from the module.
+4. Widen the database date filter and cut it in the module (§6.16).
+5. **One page, following §8.5** — `doc-sheet`, `no-print`, captions from the
+   module, no arithmetic.
+6. Add the path pair to `PATH_RULES` in `lib/roles.mjs` (a report is normally
+   `report:read`: owner and accountant, not biller).
+7. A tile on `app/page.js`.
+8. **A suite, then a mutation harness, driven to a full kill (§10.1).**
+   Register the suite in `package.json`'s `test` script.
+
 ### Change anything about posting
 
 1. Read §6 in full.
@@ -1048,17 +1698,27 @@ other firm. `npm test` fails if the plugin is missing.
 
 ## 12. Prompt to paste into ChatGPT or Gemini
 
-> I'm working on **Vyapaar**, a Next.js 16 + MongoDB GST billing app that
-> serves several small Indian trading firms from one deployment. I'm pasting
-> its context file below. Read it fully before answering — especially §6, and
-> above all §6.14 (every query is scoped to one firm, automatically) and §6.15
-> (auth and roles).
+> I'm working on **Vyapaar**, a Next.js 16 + MongoDB GST billing and
+> accounting app that serves several small Indian trading firms from one
+> deployment. It is replacing the client's SIGFA desktop software, so where a
+> feature's behaviour, field names or report headings are in question, SIGFA's
+> are the answer (§6.19). I'm pasting its context file below. Read it fully
+> before answering — especially §6, and above all §6.14 (every query is scoped
+> to one firm, automatically), §6.15 (auth and roles), §6.16 (dates are IST
+> calendar days, and there are two different day numbers) and §6.17
+> (`totalAmount` is tax-inclusive).
 >
 > Constraints: **JavaScript, not TypeScript. React 18. Mongoose. Tailwind plus
 > the component classes in §8.1 — do not hand-roll styling or hard-code
 > colours.** Every money write goes through `withTransaction` and passes
 > `{ session }` to every query inside it. Create, edit and delete must derive
 > their figures from the same function in `lib/`.
+>
+> **Arithmetic goes in a pure `lib/*.mjs` module, never in a route or a page.**
+> Reports and dashboards must defer to whatever already owns each figure —
+> `documentsFor` for what counts as a sale, `taxableOf` for a pre-tax value,
+> `Customer.lastBal` for a balance, `buildStockIndex` for stock — rather than
+> computing a second opinion about the firm's money.
 >
 > **Multi-tenancy rules you must follow:** every API route exports through
 > `tenantRoute`; every tenant model applies `tenantPlugin`; **never add
@@ -1070,7 +1730,14 @@ other firm. `npm test` fails if the plugin is missing.
 > When you give me code, give me **complete files or exact
 > find-and-replace blocks** — I'll be pasting them in by hand, so partial
 > snippets with "..." are not useful. Tell me every file that needs to change,
-> including the three sibling billing pages if you touch one of them (§9.8).
+> including the three un-migrated sibling billing pages if you touch billing
+> behaviour (§9.8), and the entry in `PATH_RULES` if you add a route.
+>
+> Add tests in the existing style — plain `node:assert`, a `test()` helper, no
+> framework — and register the suite in `package.json`. Assume I will then
+> break your logic one rule at a time to check the tests actually bite
+> (§10.1), so write assertions that would fail if the rule were inverted, not
+> just ones that pass today.
 >
 > My task: _<describe it here>_
 >

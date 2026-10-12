@@ -19,6 +19,7 @@ import {
   TabsTrigger,
 } from '../../components/ui/tabs'
 import { UQC_CODES, UQC_DEFAULT, normalizeUqc } from '@/lib/uqc.mjs'
+import MasterShortcuts from '@/components/masters/MasterShortcuts'
 
 const PageContent = () => {
   const searchParams = useSearchParams();
@@ -151,6 +152,23 @@ const PageContent = () => {
 
   return (
     <div className="page-shell">
+      {/* Sigfa's Create [Alt+A] / Alter [Alt+M] / Delete [Alt+D], acting on
+          whichever master is behind the focused field -- the HSN box and the
+          Group box here. The HSN master is already in memory for the
+          dropdown, so Alt+M on it costs no request. */}
+      <MasterShortcuts
+        lists={{ hsn: hsnList }}
+        onChanged={({ kind }) => {
+          // A created or renamed HSN has to appear in the dropdown, or the
+          // form goes on offering the old list.
+          if (kind === 'hsn') {
+            fetch('/api/get-hsn')
+              .then((r) => r.json())
+              .then((d) => setHsnList(d.hsn || []))
+              .catch(() => {});
+          }
+        }}
+      />
       <header className="page-header">
         <div>
           <h1 className="page-title">Item</h1>
@@ -187,13 +205,14 @@ const PageContent = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   <InputField label="Name" value={name} onChange={setName} />
                   <InputField label="Short Name" value={short} onChange={setShort} />
-                  <InputField label="Group" value={group} onChange={setGroup} />
+                  <InputField label="Group" value={group} onChange={setGroup} masterField="itemGroup" />
 
                   <div className="space-y-1">
                     <Label htmlFor="hsn">HSN Code</Label>
                     <select
                       id="hsn"
                       className="field-select"
+                      data-master-field="hsncode"
                       value={hsn}
                       onChange={(e) => {
                         const selectedHsn = hsnList.find(h => h.hsncode === e.target.value);
@@ -294,13 +313,16 @@ const PageContent = () => {
 };
 
 // 🔧 Reusable input field component
-const InputField = ({ label, value, onChange, type = "text", readOnly = false }) => (
+const InputField = ({ label, value, onChange, type = "text", readOnly = false, masterField }) => (
   <div className="space-y-1">
     <Label>{label}</Label>
     <Input
       type={type}
       value={value}
       readOnly={readOnly}
+      /* Sigfa's Alt+A / Alt+M / Alt+D act on whatever master is behind the
+         focused field. lib/masterActions.mjs maps the name to a kind. */
+      data-master-field={masterField}
       /* The raw text is kept in state, including "" for an empty box. Coercing
          here with `parseFloat(...) || 0` meant clearing a price snapped it
          straight back to 0, so every unfilled field was saved as a real zero.

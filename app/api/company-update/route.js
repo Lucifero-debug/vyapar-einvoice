@@ -7,6 +7,7 @@ import {
   irpMissing,
   profileProblems,
 } from "@/lib/company.mjs";
+import { PREF_NAMES, prefProblems, prefsFrom } from "@/lib/invoicePrefs.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import {
   CREDENTIAL_FIELDS,
@@ -56,6 +57,7 @@ async function handlePOST(req, auth) {
 
     const problems = [
       ...profileProblems(body),
+      ...prefProblems(body),
       ...credentialProblems(body.einvoice || {}, {
         passwordSet: credentialState(current).passwordSet,
       }),
@@ -78,6 +80,27 @@ async function handlePOST(req, auth) {
     const normalized = companyFrom(body);
     const update = {};
     for (const name of FIELD_NAMES) update[name] = normalized[name];
+
+    // --- how this firm's documents look ---
+    //
+    // Only when the form sent any, so a caller that posts the profile alone
+    // leaves the preferences where they are rather than resetting them to
+    // the defaults.
+    //
+    // Written field by field from `prefsFrom`'s normalised shape, like the
+    // profile above: each one coerced by its declared kind, and anything the
+    // body carried that is not in PREF_NAMES is not written. Spreading
+    // `body.invoicePrefs` here would be the "spread the request body into
+    // the update" the brief forbids, and would let a caller set a key the
+    // schema has never heard of.
+    //
+    // The LOGO is deliberately not settable here. It has its own route, so a
+    // 200KB data URL never rides along with a profile save and the two can
+    // be permissioned and rate-limited separately.
+    if (body.invoicePrefs) {
+      const prefs = prefsFrom(body);
+      for (const name of PREF_NAMES) update[`invoicePrefs.${name}`] = prefs[name];
+    }
 
     // --- e-invoice credentials, when the form sent any ---
     const credentials = body.einvoice;
@@ -112,7 +135,7 @@ async function handlePOST(req, auth) {
       { $set: update },
       { new: true, runValidators: true }
     )
-      .select([...FIELD_NAMES, ...CREDENTIAL_FIELDS, "+einvoicePasswordEnc"].join(" "))
+      .select([...FIELD_NAMES, "logo", "invoicePrefs", ...CREDENTIAL_FIELDS, "+einvoicePasswordEnc"].join(" "))
       .lean();
 
     if (!record) {

@@ -19,7 +19,16 @@ import ItemSearch from '@/components/billing/ItemSearch';
 import QuickMaster from '@/components/billing/QuickMaster';
 import ShortcutHelp from '@/components/billing/ShortcutHelp';
 import { useBillingKeys } from '@/components/billing/useBillingKeys';
-import { masterForField, nextRowField } from '@/lib/billingKeys.mjs';
+import {
+    infoPanelFor,
+    lookupListFor,
+    nextRowField,
+    priceSourceFor,
+} from '@/lib/billingKeys.mjs';
+import InfoPanel from '@/components/billing/InfoPanel';
+import useMasterActions from '@/components/masters/useMasterActions';
+import LookupList from '@/components/billing/LookupList';
+import { resolveGroup } from '@/lib/accountGroups.mjs';
 
 /**
  * One billing screen, for all four transaction types.
@@ -55,7 +64,9 @@ export default function BillingScreen({ typeKey }) {
     // standing in rather than the last one in the table.
     const itemBoxRef = useRef(null);
     const [activeRow, setActiveRow] = useState(null);
-    const [quickMaster, setQuickMaster] = useState(null);
+    // Sigfa's Alt+J / Alt+Y information windows, and its Shift+F1..F4 lists.
+    const [infoPanel, setInfoPanel] = useState(null);
+    const [lookup, setLookup] = useState(null);
     const [showShortcuts, setShowShortcuts] = useState(false);
     const [confirmRemove, setConfirmRemove] = useState(null);
 
@@ -886,6 +897,125 @@ const handleDispatchSave = () => {
         );
     };
 
+    /**
+     * Refetch one master after it was created, altered or deleted.
+     *
+     * Only the one that changed. A bill that went on showing a record which
+     * has just been renamed would bill under the old name, and the join in
+     * this app is BY NAME -- so a stale dropdown is a posting error, not a
+     * cosmetic one.
+     */
+    const reloadMaster = (kind) => {
+        if (kind === 'item') {
+            fetch('/api/get-item')
+                .then((r) => r.json())
+                .then((d) => setItem(d.item || []))
+                .catch(() => {});
+        }
+        if (kind === 'customer') {
+            fetch('/api/get-customer')
+                .then((r) => r.json())
+                .then((d) => setCustomer(d.customer || []))
+                .catch(() => {});
+        }
+    };
+
+    /**
+     * Sigfa's three master keys, for whatever field has focus.
+     *
+     * The item and party masters are already in memory for the dropdowns, so
+     * Alt+M on either costs no request; HSN, group and state are fetched on
+     * the keystroke. `onChanged` reloads the lists so a bill does not go on
+     * showing a record that has just been renamed or deleted.
+     */
+    const masters = useMasterActions({
+        lists: { item, customer },
+        onChanged: ({ kind, mode, record }) => {
+            reloadMaster(kind);
+            // A deleted or renamed party is still sitting in `selectedCustomer`
+            // and on every line. Cleared rather than left pointing at a record
+            // that no longer exists under that name.
+            if (kind === 'customer' && mode === 'delete' && record?.name === selectedCustomer?.name) {
+                setSelectedCustomer({});
+            }
+        },
+    });
+
+    /**
+     * Choose the bill's party, by name.
+     *
+     * Extracted from the dropdown's inline handler so Shift+F1 and Shift+F2
+     * go through the SAME path: the price list, the place of supply and the
+     * balance strip all hang off `selectedCustomer`, and a second way of
+     * setting it is a second chance for one of them to be missed.
+     */
+    const pickCustomer = (name) => {
+        const match = customer.find((cust) => cust.name === name);
+        setSelectedCustomer(match || {});
+    };
+
+    /**
+     * Put one of the item master's stored prices into the focused line's rate.
+     *
+     * Needs a chosen line and does nothing without one, rather than guessing
+     * the last. Routed through recalcItem so the taxable value, the GST and
+     * the total cascade exactly as a typed rate would -- a price written
+     * straight onto `cost` would leave the line's total stale.
+     *
+     * A price the master does not carry is refused with a word, not applied
+     * as zero: silently rewriting a rate to 0 on Alt+F1 would be the worst
+     * kind of shortcut.
+     */
+    const applyPriceSource = (action) => {
+        const source = priceSourceFor(action);
+        if (!source) return;
+        if (activeRow === null || !selectedItem[activeRow]) {
+            alert('Choose a line first — click into its quantity or rate.');
+            return;
+        }
+        const line = selectedItem[activeRow];
+        const master = item.find((i) => i.name === line.name);
+        const price = Number(master?.[source.field]);
+        if (!master || !Number.isFinite(price) || price <= 0) {
+            alert(`No ${source.label} is set on "${line.name}" in the item master.`);
+            return;
+        }
+        // Sigfa warns rather than refuses: "Sale Price Is More Than MRP".
+        const mrp = Number(master?.mrp);
+        if (source.field !== 'mrp' && Number.isFinite(mrp) && mrp > 0 && price > mrp) {
+            alert(`Note: that ${source.label} (${price}) is more than the MRP (${mrp}).`);
+        }
+        handleItemFieldChange(activeRow, 'cost', String(price));
+    };
+
+    /**
+     * Open one of Sigfa's four "Help Window" lists.
+     *
+     * The filter is the account GROUP, through lib/accountGroups.mjs, so the
+     * legacy spellings ("customer", "supplier") land in the right list -- and
+     * so the sale/purchase heads are found by the statement they sit on
+     * rather than by matching names.
+     */
+    const openLookup = (action) => {
+        const spec = lookupListFor(action);
+        if (!spec) return;
+        const rows = (customer || [])
+            .filter((party) => {
+                const group = resolveGroup(party?.group);
+                if (spec.group) return group?.name === spec.group;
+                if (spec.statement) return group?.statement === spec.statement;
+                return true;
+            })
+            .map((party) => ({
+                name: party?.name,
+                city: party?.city,
+                group: resolveGroup(party?.group)?.name || party?.group,
+                lastBal: party?.lastBal,
+            }))
+            .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        setLookup({ ...spec, rows });
+    };
+
     // ═══ KEYBOARD ═══════════════════════════════════════════════════════════
     //
     // Sigfa's keys, bound through one listener. The TABLE is in
@@ -895,30 +1025,20 @@ const handleDispatchSave = () => {
     //
     // An action with no handler below is simply not bound -- the key is left
     // to the browser rather than swallowed.
-    useBillingKeys({
+    const boundKeys = useBillingKeys({
         itemSearch: () => itemBoxRef.current?.focus(),
 
-        // Sigfa: "Create New Masters In Transaction". The master offered is
-        // the one the focused field needs, and whatever was typed into the
-        // billing field carries across so it is not asked for twice.
-        newMaster: () => {
-            const field = document.activeElement?.dataset?.billingField || 'item';
-            const kind = masterForField(field);
-            if (!kind) return;
-            const typed = document.activeElement?.value || '';
-            setQuickMaster({ kind, prefill: typed ? { name: typed } : null });
-        },
-
-        alterMaster: () => {
-            // Sigfa opens the master screen on the record in hand. The item
-            // and party masters are their own pages here, so this goes there
-            // rather than reimplementing them in a dialog.
-            if (activeRow !== null && selectedItem[activeRow]?.name) {
-                router.push(`/itemadd?name=${encodeURIComponent(selectedItem[activeRow].name)}`);
-            } else if (selectedCustomer?.name) {
-                router.push(`/customeradd?name=${encodeURIComponent(selectedCustomer.name)}`);
-            }
-        },
+        // Sigfa's three, all on the FOCUSED FIELD and all through one hook,
+        // so they behave identically here and on a master screen:
+        //
+        //   Create [ Alt + A ]   Alter [ Alt + M ]   Delete [ Alt + D ]
+        //
+        // Alter edits IN PLACE. It used to push the master screen, which
+        // threw away a half-typed bill -- and it only knew about items and
+        // parties, so Alt+M in an HSN or state box did nothing at all.
+        newMaster: () => masters.create(),
+        alterMaster: () => masters.alter(),
+        deleteMaster: () => masters.remove(),
 
         addRow: () => itemBoxRef.current?.focus(),
 
@@ -943,6 +1063,89 @@ const handleDispatchSave = () => {
             }
         },
 
+        // ── Alt+J and Alt+Y: Sigfa's information windows ────────────────
+        //
+        // Read-only on purpose. Alt+M is the key that goes to the master to
+        // CHANGE a record; a window that both shows and edits is one somebody
+        // edits by accident with a bill half typed.
+        itemInfo: () => {
+            const kind = infoPanelFor('itemInfo');
+            const line = activeRow !== null ? selectedItem[activeRow] : null;
+            if (!line?.name) return;
+            const master = item.find((i) => i.name === line.name);
+            setInfoPanel({
+                title: kind.title,
+                subtitle: line.name,
+                rows: master
+                    ? [
+                        { label: 'HSN', value: master.hsn },
+                        { label: 'Unit', value: master.unit },
+                        { label: 'UQC', value: master.uqc },
+                        { label: 'GST %', value: master.gst },
+                        { label: 'Sale price', value: master.salePrice },
+                        { label: 'Purchase price', value: master.purchasePrice },
+                        { label: 'MRP', value: master.mrp },
+                        { label: 'Discount %', value: master.discount },
+                        { label: 'Group', value: master.group },
+                        { label: 'Minimum stock', value: master.minQuantity },
+                        // The rate ON THIS LINE, which may have been edited
+                        // or come off a price list, beside the master's.
+                        { label: 'Rate on this line', value: line.cost },
+                    ]
+                    : [],
+            });
+        },
+
+        partyInfo: () => {
+            const kind = infoPanelFor('partyInfo');
+            if (!selectedCustomer?.name) return;
+            // From the MASTER, not from the invoice's embedded buyer block --
+            // the same rule PartyBalance follows, and for the same reason: the
+            // snapshot on a saved bill is deliberately frozen.
+            const master = customer.find((c) => c.name === selectedCustomer.name) || selectedCustomer;
+            setInfoPanel({
+                title: kind.title,
+                subtitle: master.name,
+                rows: [
+                    { label: 'GSTIN', value: master.gstIn },
+                    { label: 'Group', value: resolveGroup(master.group)?.name || master.group },
+                    { label: 'City', value: master.city },
+                    { label: 'State', value: master.state },
+                    { label: 'State code', value: master.stateCode },
+                    { label: 'Pincode', value: master.pincode },
+                    { label: 'Phone', value: master.phone },
+                    { label: 'Email', value: master.email },
+                    { label: 'PAN', value: master.pan },
+                    {
+                        label: 'Current balance',
+                        value:
+                            master.lastBal === undefined
+                                ? ''
+                                : `${Number(master.lastBal || 0).toFixed(2)} ${
+                                      Number(master.lastBal || 0) >= 0 ? 'Dr' : 'Cr'
+                                  }`,
+                    },
+                    { label: 'Opening balance', value: master.openingBal },
+                ],
+            });
+        },
+
+        // ── Alt+F1 / Alt+F2 / Alt+F3: pull a stored price into the rate ──
+        //
+        // One mechanism, three keys -- Sigfa's own rate sources read
+        // "6=Pur.Price, 7=CostPrice, 8=MRP", so "Cal MRP" puts the MRP in the
+        // rate box rather than back-computing anything. lib/billingKeys.mjs
+        // holds the mapping and says why.
+        purchasePrice: () => applyPriceSource('purchasePrice'),
+        salePrice: () => applyPriceSource('salePrice'),
+        calcMrp: () => applyPriceSource('calcMrp'),
+
+        // ── Shift+F1 to Shift+F4: Sigfa's "Help Window" lists ───────────
+        customerList: () => openLookup('customerList'),
+        supplierList: () => openLookup('supplierList'),
+        accountList: () => openLookup('accountList'),
+        salePurchaseList: () => openLookup('salePurchaseList'),
+
         help: () => setShowShortcuts(true),
 
         back: () => {
@@ -950,7 +1153,10 @@ const handleDispatchSave = () => {
             // the screen when nothing is. Leaving a half-typed bill on a
             // stray Escape would be its own bug report.
             if (showShortcuts) return setShowShortcuts(false);
-            if (quickMaster) return setQuickMaster(null);
+            if (masters.problem) return masters.clearProblem();
+            if (masters.dialog) return masters.closeDialog();
+            if (infoPanel) return setInfoPanel(null);
+            if (lookup) return setLookup(null);
             if (confirmRemove !== null) return setConfirmRemove(null);
         },
     });
@@ -1019,12 +1225,11 @@ const handleDispatchSave = () => {
                         <label className='field-label mb-1'>Customer</label>
                         <select 
                             value={selectedCustomer.name || ''} 
-                            onChange={(e) => {
-                                const selectedName = e.target.value;
-                                const customers = customer.find(cust => cust.name === selectedName);
-                                setSelectedCustomer(customers || {});
-                            }} 
+                            onChange={(e) => pickCustomer(e.target.value)} 
                             className='field-select'
+                            /* Alt+A / Alt+M / Alt+D act on the party master
+                               from here. Its own value IS the party's name. */
+                            data-master-field='customer'
                         >
                             <option value=''>Select Customer</option>
                             {customer.map((cust) => (
@@ -1211,6 +1416,10 @@ const handleDispatchSave = () => {
                                                     value={items.quantity} 
                                                     onChange={(e) => handleItemFieldChange(index, 'quantity', e.target.value)}
                                                     data-billing-field='quantity'
+                                                    /* The master behind a line is its ITEM --
+                                                       the box itself holds a number. */
+                                                    data-master-field='item'
+                                                    data-master-value={items.name}
                                                     onFocus={() => setActiveRow(index)}
                                                     onKeyDown={(e) => onRowKeyDown(e, index, 'quantity')}
                                                 />
@@ -1223,6 +1432,10 @@ const handleDispatchSave = () => {
                                                     value={items.cost} 
                                                     onChange={(e) => handleItemFieldChange(index, 'cost', e.target.value)}
                                                     data-billing-field='cost'
+                                                    /* The master behind a line is its ITEM --
+                                                       the box itself holds a number. */
+                                                    data-master-field='item'
+                                                    data-master-value={items.name}
                                                     onFocus={() => setActiveRow(index)}
                                                     onKeyDown={(e) => onRowKeyDown(e, index, 'cost')}
                                                 />
@@ -1236,6 +1449,10 @@ const handleDispatchSave = () => {
                                                     value={items.discount}
                                                     onChange={(e) => handleItemFieldChange(index, 'discount', e.target.value)}
                                                     data-billing-field='discount'
+                                                    /* The master behind a line is its ITEM --
+                                                       the box itself holds a number. */
+                                                    data-master-field='item'
+                                                    data-master-value={items.name}
                                                     onFocus={() => setActiveRow(index)}
                                                     onKeyDown={(e) => onRowKeyDown(e, index, 'discount')}
                                                 />
@@ -1677,30 +1894,72 @@ const handleDispatchSave = () => {
 
                 {/* Sigfa's Alt+A: create the master the focused field needs,
                     without abandoning the bill. */}
+                {/* Create (Alt+A) and Alter (Alt+M), both through one dialog
+                    and one hook -- see components/masters/useMasterActions.js.
+                    An ALTER posts the whole loaded record with the edits over
+                    it; a partial body would reset `uqc` and `isService`. */}
                 <QuickMaster
-                    kind={quickMaster?.kind}
-                    prefill={quickMaster?.prefill}
-                    onClose={() => setQuickMaster(null)}
-                    onCreated={({ kind }) => {
-                        // The new record has to be visible to the form, so the
-                        // master it belongs to is refetched. Only that one.
-                        if (kind === 'item') {
-                            fetch('/api/get-item')
-                                .then((r) => r.json())
-                                .then((d) => setItem(d.item || []))
-                                .catch(() => {});
-                        }
-                        if (kind === 'customer') {
-                            fetch('/api/get-customer')
-                                .then((r) => r.json())
-                                .then((d) => setCustomer(d.customer || []))
-                                .catch(() => {});
-                        }
-                    }}
+                    kind={masters.dialog?.kind}
+                    mode={masters.dialog?.mode}
+                    record={masters.dialog?.record}
+                    prefill={masters.dialog?.prefill}
+                    onClose={masters.closeDialog}
+                    onSaved={({ kind }) => reloadMaster(kind)}
                 />
 
+                {/* Why a master key did nothing, in a sentence. Silence is
+                    indistinguishable from a broken shortcut -- which is how
+                    nine of these came to be reported as not working. */}
+                {masters.problem && (
+                    <div className="modal-overlay" role="dialog" aria-modal="true">
+                        <div className="modal-card max-w-md">
+                            <div className="modal-title">Nothing to do here</div>
+                            <p className="text-sm text-muted-foreground">{masters.problem}</p>
+                            <div className="mt-5 flex justify-end">
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    onClick={masters.clearProblem}
+                                    autoFocus
+                                >
+                                    Right
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* Sigfa's Alt+H. */}
-                <ShortcutHelp open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+                {/* `bound` comes from the hook, not from the shortcut table:
+                    the overlay once advertised all nineteen keys while ten
+                    were wired. */}
+                <ShortcutHelp
+                    open={showShortcuts}
+                    bound={boundKeys}
+                    onClose={() => setShowShortcuts(false)}
+                />
+
+                <InfoPanel
+                    open={Boolean(infoPanel)}
+                    title={infoPanel?.title}
+                    subtitle={infoPanel?.subtitle}
+                    rows={infoPanel?.rows}
+                    onClose={() => setInfoPanel(null)}
+                />
+
+                <LookupList
+                    open={Boolean(lookup)}
+                    title={lookup?.title}
+                    rows={lookup?.rows}
+                    picks={Boolean(lookup?.picks)}
+                    onPick={(row) => {
+                        // Routed through the same change handler the dropdown
+                        // uses, so the price list, the place of supply and the
+                        // balance strip all behave as they always did.
+                        if (row?.name) pickCustomer(row.name);
+                    }}
+                    onClose={() => setLookup(null)}
+                />
 
                 {/* Deleting a line by keyboard is confirmed. A mis-keyed Alt+E
                     on a finished bill would otherwise drop a line in silence. */}

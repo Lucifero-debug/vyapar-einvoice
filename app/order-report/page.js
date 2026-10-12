@@ -240,7 +240,7 @@ function OrderReports() {
         <OrderSearchParams onValue={readParams} />
       </Suspense>
 
-      <div className="doc-sheet">
+      <div className="doc-sheet report-sheet">
         <div className="doc-head">
           <h2 className="doc-org">{company?.name || ''}</h2>
           <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -415,7 +415,7 @@ function OrderReports() {
 
         {summary && isPending && !busy && summary.lines > 0 && (
           <div className="mb-5 table-wrap">
-            <table className="data-table">
+            <table className="data-table report-table">
               <thead>
                 <tr>
                   <th>Age of order</th>
@@ -473,7 +473,7 @@ function OrderReports() {
 
         {/* ── the report ───────────────────────────────────────────── */}
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table report-table">
             {view === 'register' && (
               <thead>
                 <tr>

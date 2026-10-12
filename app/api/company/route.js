@@ -25,7 +25,16 @@ async function handleGET(req, auth) {
     // one exists. The value itself never leaves this function -- see
     // credentialState(), which turns it into a boolean.
     const record = await Company.findById(auth.companyId)
-      .select([...FIELD_NAMES, ...CREDENTIAL_FIELDS, "+einvoicePasswordEnc"].join(" "))
+      // `logo` and `invoicePrefs` are named here but are NOT in FIELD_NAMES:
+      // that array is the profile FORM's text fields and doubles as the
+      // update allowlist, and neither of these is a text field the form
+      // posts. Asking for them by name keeps the projection explicit, which
+      // is the property this select exists for.
+      .select(
+        [...FIELD_NAMES, "logo", "invoicePrefs", ...CREDENTIAL_FIELDS, "+einvoicePasswordEnc"].join(
+          " "
+        )
+      )
       .lean();
 
     if (!record) {

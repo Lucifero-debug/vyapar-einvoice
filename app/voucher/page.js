@@ -99,7 +99,7 @@ export default function VoucherPage() {
   const grandCredit = round2(entries.reduce((s, e) => s + e.credit, 0));
 
   return (
-    <div className="page-shell">
+    <div className="page-shell report-sheet">
       <div className="doc-head">
         <h2 className="doc-org">{company.name}</h2>
         <p className="doc-meta">Every posting, in the order it was made</p>
@@ -129,7 +129,7 @@ export default function VoucherPage() {
               </div>
 
               <div className="overflow-x-auto">
-                <table className="data-table table-fixed min-w-[560px]">
+                <table className="data-table report-table table-fixed min-w-[560px]">
                   <thead>
                     <tr>
                       <th className="w-[40%]">ACCOUNT</th>
@@ -169,7 +169,7 @@ export default function VoucherPage() {
           ))}
 
           <div className="overflow-x-auto rounded-xl border border-primary/30 bg-accent/50">
-            <table className="data-table table-fixed min-w-[560px]">
+            <table className="data-table report-table table-fixed min-w-[560px]">
               <tfoot>
                 <tr>
                   <td colSpan="2" className="num text-base">

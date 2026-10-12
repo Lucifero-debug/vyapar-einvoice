@@ -7,9 +7,11 @@ import {
 } from '@/lib/orderStatus.mjs';
 import { splitGst } from '@/lib/gst.mjs';
 import { buildHsnSummary, hsnGrandTotal, lineTaxable } from '@/lib/hsnTotals.mjs';
-import { addressLines, has } from '@/lib/company.mjs';
+// The firm's identity, framed in one place so the invoice, the statements and
+// the printed reports cannot disagree about which details show.
+import { CompanyBank, CompanyBrand, CompanyLogo, DocumentFooter } from '@/components/CompanyBrand';
+import { footerLines, pageRuleFor, prefsFrom } from '@/lib/invoicePrefs.mjs';
 import { useCompany } from '@/context/CompanyContext';
-import AddIcCallOutlinedIcon from '@mui/icons-material/AddIcCallOutlined';
 
 /**
  * One printed invoice. Shared by the single-invoice page and the date-range
@@ -20,7 +22,12 @@ const InvoiceDocument = forwardRef(({ invoice, isRollStationary }, ref) => {
   // used to carry a name and a GSTIN written into the source -- the GSTIN was
   // invented, and on a shared instance every firm printed the first firm's.
   const { company } = useCompany();
-  const sellerAddress = addressLines(company);
+  // How THIS firm wants its bills to look. Absent on every row written
+  // before the setting existed, and every default is the value that
+  // preserves the bill as it was -- lib/invoicePrefs.mjs, field by field.
+  const prefs = prefsFrom(company);
+  const notes = footerLines(prefs);
+  const paper = pageRuleFor(prefs);
 
   const items = invoice?.items || [];
   const partyTaxes = invoice?.partyTaxes || [];
@@ -92,6 +99,12 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
   return (
 <div 
   ref={ref} 
+  // `data-paper` carries the firm's chosen sheet to the scaling rule in
+  // app/globals.css. The @page rule itself is emitted just below, because an
+  // element cannot scope one. A4 is the default and the layout is built for
+  // it; A5 scales rather than needing a second template, because the bill is
+  // already responsive -- it has a phone layout.
+  data-paper={paper.value}
   className={`invoice-doc mx-auto my-4 bg-white border border-gray-300 rounded-xl shadow-sm text-gray-900 font-sans transition-all duration-300 sm:my-6
     ${isRollStationary ? 'max-w-[480px] p-3 text-[12px]' : 'max-w-3xl p-4 text-[13px] sm:p-8 sm:text-[14px]'}`}
   style={{
@@ -99,31 +112,30 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
     overflow: "hidden",
   }}
 >
+      {/* The firm's sheet size. An @page rule cannot be scoped to an element,
+          so it cannot live in app/globals.css beside everything else -- the
+          document that is printing has to declare it. Emitted only when the
+          firm has chosen something other than the default, so an ordinary A4
+          bill carries no extra rule. */}
+      {paper.value !== 'A4' ? (
+        <style>{`@page { size: ${paper.size}; margin: 8mm; }`}</style>
+      ) : null}
 
         {/* Header */}
         <header className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3 sm:gap-4">
-            <div className="min-w-0">
-              {/* Blank prints as nothing. An empty line on a bill is honest;
-                  a placeholder that looks like a real GSTIN is not. */}
-              <h1 className="text-xl font-extrabold tracking-wide text-gray-800 sm:text-3xl">
-                {company.name}
-              </h1>
-              {sellerAddress.map((line) => (
-                <p key={line} className="mt-1 text-xs text-gray-600 sm:text-sm">{line}</p>
-              ))}
-              {has(company.gstin) && (
-                <p className="mt-1 text-xs text-gray-600 sm:text-sm">GSTIN: {company.gstin}</p>
-              )}
-              {has(company.phone) && (
-                <p className="mt-1 flex items-center gap-1 text-xs text-gray-700 sm:text-sm">
-                  <AddIcCallOutlinedIcon fontSize="small" /> {company.phone}
-                </p>
-              )}
-            </div>
-            <div className="ml-auto h-14 w-14 flex-shrink-0 overflow-hidden rounded-full border border-gray-300 shadow-md sm:ml-0 sm:h-20 sm:w-20">
-              <img src={company.logo} alt="" className="w-full h-full object-cover" />
-            </div>
+            {/* THE FIRM, from the firm's own record. `useCompany()` already
+                served the name, address, GSTIN and phone dynamically; the
+                LOGO did not -- it was `/logo.jpg`, one file in /public, at
+                the top of every firm's invoice on the instance. The note
+                where COMPANY_LOGO used to be declared in lib/company.mjs
+                has that history. */}
+            <CompanyBrand company={company} prefs={prefs} size="invoice" />
+            {/* `object-contain` in a fixed-height box, NOT the old
+                `rounded-full object-cover`, which cropped a wide wordmark
+                to a circle cut from its middle. Renders nothing at all when
+                the firm has no logo, rather than a frame around a gap. */}
+            <CompanyLogo company={company} prefs={prefs} variant="screen" className="ml-auto flex-shrink-0 sm:ml-0" />
           </div>
           {/* Phone: number and date sit side by side under the masthead.
               sm and up: the original stacked block on the right. */}
@@ -385,11 +397,22 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
           </div>
         </section>
 
-        {/* Footer */}
-        <footer className="mt-10 border-t border-gray-300 pt-5 text-center text-[13px] text-gray-600 sm:mt-12 sm:pt-6 sm:text-sm">
-          <p>Thank you for doing business with us.</p>
-          <p>Please contact us if you have any questions about this invoice.</p>
-        </footer>
+        {/* Where to pay. Renders nothing unless the firm has both turned it
+            on and filled the fields in -- the bill has never printed these,
+            so the switch is off by default and the page is unchanged for
+            anyone who does not ask for them. */}
+        <CompanyBank company={company} prefs={prefs} className="mt-6 border-t border-gray-200 pt-4" />
+
+        {/* Footer. The two sentences that used to be typed here are now the
+            DEFAULT of the firm's footer note, so a firm that never opens the
+            settings page prints exactly what it printed before -- and one
+            that wants its terms there instead can say so. */}
+        <DocumentFooter
+          company={company}
+          prefs={prefs}
+          lines={notes}
+          className="mt-10 border-t border-gray-300 pt-5 sm:mt-12 sm:pt-6"
+        />
       </div>
   );
 });

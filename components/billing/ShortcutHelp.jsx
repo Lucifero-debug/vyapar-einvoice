@@ -14,8 +14,14 @@ import { shortcutHelp } from '@/lib/billingKeys.mjs';
  * The third column is the point of including Sigfa's own wording: somebody
  * whose fingers know Alt+F12 can see at a glance that it moved and why,
  * instead of concluding the feature is missing.
+ *
+ * `bound` is the set of actions the screen can actually fire, from
+ * useBillingKeys. A key the screen does not handle is shown greyed and
+ * labelled, NOT advertised: this overlay once listed all nineteen while ten
+ * were wired, and a table that promises nine keys that do nothing is worse
+ * than a shorter table -- it costs the reader their trust in the other ten.
  */
-export default function ShortcutHelp({ open, onClose }) {
+export default function ShortcutHelp({ open, bound = null, onClose }) {
   const closeRef = useRef(null);
 
   useEffect(() => {
@@ -25,7 +31,8 @@ export default function ShortcutHelp({ open, onClose }) {
 
   if (!open) return null;
 
-  const rows = shortcutHelp();
+  const rows = shortcutHelp(bound);
+  const missing = rows.filter((row) => !row.bound).length;
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
@@ -58,9 +65,14 @@ export default function ShortcutHelp({ open, onClose }) {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.keys}>
+                <tr key={row.keys} className={row.bound ? undefined : 'opacity-50'}>
                   <td className="whitespace-nowrap font-medium">{row.keys}</td>
-                  <td>{row.label}</td>
+                  <td>
+                    {row.label}
+                    {!row.bound && (
+                      <span className="chip ml-2">not on this screen</span>
+                    )}
+                  </td>
                   <td className="field-hint">
                     {row.scope === 'row' ? 'a chosen line' : 'anywhere'}
                   </td>
@@ -74,6 +86,14 @@ export default function ShortcutHelp({ open, onClose }) {
         <p className="field-hint mt-3">
           Enter moves along a line and never saves the bill. Three keys delete a line because a
           browser may claim one of them: Alt+E is the old key, Alt+D and Delete do the same.
+          {missing > 0 && (
+            <>
+              {' '}
+              {missing} key{missing === 1 ? '' : 's'} above {missing === 1 ? 'is' : 'are'} greyed
+              out — {missing === 1 ? 'it is' : 'they are'} not wired on this screen yet, so
+              pressing {missing === 1 ? 'it' : 'them'} does nothing.
+            </>
+          )}
         </p>
 
         <div className="mt-4 flex justify-end">

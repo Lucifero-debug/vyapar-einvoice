@@ -30,7 +30,9 @@
 >
 > Seven new test suites, all mutation-tested: `einvoice-lock`,
 > `company-profile`, `buyer-snapshot`, `uqc`, `einvoice-payload`, `secret-box`,
-> `einvoice-credentials`. `npm test` runs 25 suites.
+> `einvoice-credentials`. (`npm test` ran 25 suites when this was written; it
+> runs **40** now — much has been built since that is unrelated to
+> e-invoicing. See `PROJECT_CONTEXT.md` §10.)
 
 
 **Read `PROJECT_CONTEXT.md` first.** This file assumes it. It covers one
@@ -52,7 +54,16 @@ gateway — plain JSON, plain headers, no RSA, no AES, no AppKey, no SEK.** The
 whole encryption layer that the raw NIC API demands does not apply. Their
 sandbox is free and needs no card.
 
-**Status: NOTHING BUILT.** No code for this feature exists in the repo yet.
+**Status (updated 12 October 2026): steps 1–6 ARE BUILT.** This line used to
+read "NOTHING BUILT" and was left behind when the work landed — see the summary
+block above, and `EINVOICE_IMPLEMENTATION.md` for what each step actually did.
+**Steps 7–10 are still not started**: they need WhiteBooks sandbox credentials,
+which the client has not supplied, so no invoice has yet been reported to a
+real IRP. §6 has the confirmed request shapes waiting.
+
+The rest of this file is the plan as written on 8 October 2026 and is still
+the specification for steps 7–10. Re-check §1 before starting: tax rules
+change.
 
 ---
 

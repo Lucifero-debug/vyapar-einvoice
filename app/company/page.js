@@ -34,6 +34,16 @@ const Page = () => {
     env: EINVOICE_DEFAULT_ENV,
     password: '',
   });
+  // How this firm's documents look. Seeded from the record with every
+  // default already applied by `prefsFrom`, so a firm whose row has no
+  // preferences yet sees the switches set to what their bill does today.
+  const [prefs, setPrefs] = useState(() => prefsFrom(null));
+  // The logo lives on its own route, so it saves on its own -- a 200KB data
+  // URL has no business riding along with every profile save.
+  const [logo, setLogo] = useState('');
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoError, setLogoError] = useState('');
+  const [logoNote, setLogoNote] = useState('');
   const [passwordSet, setPasswordSet] = useState(false);
   const [keyConfigured, setKeyConfigured] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -50,7 +60,10 @@ const Page = () => {
   useEffect(() => {
     if (loading || seeded.current) return;
     seeded.current = true;
-    setForm(companyFrom(company));
+    const firm = companyFrom(company);
+    setForm(firm);
+    setPrefs(prefsFrom(company));
+    setLogo(firm.logo);
   }, [loading, company]);
 
   // Loaded alongside the letterhead, so the page needs no second request.
@@ -80,8 +93,12 @@ const Page = () => {
   }, []);
 
   const problems = useMemo(
-    () => [...profileProblems(form), ...credentialProblems(credentials, { passwordSet })],
-    [form, credentials, passwordSet]
+    () => [
+      ...profileProblems(form),
+      ...prefProblems({ invoicePrefs: prefs }),
+      ...credentialProblems(credentials, { passwordSet }),
+    ],
+    [form, prefs, credentials, passwordSet]
   );
   const problemFor = (field) =>
     showProblems ? problems.find((p) => p.field === field)?.message : undefined;
@@ -92,6 +109,92 @@ const Page = () => {
     setForm((prev) => ({ ...prev, [name]: e.target.value }));
     setSaved(false);
     setServerError('');
+  };
+
+  const updatePref = (field) => (e) => {
+    const value = field.kind === 'boolean' ? e.target.checked : e.target.value;
+    setPrefs((prev) => ({ ...prev, [field.name]: value }));
+    setSaved(false);
+    setServerError('');
+  };
+
+  /**
+   * Put a logo on, or take it off.
+   *
+   * The file is checked HERE for a quick answer and AGAIN on the server,
+   * which is the only check that counts -- lib/companyLogo.mjs reads the
+   * actual magic bytes, because a filename and a Content-Type are both
+   * supplied by whoever is uploading.
+   */
+  const pickLogo = async (event) => {
+    const file = event.target.files?.[0];
+    // So choosing the same file twice in a row fires the change event again.
+    event.target.value = '';
+    if (!file) return;
+
+    setLogoError('');
+    setLogoNote('');
+    setLogoBusy(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const problem = logoProblem({ bytes, name: file.name });
+      if (problem) {
+        setLogoError(problem);
+        return;
+      }
+
+      // Base64 in chunks: String.fromCharCode(...bytes) on a 150KB array
+      // blows the argument limit in some browsers, which looks like a
+      // mysteriously failing upload.
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      }
+
+      const res = await fetch('/api/company-logo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: btoa(binary), name: file.name }),
+      });
+      const data = await res.json();
+      if (!data?.success) {
+        setLogoError(data?.error || 'Could not save the logo.');
+        return;
+      }
+      setLogo(data.logo || '');
+      setLogoNote(data.message || '');
+      // So every open document picks up the new mark.
+      refresh();
+    } catch (err) {
+      setLogoError('Could not reach the server.');
+    } finally {
+      setLogoBusy(false);
+    }
+  };
+
+  const removeLogo = async () => {
+    setLogoError('');
+    setLogoNote('');
+    setLogoBusy(true);
+    try {
+      const res = await fetch('/api/company-logo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remove: true }),
+      });
+      const data = await res.json();
+      if (!data?.success) {
+        setLogoError(data?.error || 'Could not remove the logo.');
+        return;
+      }
+      setLogo('');
+      setLogoNote(data.message || '');
+      refresh();
+    } catch (err) {
+      setLogoError('Could not reach the server.');
+    } finally {
+      setLogoBusy(false);
+    }
   };
 
   const updateCredential = (name) => (e) => {
@@ -111,6 +214,7 @@ const Page = () => {
 
       const payload = {};
       for (const name of FIELD_NAMES) payload[name] = form[name];
+      payload.invoicePrefs = { ...prefs };
       payload.einvoice = { ...credentials };
 
       const res = await fetch('/api/company-update', {
@@ -126,6 +230,8 @@ const Page = () => {
       }
 
       setForm(companyFrom(data.company));
+      setPrefs(prefsFrom(data.company));
+      setLogo(logoSrc(data.company));
       setPasswordSet(Boolean(data.einvoice?.passwordSet));
       // Cleared on the way out, so it is not sitting in the page afterwards.
       setCredentials((prev) => ({ ...prev, password: '' }));
@@ -182,6 +288,156 @@ const Page = () => {
               </div>
             );
           })}
+        </div>
+      </section>
+
+      {/* ── the logo ──────────────────────────────────────────────── */}
+      <section className="panel mt-5">
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">Logo</h2>
+            <p className="field-hint mt-0.5">
+              {LOGO_FORMAT_WORDS}, under {Math.round(MAX_LOGO_BYTES / 1024)}KB. It prints at
+              the top of your invoices beside your name.
+            </p>
+          </div>
+        </div>
+        <div className="panel-body">
+          <div className="flex flex-wrap items-center gap-5">
+            {/* The preview is framed by the SAME rule the printed invoice
+                uses, so what is seen here is what comes out of the printer.
+                A separate set of classes here is how a preview comes to
+                flatter a logo the bill then crops. */}
+            <div className="flex h-24 w-48 items-center justify-center rounded-lg border border-dashed border-border bg-muted/30 px-2">
+              {logo ? (
+                <CompanyLogo company={{ logo }} prefs={{ showLogo: true }} variant="preview" />
+              ) : (
+                <span className="text-center text-xs text-muted-foreground">
+                  No logo.
+                  <br />
+                  Your documents print without one.
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label className="btn btn-secondary cursor-pointer">
+                {logo ? 'Replace logo' : 'Upload logo'}
+                <input
+                  type="file"
+                  accept={LOGO_ACCEPT}
+                  className="hidden"
+                  disabled={logoBusy}
+                  onChange={pickLogo}
+                />
+              </label>
+              {logo ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={logoBusy}
+                  onClick={removeLogo}
+                >
+                  Remove
+                </button>
+              ) : null}
+              {logo ? (
+                <p className="field-hint">
+                  About {Math.max(1, Math.round(logoBytesOf(logo) / 1024))}KB stored.
+                </p>
+              ) : null}
+            </div>
+          </div>
+
+          {/* The logo saves on its own, which is worth saying -- the Save
+              button at the foot of this page does not apply to it. */}
+          <p className="field-hint mt-3">
+            Saved as soon as you choose it. The Save button below is for the rest of
+            this page.
+          </p>
+
+          {logoError ? (
+            <p className="mt-2 text-sm text-destructive">{logoError}</p>
+          ) : logoNote ? (
+            <p className="mt-2 text-sm text-success">{logoNote}</p>
+          ) : null}
+        </div>
+      </section>
+
+      {/* ── how the documents look ────────────────────────────────── */}
+      <section className="panel mt-5">
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">Invoice appearance</h2>
+            <p className="field-hint mt-0.5">
+              What prints, and on what paper. None of these changes a figure, a tax
+              rate or an invoice number.
+            </p>
+          </div>
+        </div>
+        <div className="panel-body flex flex-col gap-3">
+          {PREF_FIELDS.filter((f) => f.kind === 'boolean').map((field) => (
+            <label
+              key={field.name}
+              className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border border-border bg-card px-4 py-3"
+            >
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-foreground">{field.label}</span>
+                {field.hint ? <span className="field-hint">{field.hint}</span> : null}
+              </span>
+              <input
+                type="checkbox"
+                name={field.name}
+                className="field-check flex-shrink-0"
+                checked={Boolean(prefs[field.name])}
+                onChange={updatePref(field)}
+              />
+            </label>
+          ))}
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="field">
+              <label className="field-label" htmlFor="pref-paper">
+                Paper
+              </label>
+              <select
+                id="pref-paper"
+                className="field-select"
+                value={prefs.paper}
+                onChange={updatePref(PREF_FIELDS.find((f) => f.name === 'paper'))}
+              >
+                {PAPER_SIZES.map((size) => (
+                  <option key={size.value} value={size.value}>
+                    {size.label}
+                  </option>
+                ))}
+              </select>
+              <p className="field-hint">
+                {PAPER_SIZES.find((p) => p.value === prefs.paper)?.blurb || ''}
+              </p>
+            </div>
+          </div>
+
+          <div className="field">
+            <label className="field-label" htmlFor="pref-footer">
+              Footer note
+            </label>
+            <textarea
+              id="pref-footer"
+              className="field-input min-h-[5rem]"
+              value={prefs.footerNote}
+              maxLength={PREF_FIELDS.find((f) => f.name === 'footerNote')?.maxLength}
+              onChange={updatePref(PREF_FIELDS.find((f) => f.name === 'footerNote'))}
+            />
+            {problemFor('footerNote') ? (
+              <p className="field-hint text-destructive">{problemFor('footerNote')}</p>
+            ) : (
+              <p className="field-hint">
+                Printed at the foot of every bill, one line per line. Clear it to print
+                nothing.
+              </p>
+            )}
+          </div>
         </div>
       </section>
 

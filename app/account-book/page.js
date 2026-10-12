@@ -3,6 +3,9 @@ import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'reac
 import { useRouter } from 'next/navigation';
 import { useCompany } from '@/context/CompanyContext';
 import { companyAddress } from '@/lib/company.mjs';
+import DateFilter from '@/components/reports/DateFilter';
+import { resolvePeriod } from '@/lib/reportPeriods.mjs';
+import AccountBookSearchParams from '@/components/AccountBookSearchParams';
 import {
   BOOK_KINDS,
   BOOK_NAMES,
@@ -41,14 +44,23 @@ const fmt = (n) =>
 
 const asDate = (v) => (v ? new Date(v).toLocaleDateString('en-IN') : '');
 
-/** 1 April of the current financial year -- what a book opens on by default. */
-const fyStart = () => {
-  const now = new Date();
-  const year = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
-  return `${year}-04-01`;
-};
-
-const todayISO = () => new Date().toISOString().substring(0, 10);
+/*
+ * The default period used to be worked out here, from the BROWSER's clock:
+ *
+ *     const fyStart = () => { const now = new Date();
+ *       const year = now.getMonth() >= 3 ? ... }
+ *     const todayISO = () => new Date().toISOString().substring(0, 10);
+ *
+ * Both were wrong in the same way. `getMonth()` is the viewer's local month,
+ * so a laptop set to New York opened the book on the wrong financial year for
+ * the first eleven hours of 1 April; and `toISOString()` is UTC, so between
+ * midnight and 5:30am IST "today" was yesterday and a bill entered that
+ * morning fell outside the default range.
+ *
+ * lib/reportPeriods.mjs resolves every period as an IST calendar day, and the
+ * server resolves the same preset the same way. Thirteen presets come with it.
+ */
+const DEFAULT_PRESET = 'thisFy';
 
 /** Hand the browser a file without a round trip to the server. */
 const downloadCsv = (filename, csv) => {
@@ -72,8 +84,8 @@ function AccountBooks() {
   const [kind, setKind] = useState('cash');
   const [account, setAccount] = useState('');
   const [group, setGroup] = useState('');
-  const [from, setFrom] = useState(fyStart());
-  const [to, setTo] = useState(todayISO());
+  const [period, setPeriod] = useState(() => resolvePeriod({ preset: DEFAULT_PRESET }));
+  const { from, to } = period;
   const [wantDayWise, setWantDayWise] = useState(false);
 
   const [accounts, setAccounts] = useState([]);
@@ -167,6 +179,46 @@ function AccountBooks() {
     [kind, account, group]
   );
 
+  /** Whatever is on screen, as a workbook, from the same route. */
+  const downloadXlsx = () => {
+    if (!shown.length) return;
+    const qs = new URLSearchParams({ kind, from, to, format: 'xlsx' });
+    if (group) qs.set('group', group);
+    else qs.set('account', account);
+    if (wantDayWise) qs.set('daywise', '1');
+    // A plain navigation: the browser's own download handles the file, and
+    // Content-Disposition on the route names it.
+    window.location.href = `/api/account-book?${qs.toString()}`;
+  };
+
+  /**
+   * A deep link's values, applied once.
+   *
+   * `account` is set here AND by `loadAccounts`, which opens on the first
+   * account of the book. The order works out because the link's kind lands
+   * first and `loadAccounts` runs off the kind change -- but the account from
+   * the link is applied after, so it wins. A link naming an account this book
+   * does not offer leaves the picker on it and the route answers "No account
+   * named ...", which is the right error to show rather than silently opening
+   * somebody else's ledger.
+   */
+  const applyLink = useCallback((values) => {
+    if (values.kind && BOOK_KINDS.includes(values.kind)) setKind(values.kind);
+    if (values.group) setGroup(values.group);
+    if (values.from || values.to) {
+      setPeriod((current) => ({
+        preset: 'custom',
+        from: values.from || current.from,
+        to: values.to || current.to,
+      }));
+    }
+    if (values.account) {
+      // After the kind-change effect has had its turn, or `loadAccounts`
+      // would overwrite it with the book's first account.
+      setTimeout(() => setAccount(values.account), 0);
+    }
+  }, []);
+
   const exportCsv = () => {
     const book = shown[0];
     if (!book) return;
@@ -187,7 +239,9 @@ function AccountBooks() {
   };
 
   return (
-    <div className="doc-sheet">
+    <div className="doc-sheet report-sheet">
+      {/* A deep link from the statement or the Reports hub. */}
+      <AccountBookSearchParams onValues={applyLink} />
       <div className="doc-head">
         <h2 className="doc-org">{company?.name || ''}</h2>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -251,25 +305,18 @@ function AccountBooks() {
             )}
           </div>
 
-          <div className="field">
-            <label className="field-label mb-1.5 block">From</label>
-            <input
-              className="field-input"
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-            />
-          </div>
+        </div>
 
-          <div className="field">
-            <label className="field-label mb-1.5 block">To</label>
-            <input
-              className="field-input"
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-            />
-          </div>
+        {/* The shared filter -- the same thirteen presets, resolved by the
+            same module, as every other report in the app. */}
+        <div className="mt-4">
+          <DateFilter
+            idPrefix="ab"
+            preset={period.preset}
+            from={from}
+            to={to}
+            onChange={setPeriod}
+          />
         </div>
 
         {/* Sigfa's "A/C Ledger Group Wise" -- every account in one group,
@@ -297,6 +344,18 @@ function AccountBooks() {
         <div className="mt-3 flex flex-wrap justify-end gap-2">
           <button type="button" className="btn btn-secondary" onClick={() => router.push('/ledger')}>
             Party ledger
+          </button>
+          {/* Excel goes back to the SAME route with format=xlsx, so the
+              workbook is built from the figures the server already computed
+              -- and a group-wise book downloads every account as its own
+              worksheet, which a client-side CSV of `shown[0]` cannot do. */}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={downloadXlsx}
+            disabled={busy || !shown.length}
+          >
+            Download Excel
           </button>
           <button
             type="button"
@@ -346,7 +405,7 @@ function AccountBooks() {
             )}
 
             <div className="table-wrap">
-              <table className="data-table">
+              <table className="data-table report-table">
                 <thead>
                   {wantDayWise ? (
                     <tr>

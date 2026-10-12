@@ -3,7 +3,18 @@ import { connect } from "@/lib/mongodb";
 import Customer from "@/models/custModel";
 import Ledger from "@/models/ledgerModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
-import { accountBook, bookProblems, dayWise, groupBook, isBookKind } from "@/lib/accountBooks.mjs";
+import {
+  accountBook,
+  bookProblems,
+  bookSheets,
+  dayWise,
+  groupBook,
+  isBookKind,
+} from "@/lib/accountBooks.mjs";
+import Company from "@/models/companyModel";
+import { companyAddress, companyFrom } from "@/lib/company.mjs";
+import { formatOf, isReportFormat, reportResponse } from "@/lib/reportHttp.js";
+import { periodText } from "@/lib/reportPeriods.mjs";
 import { ACCOUNT_GROUPS, accountsForBook, resolveGroup } from "@/lib/accountGroups.mjs";
 
 // Every posting changes these, so a cached book is a wrong book -- the same
@@ -39,6 +50,17 @@ async function handleGET(req, auth) {
     const from = searchParams.get("from") || "";
     const to = searchParams.get("to") || "";
     const wantDayWise = searchParams.get("daywise") === "1";
+    // json | csv | xlsx. The SAME route, so the export inherits this route's
+    // permission entry and its tenant scope rather than needing its own --
+    // see the note atop lib/reportHttp.js.
+    const format = formatOf(searchParams);
+
+    if (!isReportFormat(format)) {
+      return NextResponse.json(
+        { success: false, error: `"${format}" is not a format. Use json, csv or xlsx.` },
+        { status: 400 }
+      );
+    }
 
     if (!isBookKind(kind)) {
       return NextResponse.json(
@@ -158,13 +180,64 @@ async function handleGET(req, auth) {
       };
     });
 
-    return NextResponse.json({
+    const resolvedGroupName = groupName ? resolveGroup(groupName)?.name : null;
+
+    const payload = {
       success: true,
       kind,
       accounts: available,
-      group: groupName ? resolveGroup(groupName)?.name : null,
+      group: resolvedGroupName,
       books,
-      groupTotals: groupName ? groupBook(resolveGroup(groupName)?.name, books) : null,
+      groupTotals: groupName ? groupBook(resolvedGroupName, books) : null,
+    };
+
+    if (format === "json") return NextResponse.json(payload);
+
+    // The firm, for the sheet's own letterhead -- read from this session's
+    // companies record, never from anything the client sent. Fetched only
+    // when a FILE is being built, so the screen's own request does not pay
+    // for a query it does not use.
+    const companyDoc = await Company.findById(auth.companyId).lean();
+    const company = companyFrom(companyDoc);
+    const meta = [
+      { label: "Firm", value: company.name },
+      { label: "Address", value: companyAddress(company) },
+      { label: "GSTIN", value: company.gstin },
+      { label: "Period", value: periodText(from, to) },
+      { label: "Currency", value: "INR" },
+      // Named in the block rather than in each sheet's heading, because every
+      // sheet of a group-wise download is a DIFFERENT account and they must
+      // be told apart by name -- heading them all "A/C Ledger -- Sundry
+      // Debtors" would leave the workbook with eighty tabs called (2), (3),
+      // (4) after the de-duplicator had finished with them.
+      { label: "Group", value: resolvedGroupName || "" },
+    ].filter((m) => String(m.value || "").trim());
+
+    // A group-wise book is several books; every one of them becomes a
+    // worksheet, so a download of Sundry Debtors is the whole group rather
+    // than its first account.
+    const sheets = books.flatMap((book) =>
+      bookSheets({
+        book,
+        kind,
+        // Deliberately blank even group-wise: each sheet is named after its
+        // own account. The group is in the metadata block above.
+        groupName: "",
+        meta,
+        daywise: wantDayWise,
+      })
+    );
+
+    return reportResponse({
+      format,
+      payload,
+      sheets,
+      filename: {
+        report: `${kind}-book`,
+        subject: resolvedGroupName || books[0]?.account || "",
+        from,
+        to,
+      },
     });
   } catch (err) {
     console.error("Account book error:", err);

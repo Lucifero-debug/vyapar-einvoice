@@ -156,6 +156,9 @@ export default function ItemSearch({
         // A click elsewhere closes the list, but not before the click has
         // landed -- hence the delay rather than an immediate close.
         onBlur={() => setTimeout(() => setOpen(false), 120)}
+        /* Alt+A here creates the item whose name is half typed --
+           Sigfa's whole reason for the key. */
+        data-master-field='item'
         onKeyDown={onKeyDown}
       />
       <p className="field-hint mt-1">

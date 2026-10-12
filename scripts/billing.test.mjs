@@ -44,13 +44,20 @@ import {
   totalGstOf,
 } from "../lib/billingMath.mjs";
 import {
+  ALL_ACTIONS,
   BILLING_SHORTCUTS,
   FORBIDDEN_KEYS,
+  INFO_PANELS,
+  LOOKUP_LISTS,
+  PRICE_SOURCES,
   ROW_FIELD_ORDER,
+  infoPanelFor,
   isTypingTarget,
   keyName,
+  lookupListFor,
   masterForField,
   nextRowField,
+  priceSourceFor,
   shortcutFor,
   shortcutHelp,
 } from "../lib/billingKeys.mjs";
@@ -399,11 +406,18 @@ test("the moved shortcuts say what they used to be", () => {
   for (const s of moved) assert.match(s.sigfa, /moved:/);
 });
 
-test("delete has three spellings, because one may be eaten", () => {
-  // Alt+E opens the Chrome menu. preventDefault usually suppresses it but not
-  // dependably in Edge and Firefox, so Sigfa's own aliases are offered too.
-  const del = BILLING_SHORTCUTS.find((s) => s.action === "deleteRow");
-  assert.deepEqual(del.keys, ["Alt+E", "Alt+D", "Delete"]);
+test("the two deletes are two keys, as Sigfa has them", () => {
+  // SIGFA105.exe carries both at one offset, side by side:
+  //     Delete Row (Alt + E)      Delete (Alt + D)
+  // Alt+D was an alias for the row delete here once, which left no way to
+  // delete a master at all AND made a mis-keyed Alt+D drop an invoice line.
+  const row = BILLING_SHORTCUTS.find((s) => s.action === "deleteRow");
+  const master = BILLING_SHORTCUTS.find((s) => s.action === "deleteMaster");
+  assert.deepEqual(row.keys, ["Alt+E", "Delete"], "Alt+E is Sigfa's, Delete is the obvious alias");
+  assert.deepEqual(master.keys, ["Alt+D"]);
+  assert.equal(row.keys.includes("Alt+D"), false, "Alt+D belongs to the master");
+  // Alt+E opens the Chrome menu; preventDefault usually suppresses it but not
+  // dependably in Edge and Firefox, which is why plain Delete is offered too.
 });
 
 test("a keystroke is named unambiguously", () => {
@@ -456,9 +470,12 @@ test("plain Delete does not eat a row while a quantity is being corrected", () =
   // is in a tested module rather than an `if` inside a keydown handler.
   assert.equal(shortcutFor(ev("Delete"), { typing: false }), "deleteRow");
   assert.equal(shortcutFor(ev("Delete"), { typing: true }), null);
-  // But the modified spellings still work there, which is how Sigfa behaves.
+  // But the modified spelling still works there, which is how Sigfa behaves.
   assert.equal(shortcutFor(ev("e", { alt: true }), { typing: true }), "deleteRow");
-  assert.equal(shortcutFor(ev("d", { alt: true }), { typing: true }), "deleteRow");
+  // And Alt+D is a different thing entirely: the master record behind the
+  // field, which is precisely a key you press with a name half typed.
+  assert.equal(shortcutFor(ev("d", { alt: true }), { typing: true }), "deleteMaster");
+  assert.equal(shortcutFor(ev("d", { alt: true }), { typing: false }), "deleteMaster");
 });
 
 test("Alt+A fires with the caret in the item box", () => {
@@ -529,7 +546,13 @@ test("every shortcut is listed in the help overlay", () => {
   for (const row of help) {
     assert.ok(row.keys, "a row with no keys");
     assert.ok(row.label, `${row.keys} has no label`);
-    assert.ok(["screen", "row"].includes(row.scope), `${row.keys} has scope ${row.scope}`);
+    // Three scopes: the screen, a chosen line, or the FOCUSED FIELD -- the
+    // last being what makes the three master keys work wherever there is a
+    // field with a master behind it.
+    assert.ok(
+      ["screen", "row", "field"].includes(row.scope),
+      `${row.keys} has scope ${row.scope}`
+    );
   }
 });
 
@@ -687,16 +710,53 @@ test("Escape closes the innermost thing, and never the bill", () => {
   const src = read("../components/billing/BillingScreen.jsx");
   const back = src.slice(src.indexOf("back: () =>"));
   const body = back.slice(0, back.indexOf("},"));
-  assert.ok(/showShortcuts/.test(body) && /quickMaster/.test(body) && /confirmRemove/.test(body));
+  assert.ok(/showShortcuts/.test(body), "the help overlay");
+  assert.ok(/masters\.dialog/.test(body), "the create/alter dialog");
+  assert.ok(/confirmRemove/.test(body), "the row-delete confirmation");
   assert.doesNotMatch(body, /router\.(push|back)/, "Escape must not leave a half-typed bill");
 });
 
-test("Alt+A asks the field which master it needs", () => {
-  const src = read("../components/billing/BillingScreen.jsx");
-  assert.ok(/masterForField\(field\)/.test(src));
-  assert.ok(/if \(!kind\) return;/.test(src), "a field with no master should do nothing");
-  // The name already typed carries across, so it is not asked for twice.
-  assert.ok(/prefill: typed \? \{ name: typed \}/.test(src));
+test("the three master keys all go through one hook", () => {
+  // Create, alter and delete must behave identically here and on a master
+  // screen, which they cannot if each screen implements them. The decisions
+  // are in lib/masterActions.mjs and the doing is in one hook.
+  const src = code("../components/billing/BillingScreen.jsx");
+  assert.match(src, /useMasterActions\(\{/, "the screen must use the hook");
+  assert.match(src, /newMaster: \(\) => masters\.create\(\)/);
+  assert.match(src, /alterMaster: \(\) => masters\.alter\(\)/);
+  assert.match(src, /deleteMaster: \(\) => masters\.remove\(\)/);
+  // And Alt+M no longer throws the bill away to go to the master screen.
+  assert.doesNotMatch(src, /router\.push\(`\/itemadd/, "Alt+M must alter in place");
+  assert.doesNotMatch(src, /router\.push\(`\/customeradd/, "Alt+M must alter in place");
+});
+
+test("the hook reads the focused field, and says why nothing happened", () => {
+  const hook = code("../components/masters/useMasterActions.js");
+  assert.match(hook, /document\.activeElement/, "it must read what has focus");
+  assert.match(hook, /dataset\?\.masterField/, "the attribute any screen can carry");
+  assert.match(hook, /masterKindFor\(field\)/, "the kind comes from the pure module");
+  assert.match(hook, /masterActionProblem\(/, "a refusal is a sentence, not silence");
+  // The decisions are not re-made here.
+  assert.doesNotMatch(hook, /Sundry|\/api\/item-alter|\/api\/delete-/,
+    "endpoints and groups belong in lib/masterActions.mjs");
+  // And the screen shows the sentence.
+  assert.match(code("../components/billing/BillingScreen.jsx"), /masters\.problem/);
+});
+
+test("an alter posts the whole record, not just the boxes on the form", () => {
+  // The reason this exists: item-alter does
+  //     isService: Boolean(itemData.isService)
+  //     uqc: normalizeUqc(itemData.uqc) || UQC_DEFAULT
+  // so a partial body flips isService off and resets the UQC that goes to the
+  // IRP. The dialog loads the record and posts alterPayload() over it.
+  const dialog = code("../components/billing/QuickMaster.jsx");
+  assert.match(dialog, /alterPayload\(kind, record, filledOnly\(/);
+  assert.match(dialog, /masterSpec\(kind\)\?\.alterEndpoint/);
+  // A create still sends only what was filled in -- the add routes whitelist
+  // their own fields and a blank box should not be stored as "".
+  assert.match(dialog, /: filledOnly\(values, spec\.fields\)/);
+  // And an alter form shows the stored values rather than blanks.
+  assert.match(dialog, /valuesFromRecord\(record, spec\.fields\)/);
 });
 
 test("every master Alt+A offers has an endpoint behind it", () => {
@@ -811,6 +871,279 @@ test("the money module has no rounding helper in it at all", () => {
   assert.doesNotMatch(src, /round2\s*\(/, "rounding would rewrite stored line totals");
   assert.doesNotMatch(src, /toFixed\s*\(/);
   assert.doesNotMatch(src, /Math\.round\s*\(/);
+});
+
+console.log("\n--- all four pages delegate, and carry no logic of their own ---");
+
+/** The route each key is reached at, and the component name on its page. */
+const BILLING_PAGES = [
+  { dir: "saleadd", key: "sale" },
+  { dir: "purchaseadd", key: "purchase" },
+  { dir: "salereturn", key: "salereturn" },
+  { dir: "purchasereturn", key: "purchasereturn" },
+];
+
+test("each page is a stub around BillingScreen with the right key", () => {
+  // The whole point of the consolidation. Four copies is four places for a
+  // fix to be applied to three of them -- and that is exactly what happened:
+  // the two return pages sat untouched from 8 October while the sale screen
+  // gained order linkage, the shared arithmetic and the shortcut table, so
+  // Sigfa's keys did nothing on three screens out of four.
+  for (const { dir, key } of BILLING_PAGES) {
+    const src = read(`../app/${dir}/page.js`);
+    assert.match(
+      src,
+      /from '@\/components\/billing\/BillingScreen'/,
+      `${dir} does not delegate`
+    );
+    assert.match(
+      src,
+      new RegExp(`<BillingScreen typeKey='${key}' />`),
+      `${dir} passes the wrong key`
+    );
+    // And the key it passes is one the table knows, so a typo is a failure
+    // here rather than a thrown error in the browser.
+    assert.ok(BILLING_KEYS.includes(key), `${key} is not a billing key`);
+  }
+});
+
+test("no page keeps a copy of the screen's logic", () => {
+  // A page that grew its own state, its own fetch or its own arithmetic is a
+  // page drifting back out again.
+  for (const { dir } of BILLING_PAGES) {
+    const src = code(`../app/${dir}/page.js`);
+    for (const [what, pattern] of [
+      ["state", /useState\(/],
+      ["effects", /useEffect\(/],
+      ["fetches", /fetch\(/],
+      ["arithmetic", /recalcItem|buildHsnTotals|toFixed\(/],
+      ["a form", /<input|<select|<table/],
+    ]) {
+      assert.doesNotMatch(src, pattern, `${dir} has its own ${what} again`);
+    }
+    // Small enough to read at a glance.
+    assert.ok(src.split("\n").length < 40, `${dir} is no longer a stub`);
+  }
+});
+
+test("the four keys cover the 2x2 and nothing is reached twice", () => {
+  const configs = BILLING_PAGES.map(({ key }) => billingType(key));
+  // Every combination of side and direction, exactly once.
+  const pairs = configs.map((c) => `${c.type}/${c.isReturn}`);
+  assert.equal(new Set(pairs).size, 4, "two pages describe the same document");
+  assert.deepEqual(
+    [...pairs].sort(),
+    ["Purchase/false", "Purchase/true", "Sale/false", "Sale/true"]
+  );
+  // And each config's own route is the page it is reached at.
+  for (const { dir, key } of BILLING_PAGES) {
+    assert.equal(billingType(key).route, `/${dir}`, `${key} points at the wrong route`);
+  }
+  // Only the two non-returns may bill from an order.
+  for (const { key } of BILLING_PAGES) {
+    const config = billingType(key);
+    assert.equal(
+      canBillFromOrder(config),
+      !config.isReturn,
+      `${key}: a return bills from no order`
+    );
+  }
+});
+
+console.log("\n--- every advertised key is actually wired ---");
+
+/**
+ * The handler object passed to useBillingKeys, as written in the screen.
+ *
+ * Read from the source rather than rendered, because rendering the screen
+ * needs React, a router and six fetches. The sweep is crude and it is the
+ * crudeness that makes it reliable: a handler has to literally be there.
+ */
+const billingHandlers = () => {
+  const src = read("../components/billing/BillingScreen.jsx");
+  const at = src.indexOf("useBillingKeys({");
+  assert.ok(at > 0, "the screen does not call useBillingKeys at all");
+  let depth = 0;
+  let i = src.indexOf("{", at);
+  let end = i;
+  for (let j = i; j < src.length; j += 1) {
+    if (src[j] === "{") depth += 1;
+    else if (src[j] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = j;
+        break;
+      }
+    }
+  }
+  const block = src.slice(i, end + 1);
+  return new Set([...block.matchAll(/^\s{8}([a-zA-Z]+):/gm)].map((m) => m[1]));
+};
+
+test("every action in the table has a handler on the screen", () => {
+  // THE BUG THIS EXISTS FOR: the table listed nineteen keys, ten were wired,
+  // and Alt+H advertised all nineteen. Nine of Sigfa's keys did nothing and
+  // the help window said they would -- which is how somebody concludes the
+  // shortcuts are broken and stops using the ten that work.
+  const wired = billingHandlers();
+  const missing = ALL_ACTIONS.filter((action) => !wired.has(action));
+  assert.deepEqual(
+    missing,
+    [],
+    `these actions are advertised and not bound: ${missing.join(", ")}`
+  );
+});
+
+test("the screen binds nothing the table does not name", () => {
+  // The other direction: a handler for an action with no key is dead code,
+  // and reads as a feature somebody can reach.
+  const wired = [...billingHandlers()];
+  const stray = wired.filter((action) => !ALL_ACTIONS.includes(action));
+  assert.deepEqual(stray, [], `handlers with no key: ${stray.join(", ")}`);
+});
+
+test("the hook reports what it binds, and the help overlay reads it", () => {
+  const hook = read("../components/billing/useBillingKeys.js");
+  assert.match(hook, /return bound;/, "the hook must say which actions it can fire");
+  assert.match(hook, /typeof fn === "function"/, "a non-function is not a binding");
+
+  const help = read("../components/billing/ShortcutHelp.jsx");
+  assert.match(help, /bound = null/, "the overlay must accept the bound set");
+  assert.match(help, /shortcutHelp\(bound\)/, "and pass it through");
+  assert.match(help, /not on this screen/, "an unbound key must be labelled, not advertised");
+
+  const screen = read("../components/billing/BillingScreen.jsx");
+  assert.match(screen, /const boundKeys = useBillingKeys\(/, "the screen must capture it");
+  assert.match(screen, /bound=\{boundKeys\}/, "and hand it to the overlay");
+});
+
+test("an unbound action is listed as unavailable, not as working", () => {
+  const partial = shortcutHelp(new Set(["save", "help"]));
+  assert.equal(partial.length, ALL_ACTIONS.length, "nothing is hidden");
+  assert.equal(partial.filter((row) => row.bound).length, 2);
+  assert.equal(partial.filter((row) => !row.bound).length, ALL_ACTIONS.length - 2);
+  // Called with nothing, every row reads as available -- which is only right
+  // for a caller that has not been taught to pass the set.
+  assert.ok(shortcutHelp().every((row) => row.bound));
+  // A plain object works as well as a Set, so a caller cannot get it subtly
+  // wrong and silently grey out everything.
+  assert.equal(shortcutHelp({ save: true }).find((r) => r.action === "save").bound, true);
+});
+
+console.log("\n--- the three price keys are one mechanism ---");
+
+test("Alt+F1, Alt+F2 and Alt+F3 name a field on the item master", () => {
+  // Sigfa's own rate sources: "6=Pur.Price, 7=CostPrice, 8=MRP". So "Cal MRP"
+  // puts the MRP in the rate box; it does NOT back-compute a rate from a
+  // GST-inclusive MRP. Inventing that arithmetic would change what a bill
+  // charges, which is not a thing to guess at.
+  assert.deepEqual(Object.keys(PRICE_SOURCES), ["purchasePrice", "salePrice", "calcMrp"]);
+  assert.equal(priceSourceFor("purchasePrice").field, "purchasePrice");
+  assert.equal(priceSourceFor("salePrice").field, "salePrice");
+  assert.equal(priceSourceFor("calcMrp").field, "mrp");
+  assert.equal(priceSourceFor("itemSearch"), null, "not every action is a price");
+  assert.equal(priceSourceFor(""), null);
+  for (const source of Object.values(PRICE_SOURCES)) {
+    assert.ok(source.label, "each needs a word for the refusal message");
+  }
+});
+
+test("the price keys go through recalcItem, not straight onto the rate", () => {
+  // A price written onto `cost` would leave the line's taxable value, GST and
+  // total stale -- the figure on screen would stop matching the rate above it.
+  const screen = code("../components/billing/BillingScreen.jsx");
+  assert.match(screen, /handleItemFieldChange\(activeRow, 'cost'/);
+  // And it refuses rather than writing a zero.
+  assert.match(screen, /No \$\{source\.label\} is set/);
+  assert.match(screen, /Choose a line first/);
+});
+
+console.log("\n--- Sigfa's four Help Window lists ---");
+
+test("each list names its filter and whether choosing sets the party", () => {
+  assert.deepEqual(Object.keys(LOOKUP_LISTS), [
+    "customerList", "supplierList", "accountList", "salePurchaseList",
+  ]);
+  assert.equal(lookupListFor("customerList").group, "Sundry Debtors");
+  assert.equal(lookupListFor("supplierList").group, "Sundry Creditors");
+  assert.equal(lookupListFor("accountList").group, null, "every account");
+  assert.equal(lookupListFor("salePurchaseList").statement, "T", "the Trading account heads");
+  // The two party lists pick; the two account lists are reference only,
+  // because that is what Sigfa's help window is for -- you read a code off
+  // it. A list that silently set the party from the ACCOUNT list would be a
+  // surprise, and a surprise on the party of a bill is an accounting error.
+  assert.equal(lookupListFor("customerList").picks, true);
+  assert.equal(lookupListFor("supplierList").picks, true);
+  assert.equal(lookupListFor("accountList").picks, false);
+  assert.equal(lookupListFor("salePurchaseList").picks, false);
+  assert.equal(lookupListFor("help"), null);
+  for (const list of Object.values(LOOKUP_LISTS)) assert.ok(list.title);
+});
+
+test("the lists filter by group, through the group master", () => {
+  // Not by matching names: "customer" and "supplier" are legacy spellings
+  // that resolveGroup maps onto the real groups.
+  const screen = code("../components/billing/BillingScreen.jsx");
+  assert.match(screen, /resolveGroup\(party\?\.group\)/);
+  assert.match(screen, /group\?\.statement === spec\.statement/);
+});
+
+test("choosing a party from a list goes through the same path as the dropdown", () => {
+  // The price list, the place of supply and the balance strip all hang off
+  // `selectedCustomer`; a second way of setting it is a second chance for one
+  // of them to be missed.
+  const screen = code("../components/billing/BillingScreen.jsx");
+  assert.match(screen, /const pickCustomer = \(name\) =>/);
+  assert.match(screen, /onChange=\{\(e\) => pickCustomer\(e\.target\.value\)\}/,
+    "the dropdown must use it");
+  assert.match(screen, /if \(row\?\.name\) pickCustomer\(row\.name\)/,
+    "and so must the lookup");
+  assert.equal(
+    (screen.match(/setSelectedCustomer\(match \|\| \{\}\)/g) || []).length,
+    1,
+    "exactly one place sets it from a name"
+  );
+});
+
+console.log("\n--- Alt+J and Alt+Y show a record, they do not edit it ---");
+
+test("the two information panels name what they show", () => {
+  assert.deepEqual(Object.keys(INFO_PANELS), ["itemInfo", "partyInfo"]);
+  assert.equal(infoPanelFor("itemInfo").kind, "item");
+  assert.equal(infoPanelFor("partyInfo").kind, "party");
+  assert.equal(infoPanelFor("save"), null);
+  for (const panel of Object.values(INFO_PANELS)) assert.ok(panel.title);
+});
+
+test("the party panel reads the master, not the invoice's frozen snapshot", () => {
+  // The same rule PartyBalance follows: a saved bill's buyer block is
+  // deliberately frozen, so reading the GSTIN off it would show last year's.
+  const screen = code("../components/billing/BillingScreen.jsx");
+  assert.match(screen, /customer\.find\(\(c\) => c\.name === selectedCustomer\.name\)/);
+  // Read-only: Alt+M is the key that goes to the master to change a record.
+  assert.doesNotMatch(code("../components/billing/InfoPanel.jsx"), /onChange|<input|<select|<textarea/,
+    "the panel must not be editable");
+});
+
+test("Escape closes the innermost overlay, and does not leave the bill", () => {
+  const screen = code("../components/billing/BillingScreen.jsx");
+  const back = screen.slice(screen.indexOf("back: () =>"));
+  // Each overlay in turn, before anything that navigates.
+  for (const guard of ["showShortcuts", "infoPanel", "lookup", "masters.dialog", "confirmRemove"]) {
+    assert.ok(back.includes(guard), `${guard} is not closed by Escape`);
+  }
+  // And the overlays stop Escape propagating, so one key does not close the
+  // panel AND act on the screen behind it.
+  for (const file of ["InfoPanel.jsx", "LookupList.jsx"]) {
+    assert.match(read(`../components/billing/${file}`), /stopPropagation\(\)/, file);
+  }
+});
+
+test("a list's Enter never submits the bill behind it", () => {
+  const list = read("../components/billing/LookupList.jsx");
+  const at = list.indexOf("event.key === 'Enter'");
+  assert.ok(at > 0, "Enter is not handled");
+  assert.match(list.slice(at, at + 260), /preventDefault\(\)/);
 });
 
 console.log(`\n  ${passed} checks passed\n`);

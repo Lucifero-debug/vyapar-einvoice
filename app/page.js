@@ -911,6 +911,34 @@ const Page = () => {
               onPick: (id) => router.push(`/item-ledger?itemId=${id}`),
             })}
 
+            {/* The hub, first. The tiles below it are shortcuts to the
+                reports a shop opens daily; everything -- including the two
+                statements and the categories these tiles do not cover -- is
+                behind this one. lib/reportCatalogue.mjs holds the list. */}
+            <button type="button" className="nav-tile" onClick={() => router.push('/reports')}>
+              <span className="nav-tile-icon">
+                <FileSpreadsheet className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                All Reports
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Every report, by category, with its date range and downloads
+                </span>
+              </span>
+            </button>
+
+            <button type="button" className="nav-tile" onClick={() => router.push('/statement')}>
+              <span className="nav-tile-icon">
+                <BookOpenText className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Customer &amp; Supplier Statements
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Opening, the period&apos;s entries and what is outstanding &mdash; print or send
+                </span>
+              </span>
+            </button>
+
             <button type="button" className="nav-tile" onClick={() => router.push('/sales-report')}>
               <span className="nav-tile-icon">
                 <ReceiptIndianRupee className="h-[18px] w-[18px]" />

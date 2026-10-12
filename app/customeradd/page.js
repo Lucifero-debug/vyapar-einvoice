@@ -3,6 +3,7 @@ import React, { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { toDisplay } from '@/lib/balance.mjs'
 import { normalizeStateCode } from '@/lib/gst.mjs'
+import MasterShortcuts from '@/components/masters/MasterShortcuts'
 import { Button } from "../../components/ui/button"
 import {
   Card, CardContent, CardDescription,
@@ -158,6 +159,29 @@ const PageContent = () => {
 
   return (
 <div className="page-shell">
+      {/* Sigfa's Create [Alt+A] / Alter [Alt+M] / Delete [Alt+D], acting on
+          whichever master is behind the focused field -- the Group and State
+          boxes here. Both masters are already in memory for their dropdowns,
+          so neither key costs a request. */}
+      <MasterShortcuts
+        lists={{ group: groups, state: states }}
+        onChanged={({ kind }) => {
+          // A created or renamed record has to appear in the dropdown, or the
+          // form goes on offering the old list.
+          if (kind === 'group') {
+            fetch('/api/get-group')
+              .then((r) => r.json())
+              .then((d) => setGroups(d.group || []))
+              .catch(() => {});
+          }
+          if (kind === 'state') {
+            fetch('/api/get-state')
+              .then((r) => r.json())
+              .then((d) => setStates(d.state || []))
+              .catch(() => {});
+          }
+        }}
+      />
   <header className="page-header">
     <div>
       <h1 className="page-title">Customer</h1>
@@ -206,6 +230,9 @@ const PageContent = () => {
               <select
                 id="group"
                 className="field-select"
+                /* Sigfa's Alt+A / Alt+M / Alt+D act on the master behind the
+                   focused field. lib/masterActions.mjs maps the name. */
+                data-master-field="customerGroup"
                 value={group}
                 onChange={e => setGroup(e.target.value)}
               >
@@ -307,6 +334,7 @@ const PageContent = () => {
                   {field.type === 'state' ? (
                     <select
                       className="field-select"
+                      data-master-field="stateName"
                       value={field.val}
                       onChange={e => {
                         const name = e.target.value;

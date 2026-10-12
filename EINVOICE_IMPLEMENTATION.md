@@ -10,11 +10,20 @@ can continue step 7 without guessing.
 
 Read `PROJECT_CONTEXT.md` first. This assumes its section 6 rules.
 
-- Project: `vyapaar-einvoice` (a full copy of `vyapaar`; the original is
-  untouched and has none of this)
+- Project: `vyapaar-einvoice`
 - Built: 8 October 2026
 - Status: steps 1–6 done, tested, mutation-tested. Steps 7–10 need WhiteBooks
-  sandbox credentials and are not started.
+  sandbox credentials and are not started, so **no invoice has yet been
+  reported to a real IRP** and the freeze in step 1 has never fired in anger.
+
+> **Note added 12 October 2026.** `vyapaar-einvoice` began as a copy of
+> `vyapaar`, but the two have diverged a long way since: orders, bill of
+> material, production and stock vouchers, the account books, the financial
+> statements, production planning, bill-wise adjustment, staff management, the
+> billing-screen consolidation, the Sales/Purchase module reports, the GST
+> returns and the business dashboard all exist **only here**. Treat
+> `vyapaar-einvoice` as the live repo. `PROJECT_CONTEXT.md` is current;
+> nothing below has changed, but it is no longer the whole of what is built.
 
 ---
 
@@ -426,12 +435,18 @@ Seven new suites, 153 checks, in the project's existing style: plain
 | `secret-box.test.mjs` | 21 | round-trip, tamper, wrong firm, wrong key, and that `AUTH_SECRET` is not a fallback |
 | `einvoice-credentials.test.mjs` | 13 | the password never coming back out, and sandbox-by-default |
 
-All seven are in `npm test`, which now runs **25 suites**.
+All seven are in `npm test`. It ran **25 suites** when this was written and
+runs **40** now — the later ones are unrelated to e-invoicing
+(`PROJECT_CONTEXT.md` §10).
 
 **Every suite was mutation-tested** — the source was broken roughly twenty ways
 per module and each break had to make a test fail. Survivors were closed with
 new tests rather than ignored. To repeat it for a module, change one line in it
 and run its suite; if the suite still passes, the test is missing.
+
+> This practice has since been formalised, with a scripted harness per module
+> and a full-kill requirement before a module is called done:
+> `PROJECT_CONTEXT.md` §10.1.
 
 Two things that mutation testing caught, worth repeating because they are easy
 to get wrong in a hand-rolled harness:

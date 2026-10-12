@@ -429,3 +429,189 @@
     break-after: auto;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────
+   Report sheets — on screen, and on A4
+
+   Every report in this app prints. The classes here are the ones a report
+   sheet shares (`report-sheet`, `report-party`, `report-table`,
+   `report-row-opening`, `report-note`), so a new report inherits a printable
+   layout by naming them rather than by carrying its own copy of this CSS.
+
+   The normal interactive layout is deliberately NOT redesigned to suit
+   paper: everything below is either a shared class a report opts into, or
+   inside `@media print`.
+   ────────────────────────────────────────────────────────────── */
+
+/* The party / counter-party block under the letterhead. */
+.report-party {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid hsl(var(--border));
+}
+@media (min-width: 640px) {
+  .report-party {
+    grid-template-columns: 1fr auto;
+  }
+}
+.report-party-label {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: hsl(var(--muted-foreground));
+}
+.report-party-name {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* The opening-balance line, inside the table where the running balance can
+   be checked against it. Distinguished without a fill, so it costs no ink. */
+.report-row-opening > td {
+  border-top: 0;
+  font-style: italic;
+  color: hsl(var(--muted-foreground));
+}
+
+/* A sheet's own footnote: what a figure is, or what it could not be. */
+.report-note {
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
+/* A totals row that reads as a total rather than as one more row. */
+.report-table tfoot td {
+  border-top: 2px solid hsl(var(--border));
+  font-weight: 600;
+}
+
+@media print {
+  /* A4 with a margin wide enough for a stapled corner. `@page` is the only
+     way to set paper size from CSS, and without it a browser defaults to
+     Letter in some locales -- which crops the right-hand money column of a
+     wide report by about 8mm. */
+  @page {
+    size: A4;
+    margin: 12mm 10mm 14mm 10mm;
+  }
+
+  /* A report sheet on paper has no border, no shadow and no rounded corner:
+     all three are screen affordances and two of them cost toner. */
+  .report-sheet {
+    border: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+  }
+
+  /* THE HEADINGS REPEAT ON EVERY SHEET. A twelve-page ledger whose column
+     headings appear only on page one is a twelve-page ledger nobody can
+     read. `table-header-group` is how a browser is told to do it, and the
+     same for the totals in tfoot -- which must also never be the thing that
+     falls off the bottom. */
+  .report-table thead {
+    display: table-header-group;
+  }
+  .report-table tfoot {
+    display: table-footer-group;
+  }
+  .report-table tr,
+  .report-table thead,
+  .report-table tfoot {
+    break-inside: avoid;
+  }
+  /* Keep a heading with at least some of its rows, rather than alone at the
+     foot of a page. */
+  .report-table thead {
+    break-after: avoid;
+  }
+
+  /* A table inside a horizontal scroller must not print as the slice that
+     happened to be visible. */
+  .report-sheet .table-wrap {
+    overflow: visible !important;
+    border: 0 !important;
+  }
+  .report-sheet .report-table {
+    min-width: 0 !important;
+    width: 100% !important;
+    font-size: 9.5pt;
+  }
+
+  /* Money right, and legible in black and white: the muted greys this app
+     uses on screen come out as pale, uneven dots on an office laser. */
+  .report-table .num {
+    text-align: right;
+  }
+  .report-table,
+  .report-table td,
+  .report-table th,
+  .report-note,
+  .doc-meta,
+  .report-party-label,
+  .report-row-opening > td {
+    color: #000 !important;
+  }
+  .report-table th {
+    background: transparent !important;
+    border-bottom: 1px solid #000 !important;
+  }
+  .report-table td {
+    border-color: #999 !important;
+  }
+
+  /* The summary cards above a sheet print as a single plain row -- as
+     figures, not as cards. */
+  .report-sheet .stat-card {
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  /* Nothing on a report is a link on paper. */
+  .report-sheet a {
+    text-decoration: none !important;
+    color: #000 !important;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   The firm's paper
+
+   `@page` is the only way to set a sheet size from CSS, and it cannot be
+   scoped to an element — so the size is chosen by which document is being
+   printed, via `data-paper` on the invoice root (components/InvoiceDocument.jsx)
+   and the preference behind it (lib/invoicePrefs.mjs).
+
+   A4 is the default and needs no rule beyond the report one already set. A5
+   is the half sheet a lot of counter printers are loaded with, and it takes
+   BOTH halves of the treatment: the component emits its own
+   `@page { size: A5 }` (an element cannot scope an @page rule, so there is no
+   way to do it from this file), and the rule below scales the content to the
+   narrower sheet. Without the scale the bill is 203mm wide on a 148mm page
+   and the right-hand money column is clipped; without the @page the printer
+   is still told A4 and leaves half the sheet blank.
+   ────────────────────────────────────────────────────────────── */
+@media print {
+  .invoice-doc {
+    border: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* A5. `zoom` rather than `transform: scale()` on purpose: a transform
+     leaves the element's layout box at its old size, so the page breaks fall
+     in the wrong places and the last rows of a long bill print off the
+     sheet. Zoom reflows. */
+  .invoice-doc[data-paper='A5'] {
+    zoom: 0.82;
+  }
+}

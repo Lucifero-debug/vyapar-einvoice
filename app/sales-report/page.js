@@ -146,7 +146,7 @@ function SalesReports() {
   };
 
   return (
-    <div className="page-shell-wide doc-sheet">
+    <div className="page-shell-wide doc-sheet report-sheet">
       <div className="doc-head">
         <p className="doc-org">{company?.name || ''}</p>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -267,7 +267,7 @@ function SalesReports() {
       )}
 
       <div className="table-wrap">
-        <table className="data-table min-w-[760px]">
+        <table className="data-table report-table min-w-[760px]">
           {/* The period sheet's captions come off its download columns, so
               the printed sheet and the CSV cannot disagree about a name. */}
           {isPeriod && (

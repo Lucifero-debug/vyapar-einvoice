@@ -220,7 +220,7 @@ if (data.all) {
         <LedgerSearchParams onValue={setCustomerId} />
       </Suspense>
 
-      <div className="page-shell">
+      <div className="page-shell report-sheet">
         {/* Header */}
         <div className="doc-head">
           <h2 className="doc-org">{company.name}</h2>
@@ -311,7 +311,7 @@ if (data.all) {
               <span className="chip">({acct.entryCount} Entries)</span>
             </div>
 
-            <div className="overflow-x-auto"><table className="data-table min-w-[560px]">
+            <div className="overflow-x-auto"><table className="data-table report-table min-w-[560px]">
               <thead>
                 <tr>
                   <th className="w-[15%]">DATE</th>

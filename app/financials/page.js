@@ -45,7 +45,7 @@ const todayISO = () => new Date().toISOString().substring(0, 10);
 function Side({ heading, rows, total, label }) {
   return (
     <div className="table-wrap">
-      <table className="data-table">
+      <table className="data-table report-table">
         <thead>
           <tr>
             <th>{heading}</th>
@@ -142,7 +142,7 @@ function Financials() {
   const title = useMemo(() => STATEMENT_TITLES[kind] || STATEMENT_TITLES.trial, [kind]);
 
   return (
-    <div className="doc-sheet">
+    <div className="doc-sheet report-sheet">
       <div className="doc-head">
         <h2 className="doc-org">{company?.name || ''}</h2>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>
@@ -282,7 +282,7 @@ function Financials() {
           </div>
 
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table report-table">
               <thead>
                 <tr>
                   <th>Group / Account</th>

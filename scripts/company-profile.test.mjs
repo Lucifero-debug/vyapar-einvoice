@@ -21,7 +21,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   BLANK_COMPANY,
-  COMPANY_LOGO,
   FIELD_NAMES,
   PROFILE_FIELDS,
   addressLines,
@@ -78,7 +77,11 @@ test("null, undefined and a string all survive being passed in", () => {
   for (const input of [null, undefined, "", 0, []]) {
     const c = companyFrom(input);
     assert.equal(c.name, "");
-    assert.equal(c.logo, COMPANY_LOGO);
+    // NO LOGO, not the shared /logo.jpg this used to assert. That constant
+    // was one file in /public printed at the top of every firm's invoice;
+    // see the note where it used to be declared in lib/company.mjs, and
+    // scripts/company-branding.test.mjs for what replaced it.
+    assert.equal(c.logo, "");
   }
 });
 
@@ -89,8 +92,20 @@ test("only the known fields come through", () => {
     _id: "abc",
     tokenVersion: 3,
   });
-  assert.deepEqual(Object.keys(c).sort(), [...FIELD_NAMES, "logo"].sort());
+  // The profile fields, the logo, and the document preferences. `logo` and
+  // `invoicePrefs` are NOT in FIELD_NAMES, which is the form's text fields
+  // and doubles as the update allowlist -- each has its own normaliser
+  // (lib/companyLogo.mjs, lib/invoicePrefs.mjs) and its own route.
+  assert.deepEqual(Object.keys(c).sort(), [...FIELD_NAMES, "logo", "invoicePrefs"].sort());
   assert.ok(!JSON.stringify(c).includes("secret"));
+});
+
+test("a preference the module does not know cannot ride in on the record", () => {
+  // The same guard as the fields above, one level down: `prefsFrom` returns
+  // its own declared keys and nothing the row carried beside them.
+  const c = companyFrom({ ...FULL, invoicePrefs: { gstRate: 99, showLogo: false } });
+  assert.equal("gstRate" in c.invoicePrefs, false);
+  assert.equal(c.invoicePrefs.showLogo, false, "and a real one is respected");
 });
 
 test("there is no hardcoded firm left anywhere in the module", () => {

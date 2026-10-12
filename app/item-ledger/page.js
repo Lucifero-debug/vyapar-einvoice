@@ -106,7 +106,7 @@ if (data.all) {
         <ItemLedgerSearchParams onValue={setItemId} />
       </Suspense>
 
-      <div className="page-shell">
+      <div className="page-shell report-sheet">
         {/* Header */}
         <div className="doc-head">
           <h2 className="doc-org">{company.name}</h2>
@@ -209,7 +209,7 @@ let runningQty =
         </div>
 
         {/* Table */}
-        <div className="overflow-x-auto"><table className="data-table min-w-[720px]">
+        <div className="overflow-x-auto"><table className="data-table report-table min-w-[720px]">
           <thead>
             <tr>
               <th className="w-[10%]">DATE</th>

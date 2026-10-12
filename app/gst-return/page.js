@@ -52,7 +52,7 @@ const lastMonth = () => {
 function TableRows({ tag, rows }) {
   if (tag === 'B2B' || tag === 'CDNR') {
     return (
-      <table className="data-table">
+      <table className="data-table report-table">
         <thead>
           <tr>
             <th>GSTIN</th>
@@ -95,7 +95,7 @@ function TableRows({ tag, rows }) {
 
   if (tag === 'B2CL') {
     return (
-      <table className="data-table">
+      <table className="data-table report-table">
         <thead>
           <tr>
             <th>POS</th>
@@ -130,7 +130,7 @@ function TableRows({ tag, rows }) {
 
   if (tag === 'B2CS') {
     return (
-      <table className="data-table">
+      <table className="data-table report-table">
         <thead>
           <tr>
             <th>Supply</th>
@@ -161,7 +161,7 @@ function TableRows({ tag, rows }) {
 
   if (tag === 'CDNUR') {
     return (
-      <table className="data-table">
+      <table className="data-table report-table">
         <thead>
           <tr>
             <th>Type</th>
@@ -198,7 +198,7 @@ function TableRows({ tag, rows }) {
 
   if (tag === 'HSN') {
     return (
-      <table className="data-table">
+      <table className="data-table report-table">
         <thead>
           <tr>
             <th className="num">#</th>
@@ -237,7 +237,7 @@ function TableRows({ tag, rows }) {
 
   if (tag === 'DOCS') {
     return (
-      <table className="data-table">
+      <table className="data-table report-table">
         <thead>
           <tr>
             <th>Nature of document</th>
@@ -268,7 +268,7 @@ function TableRows({ tag, rows }) {
 
   // GSTR-3 and GSTR-3B: label and figure.
   return (
-    <table className="data-table">
+    <table className="data-table report-table">
       <tbody>
         {rows.map((r) => (
           <tr key={r.label}>
@@ -334,7 +334,7 @@ function GstReturns() {
   };
 
   return (
-    <div className="page-shell-wide doc-sheet">
+    <div className="page-shell-wide doc-sheet report-sheet">
       <div className="doc-head">
         <p className="doc-org">{company?.name || ''}</p>
         <p className="doc-meta">{company ? companyAddress(company) : ''}</p>

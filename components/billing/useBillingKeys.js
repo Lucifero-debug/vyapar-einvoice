@@ -21,6 +21,13 @@ import { isTypingTarget, shortcutFor } from '@/lib/billingKeys.mjs';
  * nothing at all -- no preventDefault either, so the browser keeps it. That
  * matters for Delete: with no row focused there is nothing to delete, and
  * swallowing the key would stop it deleting a character.
+ *
+ * RETURNS THE SET OF ACTIONS IT CAN ACTUALLY FIRE, so the help overlay can
+ * say so. This shipped with nineteen keys in the table and ten of them wired,
+ * and the overlay advertised all nineteen -- somebody presses Alt+J, nothing
+ * happens, and they stop trusting the whole table. The honest list is now
+ * derived from the handlers rather than from the table, and
+ * scripts/billing.test.mjs fails if the screen leaves one unbound.
  */
 export function useBillingKeys(handlers) {
   // Held in a ref so the listener is installed once rather than torn down and
@@ -28,6 +35,14 @@ export function useBillingKeys(handlers) {
   // loses keys pressed during the gap.
   const latest = useRef(handlers);
   latest.current = handlers;
+
+  // Recomputed per render rather than memoised: it is a handful of keys, and
+  // a stale `bound` set would put the overlay back to lying.
+  const bound = new Set(
+    Object.entries(handlers || {})
+      .filter(([, fn]) => typeof fn === "function")
+      .map(([action]) => action)
+  );
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -52,6 +67,8 @@ export function useBillingKeys(handlers) {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  return bound;
 }
 
 export default useBillingKeys;
