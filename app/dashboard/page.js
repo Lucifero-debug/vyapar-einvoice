@@ -2,6 +2,7 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCompany } from '@/context/CompanyContext';
+import HindiInsights from '@/components/HindiInsights';
 import {
   CHART_GRAINS,
   PERIOD_PRESETS,
@@ -464,6 +465,11 @@ function Dashboard() {
 
       {data && (
         <>
+          {/* ── the same figures, said in Hindi ──────────────────── */}
+          {/* topParty: the receivables rows are the largest balances only on
+              page 1 with no search -- see lib/hindiInsights.mjs factsFrom. */}
+          <HindiInsights data={data} preset={preset} topParty={!search && page === 1} />
+
           {/* ── sales ───────────────────────────────────────────── */}
           <div className="panel mb-4">
             <div className="panel-head">

@@ -798,9 +798,11 @@ test("the upload page no longer saves, and no longer puts a bill in the URL", ()
   assert.match(page, /invoice-extract/);
   assert.match(page, /IMPORT_DRAFT_KEY/);
   assert.match(page, /sessionStorage/);
-  // And it hands over to the ordinary purchase screen rather than the print
-  // view of a bill it just wrote.
-  assert.match(page, /purchaseadd\?import=1/);
+  // And it hands over to the ordinary billing screen for the bill's kind
+  // (lib/billingTypes.mjs route, carried on the draft) rather than the print
+  // view of a bill it just wrote. scripts/bill-kinds.test.mjs checks that
+  // each kind's route is its billing screen.
+  assert.match(page, /router\.push\(`\$\{result\.draft\.route\}\?import=1`\)/);
 });
 
 test("the billing screen reads the draft ONCE and removes it", () => {
@@ -812,17 +814,26 @@ test("the billing screen reads the draft ONCE and removes it", () => {
   assert.match(screen, /sessionStorage\.removeItem\(IMPORT_DRAFT_KEY\)/);
   // The party is applied only on an exact match.
   assert.match(screen, /draft\.party\?\.how === MATCH_APPLIED/);
-  // And nothing in the import sets a place of supply or a tax type -- those
-  // follow the party's master through lib/placeOfSupply.mjs.
+  // And nothing in the import sets a place of supply -- that follows the
+  // party's master through lib/placeOfSupply.mjs. The TAX TYPE is now set,
+  // from the draft's own `taxType` only (worked out from the two GSTINs,
+  // lib/invoiceImport.mjs taxTypeFor): the radio has no other source, and
+  // left at its 'local' default an inter-state bill posted as CGST+SGST.
   // The effect's BODY, from where it reads the draft to where it reports
   // what it did. Slicing from the import statement at the top of the file
   // would span the whole screen, including the load-an-existing-invoice path
   // that legitimately sets all three.
   const from = screen.indexOf("sessionStorage.getItem(IMPORT_DRAFT_KEY)");
-  const to = screen.indexOf("setImportPrefill({", from);
+  // Up to the SUCCESS report (`count: draft.lines`), not the first
+  // setImportPrefill -- that is the refusal note near the top, and stopping
+  // there left the lines that apply the draft unchecked.
+  const to = screen.indexOf("count: draft.lines", from);
   assert.ok(from > 0 && to > from, "could not find the import effect");
   const applied = screen.slice(from, to);
-  assert.equal(/setStateOfSupply|setTaxType|setStateCode/.test(applied), false);
+  assert.equal(/setStateOfSupply|setStateCode/.test(applied), false);
+  // Exactly one tax-type write, and only from the draft, only when known.
+  assert.deepEqual(applied.match(/setTaxType\([^)]*\)/g), ["setTaxType(draft.taxType)"]);
+  assert.match(applied, /if \(draft\.taxType === 'local' \|\| draft\.taxType === 'central'\) setTaxType\(draft\.taxType\)/);
 });
 
 test("the supplier bill number has a declared home and travels the payload", () => {

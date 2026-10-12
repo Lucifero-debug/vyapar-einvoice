@@ -1752,6 +1752,23 @@ Tests: scripts/release-audit.test.mjs. Every scripts/*.test.mjs is now in
 
 Not fixed, kept visible: `react-hooks/set-state-in-effect` (~32 sites, mostly `useEffect(() => { load(); }, [load])` and form resets on open) is set to **warn** in `eslint.config.mjs`. It costs an extra render; it is not a bug. Move each to a data hook or a `key`-based reset over time. The 13 existing warnings (exhaustive-deps, `<img>`, one unused disable, tailwind default export) are unchanged.
 
+### 6.37 Hindi insights on the dashboard (text + voice)
+
+- **Card:** `components/HindiInsights.jsx`, at the top of the dashboard. Fixed Hindi sentences built by `lib/hindiInsights.mjs` from the SAME `/api/analytics` response the cards use (`factsFrom` reads, `insightsFrom` words) -- no figure is recomputed. Amounts are spoken rounded in lakh/hazaar/crore (`rupeesInHindi`); the exact figure is on the card below.
+- **Voice:** the browser's Web Speech API, `hi-IN`, sentence by sentence (`speechChunks`; Chrome cuts long utterances). Free, nothing leaves the device. If the device has no Hindi voice the card says so and how to add one (Windows: Settings → Time & language → Speech).
+- **AI summary (optional):** `/api/insights-ai` (report:read). GET says whether a key is configured; POST takes the facts, rebuilds them with `cleanFacts` (known fields, clamped numbers, one capped name -- the body is never forwarded) and asks the model to reword the fixed sentences. Same env as the bill reader: `INVOICE_AI_KEY`, `INVOICE_AI_URL`, `INVOICE_AI_MODEL` (or `INSIGHTS_AI_MODEL`). Capped per firm per day by `AI_INSIGHTS_DAILY_LIMIT` (default 50). Labelled AI-written on screen; dropped when the figures change.
+- The largest debtor is named only when the receivables rows are page 1 with no search (`topParty`).
+
+### 6.38 Bill reader: every kind of bill, not only purchases
+
+- `/upload` reads sale bills, purchase bills, credit notes and debit notes. `lib/invoiceImport.mjs`: the `supplier*` extraction fields now mean the document's ISSUER, `buyer*` its addressee (with phone/address/state), plus `documentKind`.
+- `resolveKind`: which side is this firm (`ourSide`, GSTIN first, then exact trading or legal name) + the document's kind → sale / purchase / sale return / purchase return (`kindFrom`). Debit notes are never guessed (a GST debit note is a supplier's price rise; a trade one is a buyer's return) -- the person chooses. Auto with no answer gives `kind: null` and a blocking question.
+- The party is the side that is NOT us; proposed new masters are customers (Sundry Debtors) or suppliers by kind; new items seed `salePrice` on sales, `purchasePrice`/`cost` on purchases. `partyBillNo` only when the party issued the document; our own printed number is reported (Vyapaar saves under its next number).
+- The draft carries `target` and `route`; the parcel opens only on that billing screen. The billing screen now applies `draft.taxType` (from the two GSTINs) -- it used to stay at the radio's 'local' default.
+- `/api/invoice-extract` takes `kind`; `{ extraction, kind }` re-drafts without the model (changing the type after reading). Photo reads capped per firm per day: `BILL_READ_DAILY_LIMIT` (default 200).
+- A matched party whose group contradicts the kind (supplier on a sale) gets a check warning.
+- Still open, app-wide: the tax-type radio on a TYPED bill is manual and defaults to local; it is not derived from the party's state.
+
 ## 7. API routes
 
 All under `app/api/<name>/route.js`. **All are wrapped in `tenantRoute`

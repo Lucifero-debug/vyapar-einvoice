@@ -2,7 +2,12 @@
 export const dynamic = 'force-dynamic';
 
 /**
- * Read a purchase bill off a photograph.
+ * Read a bill off a photograph -- a sale, a purchase, or a return of either.
+ *
+ * The kind is worked out from which side of the bill carries this firm's
+ * GSTIN or name, or picked by the person (lib/invoiceImport.mjs
+ * `resolveKind`), and can be changed after reading without reading the photo
+ * again. The draft then opens on THAT kind's billing screen.
  *
  * WHAT THIS PAGE NO LONGER DOES
  * -----------------------------
@@ -22,7 +27,10 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatINR } from '@/lib/currency.mjs';
 import {
+  AUTO_KIND,
   IMPORT_DRAFT_KEY,
+  IMPORT_KINDS,
+  KIND_LABELS,
   MATCH_APPLIED,
   MATCH_SUGGESTED,
   importParcel,
@@ -128,6 +136,9 @@ export default function UploadInvoicePage() {
   // Who was signed in when the photo was read. The server matched the bill
   // against THAT firm's masters, so that is the firm the draft belongs to.
   const [readBy, setReadBy] = useState(null);
+  // What the person says this bill is: "auto", or one of IMPORT_KINDS.
+  const [kind, setKind] = useState(AUTO_KIND);
+  const [redrafting, setRedrafting] = useState(false);
   const inputRef = useRef(null);
 
   const pick = (event) => {
@@ -152,7 +163,7 @@ export default function UploadInvoicePage() {
       const res = await fetch('/api/invoice-extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: await toBase64(scaled), name: file.name }),
+        body: JSON.stringify({ data: await toBase64(scaled), name: file.name, kind }),
       });
       const body = await res.json();
       if (!res.ok || !body.success) {
@@ -166,10 +177,46 @@ export default function UploadInvoicePage() {
     } finally {
       setLoading(false);
     }
-  }, [file]);
+  }, [file, kind]);
 
   /**
-   * Hand the draft to the purchase screen.
+   * The same reading, drafted as another kind -- no new photo, no new model
+   * call. The route matches it against the masters again, because the party
+   * is now on the other side of the bill.
+   */
+  const redraft = async (nextKind) => {
+    if (!result?.draft?.read) return;
+    // Matched again against the masters of whoever is signed in NOW, so it
+    // must still be the firm and user the photo was read for.
+    const scope = await whoAmI();
+    if (!scope || !readBy || scope.companyId !== readBy.companyId || scope.user !== readBy.user) {
+      setError('You are signed in as a different user or company from when this bill was read. Read the photo again.');
+      return;
+    }
+    setKind(nextKind);
+    setRedrafting(true);
+    setError('');
+    try {
+      const res = await fetch('/api/invoice-extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ extraction: result.draft.read, kind: nextKind }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.success) {
+        setError(body.error || 'Could not change the type. Read the photo again.');
+        return;
+      }
+      setResult(body);
+    } catch {
+      setError('Could not reach the server.');
+    } finally {
+      setRedrafting(false);
+    }
+  };
+
+  /**
+   * Hand the draft to the billing screen for its kind.
    *
    * sessionStorage under one key, NOT the URL -- the old page put the whole
    * items array through encodeURIComponent into a query string, which is a
@@ -182,6 +229,11 @@ export default function UploadInvoicePage() {
    * and a tab can be signed in to another firm by the time it is opened.
    */
   const openInForm = async () => {
+    // Not until the kind is known: the parcel names its screen.
+    if (!result?.draft?.kind || !result.draft.route) {
+      setError('Choose whether this is a sale, a purchase or a return first.');
+      return;
+    }
     // Still the same firm and user as when the photo was read? A tab can be
     // signed out and into another company in between.
     const scope = await whoAmI();
@@ -212,10 +264,12 @@ export default function UploadInvoicePage() {
       setError('This browser would not hold the draft. Type the bill in instead.');
       return;
     }
-    router.push('/purchaseadd?import=1');
+    router.push(`${result.draft.route}?import=1`);
   };
 
   const draft = result?.draft || null;
+  const role = draft?.partyRole === 'customer' ? 'Customer' : 'Supplier';
+  const partyRead = draft?.party?.read?.name ?? draft?.read?.supplierName ?? '';
   const blocking = useMemo(
     () => (result?.warnings || []).filter((w) => w.severity === 'blocking'),
     [result]
@@ -228,10 +282,10 @@ export default function UploadInvoicePage() {
   return (
     <div className="page-shell max-w-3xl">
       <div className="page-header">
-        <h1 className="page-title">Read a purchase bill</h1>
+        <h1 className="page-title">Read a bill</h1>
         <p className="page-subtitle">
-          Photograph a supplier&apos;s bill and it will be read into a draft. Nothing is saved
-          until you have checked it on the purchase screen.
+          Photograph a sale or purchase bill, a credit note or a debit note, and it will be read
+          into a draft. Nothing is saved until you have checked it on the billing screen.
         </p>
       </div>
 
@@ -254,6 +308,30 @@ export default function UploadInvoicePage() {
               className="mx-auto max-h-64 w-auto rounded-lg border border-border object-contain"
             />
           ) : null}
+
+          <div>
+            <label className="field-label" htmlFor="bill-kind">
+              What kind of bill
+            </label>
+            <select
+              id="bill-kind"
+              className="field-select mt-1.5"
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+              disabled={loading}
+            >
+              <option value={AUTO_KIND}>Work it out from the bill</option>
+              {IMPORT_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {KIND_LABELS[k]}
+                </option>
+              ))}
+            </select>
+            <p className="field-hint mt-1">
+              Worked out from which side of the bill has your firm&apos;s GSTIN or name. You can
+              change it after reading.
+            </p>
+          </div>
 
           <button
             type="button"
@@ -285,13 +363,52 @@ export default function UploadInvoicePage() {
             </div>
           </div>
           <div className="panel-body space-y-5">
+            {/* ── which kind of bill ─────────────────────────────── */}
+            <div
+              className={`rounded-lg border px-4 py-3 ${
+                draft.kind ? 'border-border bg-muted/40' : 'border-destructive/40 bg-destructive/10'
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-sm">
+                  {draft.kind ? (
+                    <>
+                      <span className="font-medium">{KIND_LABELS[draft.kind]}</span>
+                      <span className="text-muted-foreground">
+                        {draft.kindChosen !== AUTO_KIND
+                          ? ' — as you chose'
+                          : draft.kindDetectedBy === 'gstin'
+                            ? ' — your GSTIN is on the bill'
+                            : ' — your firm’s name is on the bill'}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="font-medium text-destructive">
+                      Is this a sale or a purchase? Your firm was not found on the bill.
+                    </span>
+                  )}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {IMPORT_KINDS.map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      className={`btn btn-sm ${draft.kind === k ? 'btn-primary' : 'btn-secondary'}`}
+                      disabled={redrafting || draft.kind === k}
+                      onClick={() => redraft(k)}
+                    >
+                      {KIND_LABELS[k]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <p className="field-label">Supplier</p>
+                <p className="field-label">{role}</p>
                 <p className="text-sm font-medium">
-                  {draft.party.how === MATCH_APPLIED
-                    ? draft.party.name
-                    : draft.read.supplierName || '(not read)'}
+                  {draft.party.how === MATCH_APPLIED ? draft.party.name : partyRead || '(not read)'}
                 </p>
                 <p className="field-hint">
                   {draft.party.how === MATCH_APPLIED
@@ -302,8 +419,13 @@ export default function UploadInvoicePage() {
                 </p>
               </div>
               <div>
-                <p className="field-label">Supplier bill no</p>
-                <p className="text-sm font-medium">{draft.partyBillNo || '(not read)'}</p>
+                <p className="field-label">
+                  {draft.partySide === 'addressee' ? 'Bill no (your series)' : `${role} bill no`}
+                </p>
+                <p className="text-sm font-medium">
+                  {(draft.partySide === 'addressee' ? draft.printedNo : draft.partyBillNo) ||
+                    '(not read)'}
+                </p>
                 <p className="field-hint">
                   Your own invoice number is given by Vyapaar, not taken from the bill.
                 </p>
@@ -319,7 +441,7 @@ export default function UploadInvoicePage() {
                     ? 'CGST + SGST (same state)'
                     : draft.taxType === 'central'
                       ? 'IGST (different states)'
-                      : '(follows the supplier’s master)'}
+                      : `(follows the ${role.toLowerCase()}’s master)`}
                 </p>
               </div>
             </div>
@@ -422,12 +544,19 @@ export default function UploadInvoicePage() {
             )}
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
-              <button type="button" className="btn btn-primary" onClick={openInForm}>
-                Open in the purchase form
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={openInForm}
+                disabled={!draft.kind || redrafting}
+              >
+                {draft.kind
+                  ? `Open in the ${KIND_LABELS[draft.kind].toLowerCase()} form`
+                  : 'Choose the type first'}
               </button>
               <p className="field-hint">
                 {blocking.length
-                  ? `${blocking.length} thing${blocking.length === 1 ? '' : 's'} to settle there — the form will not save until you do.`
+                  ? `${blocking.length} thing${blocking.length === 1 ? '' : 's'} to settle there before you save — they are listed at the top of the form.`
                   : 'Check it over and save it there.'}
               </p>
             </div>

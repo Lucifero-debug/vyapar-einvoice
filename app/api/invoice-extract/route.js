@@ -7,6 +7,8 @@ import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { companyFrom } from "@/lib/company.mjs";
 import { sniffImageType } from "@/lib/companyLogo.mjs";
 import {
+  AUTO_KIND,
+  IMPORT_KINDS,
   draftFromExtraction,
   extractionPrompt,
   importIsReady,
@@ -14,9 +16,22 @@ import {
   newMasters,
   parseExtractionJson,
 } from "@/lib/invoiceImport.mjs";
+import { tooManyResponse } from "@/lib/rateLimit.mjs";
+import { hitRateLimit } from "@/lib/rateLimitStore.mjs";
 
 /**
- * Read a purchase bill off a photograph.
+ * Read a bill off a photograph -- a sale, a purchase, or a return of either.
+ *
+ *   POST { data, kind }        read the photo, then draft it
+ *   POST { extraction, kind }  draft an earlier reading again as another
+ *                              kind, WITHOUT reading the photo again: the
+ *                              person changed "Purchase" to "Sale" after
+ *                              seeing the result, and the model call is the
+ *                              slow, paid part
+ *
+ * `kind` is "auto" (worked out from which side of the bill carries the
+ * firm's GSTIN or name) or one of sale, purchase, salereturn,
+ * purchasereturn. lib/invoiceImport.mjs `resolveKind`.
  *
  * Returns a DRAFT and a list of things to look at. It writes nothing: the
  * draft goes to the ordinary purchase screen, the person checks it, and the
@@ -155,9 +170,34 @@ async function readBill({ bytes, mime }) {
   return { extraction };
 }
 
+/** Far beyond any real bill; keeps a crafted re-draft body bounded. */
+const MAX_LINES = 300;
+
 async function handlePOST(req, auth) {
   try {
     const body = await req.json();
+
+    const kind = String(body?.kind ?? AUTO_KIND).trim() || AUTO_KIND;
+    if (kind !== AUTO_KIND && !IMPORT_KINDS.includes(kind)) {
+      return NextResponse.json(
+        { success: false, error: `"${kind}" is not a kind of bill.` },
+        { status: 400 }
+      );
+    }
+
+    // Drafting an earlier reading again: no photo, no model call. The
+    // extraction is as untrusted as the model's reply always was, and goes
+    // through the same normaliser in draftFromExtraction.
+    if (body?.extraction && !body?.data) {
+      const extraction = body.extraction;
+      if (typeof extraction !== "object" || Array.isArray(extraction)) {
+        return NextResponse.json({ success: false, error: "Read the photo again." }, { status: 400 });
+      }
+      if (Array.isArray(extraction.lines) && extraction.lines.length > MAX_LINES) {
+        return NextResponse.json({ success: false, error: "That bill has too many rows." }, { status: 400 });
+      }
+      return NextResponse.json(await draftResponse({ extraction, kind, auth }));
+    }
 
     const bytes = decode(body?.data);
     if (!bytes) {
@@ -190,43 +230,53 @@ async function handlePOST(req, auth) {
       );
     }
 
+    await connect();
+
+    // Each read is a paid model call on the firm's key. BILL_READ_DAILY_LIMIT
+    // (lib/rateLimit.mjs).
+    const allowance = await hitRateLimit("bill-read-firm", String(auth?.companyId || ""));
+    if (!allowance.allowed) {
+      const { status, body: refused, headers } = tooManyResponse(allowance, "bills read today");
+      return NextResponse.json(refused, { status, headers });
+    }
+
     const read = await readBill({ bytes, mime: type.mime });
     if (read.error) {
       return NextResponse.json({ success: false, error: read.error }, { status: read.status });
     }
 
-    await connect();
-
-    // Two queries for the whole bill, projected to what matching needs. See
-    // the note above about why this is not done per line or in the browser.
-    const [parties, items, companyDoc] = await Promise.all([
-      Customer.find({}, { name: 1, group: 1, gstIn: 1, state: 1, stateCode: 1, phone: 1 }).lean(),
-      Item.find({}, { name: 1, hsn: 1, unit: 1, gst: 1, purchasePrice: 1, cost: 1 }).lean(),
-      Company.findById(auth.companyId).lean(),
-    ]);
-
-    const company = companyFrom(companyDoc);
-
-    const draft = draftFromExtraction({
-      extraction: read.extraction,
-      parties,
-      items,
-      company,
-    });
-
-    return NextResponse.json({
-      success: true,
-      draft,
-      warnings: importWarnings(draft),
-      ready: importIsReady(draft),
-      // What the screen offers to create. Offered -- the existing master
-      // routes do the creating, with their own validation.
-      newMasters: newMasters(draft),
-    });
+    return NextResponse.json(await draftResponse({ extraction: read.extraction, kind, auth }));
   } catch (error) {
     console.error("Invoice extract error:", error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
+}
+
+/** The draft, matched against this firm's masters, as the screen takes it. */
+async function draftResponse({ extraction, kind, auth }) {
+  await connect();
+
+  // Three queries for the whole bill, projected to what matching needs. See
+  // the note above about why this is not done per line or in the browser.
+  const [parties, items, companyDoc] = await Promise.all([
+    Customer.find({}, { name: 1, group: 1, gstIn: 1, state: 1, stateCode: 1, phone: 1 }).lean(),
+    Item.find({}, { name: 1, hsn: 1, unit: 1, gst: 1, purchasePrice: 1, salePrice: 1, cost: 1 }).lean(),
+    Company.findById(auth.companyId).lean(),
+  ]);
+
+  const company = companyFrom(companyDoc);
+
+  const draft = draftFromExtraction({ extraction, parties, items, company, kind });
+
+  return {
+    success: true,
+    draft,
+    warnings: importWarnings(draft),
+    ready: importIsReady(draft),
+    // What the screen offers to create. Offered -- the existing master
+    // routes do the creating, with their own validation.
+    newMasters: newMasters(draft),
+  };
 }
 
 // Signed in, permission checked, and every query above scoped to the caller's

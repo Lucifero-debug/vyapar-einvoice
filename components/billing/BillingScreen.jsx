@@ -24,7 +24,7 @@ import { istToday } from '@/lib/istDate.mjs';
 // Why a read-in bill was not filled in. See `importParcelVerdict`.
 const IMPORT_REFUSED = {
     missing: 'That read-in bill has gone. Read the photo again.',
-    'wrong-screen': 'A read-in bill opens on the Purchase Invoice screen, not this one. It is still waiting there.',
+    'wrong-screen': 'That read-in bill is for a different billing screen (the one it was read as), not this one. It is still waiting there.',
     'wrong-owner': 'That read-in bill was read for a different company or user, so it was not filled in. Read the photo again.',
     unverified: 'Could not confirm who is signed in, so the read-in bill was not filled in. Reload to try again.',
 };
@@ -492,7 +492,7 @@ useEffect(() => {
      * not be sitting there tomorrow waiting to land on a different bill.
      *
      * Everything applied here has already been matched and recomputed by
-     * lib/invoiceImport.mjs. Nothing is saved: this is the ordinary purchase
+     * lib/invoiceImport.mjs. Nothing is saved: this is the ordinary billing
      * screen with its fields filled in, and the save is the same one a typed
      * bill takes. The blocking warnings are carried onto the strip so the
      * person can see what still needs settling without going back.
@@ -564,6 +564,12 @@ useEffect(() => {
         if (draft.grNo) setGrNo(draft.grNo);
         if (draft.ewayBillNo) setEwayBillNo(draft.ewayBillNo);
         if (draft.freight) setFreight(String(draft.freight));
+        // CGST+SGST or IGST, from the two GSTINs on the bill (or our profile
+        // and the party's master) -- lib/invoiceImport.mjs taxTypeFor. The
+        // radio below is otherwise left at its default, and an inter-state
+        // bill saved as local posts the wrong tax heads. Null when either
+        // state is unknown: then the radio is the person's to set.
+        if (draft.taxType === 'local' || draft.taxType === 'central') setTaxType(draft.taxType);
 
         setImportPrefill({
             count: draft.lines?.length || 0,
