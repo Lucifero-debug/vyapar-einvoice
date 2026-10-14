@@ -7,7 +7,7 @@ rules that must not be broken, the UI vocabulary, and the known landmines.
 
 Paste the whole file, or paste §1–§6 plus the section relevant to your task.
 
-**Last verified: 12 October 2026.** When you change the shape of the data, the
+**Last verified: 14 October 2026.** When you change the shape of the data, the
 posting rules, the auth or tenancy rules, or the page conventions, update this
 file in the same commit. A stale context file is worse than none — it will
 confidently mislead.
@@ -56,6 +56,7 @@ What it does:
 | Transactions | Sale, Sale Return, Purchase, Purchase Return invoices |
 | Orders | Sale/Purchase orders, order cancellation, order→invoice linkage, pending-order reports |
 | Challans | Sales/Purchase challans (SIGFA's SC/PC), stock effect, billing pending challans into invoices, pending challan book, challan print |
+| M.R.I. | Purchase material receipt: received / accepted / rejected on a purchase bill or purchase challan, Re-MRI, pending MRI, rejected material registers (§6.41) |
 | Production | Production (from a BOM), Goods Issued, Goods Received, Production planning |
 | Money | Receipt/payment vouchers, bill-wise adjustment ("Against Bill") |
 | Books | Cash Book, Bank Book, A/C Ledger |
@@ -204,6 +205,12 @@ app/
   financials/            Trial Balance, Trading A/c, P&L, Balance Sheet
   order/                 Order register and alter
   orderadd/              Sale/Purchase order entry
+  challan/               Challan register / pending challan book (§6.39);
+                         challan/print/ prints one
+  challanadd/            Sales/Purchase challan entry (?type=Sale|Purchase;
+                         &mri=1 opens a purchase challan as an M.R.I.)
+  mri/                   Purchase M.R.I. registers: register, pending,
+                         rejected material, party wise (§6.41)
   order-report/          Pending orders — party-wise and item-wise
   bom/                   Bill of Material register
   bomadd/                BOM entry (nested formulas)
@@ -251,6 +258,12 @@ components/
   billing/InfoPanel.jsx  Read-only lookups (stock, a party's bills)
   billing/LookupList.jsx Arrow/Enter/Escape picker
   billing/ItemSearch.jsx The line's item picker. Tagged `data-master-field`
+  billing/ChallanPicker.jsx
+                         "Pending challan [Alt+L]": pick challan lines onto the
+                         bill (§6.39)
+  billing/MriPanel.jsx   The purchase M.R.I. strip — tick, number peek, remark,
+                         Ag. MRI No. — on the purchase bill and the purchase
+                         challan form (§6.41)
   masters/useMasterActions.js
                          Alt+A / Alt+M / Alt+D over whatever field has focus.
                          Reads `data-master-field` off `document.activeElement`
@@ -270,6 +283,8 @@ components/
                          the pattern ItemLedgerSearchParams established. Each
                          fires ONCE: a deep link sets the opening state and the
                          page's own controls own it afterwards
+  ChallanSearchParams.jsx
+                         `?type=&challanNo=&status=&mri=` for the challan pages
   StockReportSearchParams.jsx
                          `?report=` off the hub's five stock tiles, behind the
                          page's Suspense boundary (§6.40)
@@ -346,6 +361,17 @@ lib/                     ← THE DOMAIN LAYER. Read §6 before touching any of i
   orderReports.mjs       Pending orders, party-wise and item-wise (SIGFA's
                          exact column headings)
   todaysOrders.mjs       The once-a-day reminder of orders dated today
+
+  challanStatus.mjs      Challans (SIGFA's SC/PC): kinds, status, totals, stock
+                         rows, claims, edit/delete guards, the picker (§6.39)
+  challanInput.mjs       A challan request, checked field by field
+  challanSave.mjs        Building the stored challan  (imports Mongoose)
+  challanClaims.mjs      Billed quantities on challan lines (imports Mongoose)
+  getNextChallanNo.js    One number series per challan kind
+  mri.mjs                Purchase M.R.I.: received/accepted/rejected, the MRI
+                         block, Re-MRI rules, the registers (§6.41). Pure
+  mriSave.mjs            The MRI number series, the Ag. MRI No. check, the
+                         Re-MRI lock and delete guard  (imports Mongoose)
 
   bom.mjs                Bill of Material: nested explosion, wastage, by-product
   bomSave.mjs            BOM persistence                (imports Mongoose)
@@ -517,6 +543,17 @@ One document per sale / purchase / return.
 - Per line: `orderNo`, `orderType`, `orderLineId`, `orderDate` — which order
   line this fulfils, if any. All four or none; only `lib/orderClaims.mjs`
   acts on them
+- Per line: `challanNo`, `challanType`, `challanLineId`, `challanDate` — which
+  challan line this bills (§6.39) — and `challanStock`, set by the SERVER from
+  the challan: true means the challan already moved the stock, so this line
+  writes no stock row
+- Purchase M.R.I. (§6.41): header `mriNo` (its own series, shared with
+  purchase challans; unique partial index per firm), `mriRemark`,
+  `againstMriNo` (a Re-MRI; unique partial index — one Re-MRI per MRI),
+  `mriLock` (written by a Re-MRI so concurrent ones conflict; means nothing on
+  its own); per line `receivedQty`. On an MRI, `quantity` is the ACCEPTED
+  quantity and may be 0 (lot rejected outright) — at least one line must be
+  above 0 on a bill
 - Dispatch: `shippedTo`, `dispatchFrom`, `transport`, `grNo`, `grDate`,
   `pvtMark`, `caseDetails`, `freight`, `weight`, `orderNo`, `orderDate`,
   `ewayBillNo`, `ewayBillDate`
@@ -589,6 +626,19 @@ the pending-order reports show. `lib/orderClaims.mjs` is the only thing that
 writes the claim, and it keys on the order subdocument's own `_id` so an order
 edit does not detach an invoice that already billed against it.
 
+### `challans` (`models/challanModel.js`) — sales and purchase challans
+
+`challanNo` (own series per `type`, unique `{companyId, type, challanNo}`),
+`type` (`Sale`/`Purchase`), `date`, `customer` (snapshot), `stateOfSupply`,
+`stateCode`, `stockEffect` (Boolean, default true), totals, `status`
+(`pending`/`partial`/`billed`, derived), transport fields, `partyChallanNo`/
+`partyChallanDate`, `remarks`, `createdBy`/`updatedBy`/`editCount`. Lines:
+`{ name, description, hsn, quantity, billedQty, cost, discount, gstRate,
+taxableAmount, gstAmount, total, uqc, isService, receivedQty }`. `billedQty`
+is written ONLY by `lib/challanClaims.mjs`. A purchase challan may be an
+M.R.I. — the same `mriNo`, `mriRemark`, `againstMriNo`, `mriLock` fields as
+the invoice (§6.41). Stock rows are keyed `SC-<n>` / `PC-<n>` in ItemLedger.
+
 ### `boms` (`models/bomModel.js`) — bill of material
 
 The formula for making one item: the output, and `components[]` of
@@ -628,8 +678,9 @@ supply and its code on every invoice come from here via the party, never typed
 ### `hsn`, `Counter`, `TotalSale`
 
 - `hsn`: `hsncode`, `hsnname`, `gst`, `gstunit`. Unique per firm
-- `Counter`: `{ name, value }` — only `name: 'invoiceNo'` is used. Unique per
-  firm, so each firm's numbering runs independently
+- `Counter`: `{ name, value }` — `invoiceNo`, `orderNo:<type>`,
+  `challanNo:<type>`, `mriNo` and the stock-voucher counters. Unique per firm,
+  so each firm's numbering runs independently
 - `TotalSale`: legacy, effectively unused. The only model with no tenant plugin
 
 ### `companies` (`models/companyModel.js`) — the tenant
@@ -1793,7 +1844,8 @@ Read out of `SIGFA105.exe` (§6.19): MKEYs `SC` Sales Challan and `PC` Purchase 
 - **Rules** `lib/challanStatus.mjs` (pure): status pending/partial/billed, totals via `recalcItem`, stock rows, claims/net claims/apply (over-billing refused), edit/delete guards, picker, print refs. Input checking `lib/challanInput.mjs` (billed figures, totals, status never accepted; line ids must be existing ObjectIds, once).
 - **Stock**: a challan with stock effect writes ItemLedger rows keyed `SC-<n>` / `PC-<n>` (`writeChallanLedgerRows`), typeOfVoucher "Sale Challan"/"Purchase Challan". **Posts nothing to the accounts.**
 - **Billing**: invoice lines carry `challanNo/challanType/challanLineId/challanDate` and a server-set `challanStock`. save-invoice and sale-alter check the refs (same side, same party, same item, no mixing stock effects), stamp `challanStock` from the challan, and **skip stock rows for those lines** (`invoiceStockLines`). Claims: save → claim, alter → net difference, delete → release. Returns cannot bill a challan; a line bills an order or a challan, not both.
-- **Screens**: `/challan` (register / pending challan book, Sale|Purchase, Pending|Billed|All), `/challanadd?type=` (make/alter), `/challan/print`. On the sale/purchase screens: "Pending challan [Alt+L]" (SIGFA's Alt+H is shortcut help here). Invoice print lists "Challan No.".
+- **Screens**: `/challan` (register / pending challan book, Sale|Purchase, Pending|Billed|All; a purchase challan MRI that rejected every lot shows "Nothing accepted"), `/challanadd?type=` (make/alter), `/challan/print`. On the sale/purchase screens: "Pending challan [Alt+L]" (SIGFA's Alt+H is shortcut help here). Invoice print lists "Challan No.".
+- **Home page**: Sales Challan is a row in the Sales section (after Sale Return) and Purchase Challan in the Purchases section (after Purchase Return), each with Create / Alter-Delete / Pending challans and a pending count.
 - **Renames** of a party or item cascade into challans. Clearing transactions clears challans.
 - **Not done (SIGFA has them)**: Transfer Challan (branches), carrying pending challans into a new year, returns against a challan, "Sales Challan" option in the Sales Book, the "Accept qty more than challan" setup switch (over-billing is refused), a firm-level "Stock Effect With Challan" default (it is a tick box on each challan, default on).
 - **Financials note**: an unbilled stock-moving challan changes closing stock with no matching sale/purchase entry, as in SIGFA.
@@ -1866,6 +1918,10 @@ a Purchase can only be a return — which is exactly
 their key's prefix (`PRD-`, `GI-`, `GR-`), because `typeOfVoucher` is hardcoded
 to `"Production"` for all three.
 
+The page ignores a reply for a sheet it has already left (`latest` ref, as
+the other report pages do) — switching chips quickly used to let a slow, older
+reply overwrite the sheet on screen.
+
 Two of the five reports take **no date range** — a level and an age are about
 the stock on the shelf now — and the screen says "As on" instead of offering a
 filter that could not change the answer.
@@ -1874,11 +1930,15 @@ filter that could not change the answer.
 
 Read out of `SIGFA105.exe`: an MRI is not a document of its own but a Purchase Invoice or Purchase Challan flagged as one (`Subkey='MI'`, menus "Purchase Invoice & MRI" / "Purchase Challan & MRI"), with its own MRI series, a remark, and Received / Accepted / Rejected quantities ("Accepted Qty. Is More Than Received Qty."). Rejected material taken in again is a Re-MRI against the earlier one ("Ag. MRI No."); "List Of Pending MRI [Alt+H]" is every MRI with rejected material and no Re-MRI yet (`RCQty>Qty and MRINO not in (AgMRINo…)`). Reports: Rejected Material Register, Party Wise Rejected Material.
 
-- **Rules** `lib/mri.mjs` (pure, `scripts/mri.test.mjs`). **DB half** `lib/mriSave.mjs`: the number series (counter `mriNo`, ONE series across bills and challans, nudged past the highest used on either), the Ag. MRI No. check (exists, same supplier, has a rejection, not already re-MRI'd, not itself) and the guard that an MRI a Re-MRI points at cannot stop being an MRI, change supplier or be deleted.
-- **Posting is unchanged.** `quantity` on the line stays the ACCEPTED quantity — billed, taxed and stocked exactly as before — and `receivedQty` is stored beside it. A lot rejected outright is a line at quantity 0 (allowed on an MRI only, when something was received); `invoiceStockLines` skips it. Debit notes for the rejected value are NOT passed (no debit note voucher exists yet); `rejectedValue` is the figure one would use.
-- **Fields.** Invoice and challan headers: `mriNo`, `mriRemark`, `againstMriNo` (unique partial index on `{companyId, mriNo}` in each collection; the shared counter keeps them apart). Lines: `receivedQty`. The request carries `mri: { on, remark, againstMriNo }` — one more key in the frozen billing contract (`PAYLOAD_KEYS`, now 33) — never the number. A received figure on a non-MRI document is refused.
-- **Routes.** `save-invoice`, `sale-alter`, `challan-add`/`challan-alter` (via `lib/challanSave.mjs`) call `mriFields` inside their transaction; `delete-invoice` and `delete-challan` call `assertMriDeletable`. `/api/mri?view=register|pending|rejected|party` (read-only, `invoice:read`); `/api/next-mri-no` (peek, `invoice:write`).
-- **Screens.** `components/billing/MriPanel.jsx` on the purchase bill and the purchase challan form (tick M.R.I., remark, Ag. MRI No. from the supplier's pending list); a Received and a Rejected column appear on the lines. `/mri` — the four registers, printable. Home page: "Purchase M.R.I." row in the Purchases section after Purchase Challan (create on a bill / on a challan, register, pending, rejected, party wise). The bill and challan prints show the MRI No., totals and rejected lines.
+- **Rules** `lib/mri.mjs` (pure, `scripts/mri.test.mjs`). **DB half** `lib/mriSave.mjs`: the number series (counter `mriNo`, ONE series across bills and challans, nudged past the highest used on either; its queries run one after another — a transaction's session takes one operation at a time), the Ag. MRI No. check (exists, same supplier, has a rejection, not already re-MRI'd, not itself), and the guards.
+- **Posting is unchanged.** `quantity` on the line stays the ACCEPTED quantity — billed, taxed and stocked exactly as before — and `receivedQty` is stored beside it. Rejected = received − accepted, never negative.
+- **Zero accepted.** A lot rejected outright is a line at quantity 0, allowed on an MRI only and only when something was received; `invoiceStockLines` skips such a line. A **bill** must still accept something on at least one line ("Nothing was accepted, so there is nothing to bill") — a delivery rejected outright is recorded as a **purchase challan** MRI, which bills nothing.
+- **Fields.** Invoice and challan headers: `mriNo`, `mriRemark`, `againstMriNo`, `mriLock`; lines: `receivedQty` (§5). Unique partial indexes per firm on `mriNo` and on `againstMriNo` in each collection. The request carries `mri: { on, remark, againstMriNo }` — one more key in the frozen billing contract (`PAYLOAD_KEYS`, now **33**: the 31 originals, `partyBillNo`, `mri`) — never the number. A received figure on a document that is not an MRI is refused, so the screens drop them when the tick is cleared.
+- **A blank Received means "received what was accepted"** and is stored as the accepted figure. On reload the screens show a received figure equal to the accepted one as blank again, so raising the accepted quantity on an edit is not refused against a stale copy.
+- **Re-MRI guards.** A Re-MRI writes `mriLock` on the MRI it re-inspects inside its transaction, so two Re-MRIs at once — or a Re-MRI racing an alter/delete of that MRI — conflict and only one commits (backed by the unique `againstMriNo` index within each collection). An MRI that a Re-MRI points at cannot be switched off, moved to another supplier, edited to reject nothing, or deleted (`assertMriDeletable`).
+- **Routes.** `save-invoice`, `sale-alter`, `challan-add`/`challan-alter` (via `lib/challanSave.mjs`) call `mriFields({ session, mri, previous, party, items })` inside their transaction; `delete-invoice` and `delete-challan` call `assertMriDeletable`. `/api/mri?view=register|pending|rejected|party&party=&from=&to=` (read-only, `invoice:read`; the date range is IST days via `istDayWindow`, applied to the MRIs AFTER Re-MRIs are matched); `/api/next-mri-no` (peek, `invoice:write`).
+- **Screens.** `components/billing/MriPanel.jsx` on the purchase bill and the purchase challan form (tick M.R.I., number peek, remark, Ag. MRI No. from the supplier's pending list — cleared when the supplier changes); Received and Rejected columns appear on the lines. `/mri` — the four registers, printable; a table is only drawn from rows fetched for the view now chosen. Home page: "Purchase M.R.I." row in the Purchases section after Purchase Challan (create on a bill `/purchaseadd?mri=1` / on a challan `/challanadd?type=Purchase&mri=1`, register, pending, rejected, party wise) with the pending count. The bill and challan prints show the MRI No., received/accepted/rejected and the rejected lines.
+- **Not done (SIGFA has them)**: the automatic Debit Note for (bill amount − accepted purchase) — there is no debit note voucher yet; `rejectedValue` is the figure it would use. The M.R.O. slip on the sales side. Receipt Slip & M.R.I. (store receipts outside a purchase). A separate MRI date (the document's date is used).
 
 
 ## 7. API routes
@@ -1924,6 +1984,17 @@ derive their balance deltas from `buildVoucherBalanceDeltas()`.
 | `order-reconcile` | POST | Recompute `despQty`/`canQty` from the invoices that claim each line |
 | `next-order-no` | GET | Peek, like `next-invoice-no` (§6.12) |
 | `todays-orders` | GET | Orders dated today — the once-a-day reminder |
+
+### Challans and M.R.I.
+| Route | Method | Notes |
+|---|---|---|
+| `challan-add` / `challan-alter` | POST | Make and alter a sales or purchase challan; stock rows in the same transaction; a purchase challan may be an M.R.I. (§6.39, §6.41) |
+| `delete-challan` | POST `?challanNo&type` | Refused once anything is billed, or while a Re-MRI points at it |
+| `challan` / `get-challan` | GET | Register (`?type&status=pending\|billed&customer&from&to`), and one challan with the invoices that billed it |
+| `challan-pending` | GET | A party's pending challan lines, for the bill's picker |
+| `next-challan-no` | GET `?type` | Peek, like `next-invoice-no` |
+| `mri` | GET `?view=register\|pending\|rejected\|party&party&from&to` | Purchase M.R.I. registers; read-only (§6.41) |
+| `next-mri-no` | GET | Peek at the next M.R.I. number; reserved on save |
 
 ### Production, BOM and stock vouchers
 `bom-add`, `bom-alter`, `delete-bom`, `bom`, `get-bom`, `bom-explode`
@@ -2185,7 +2256,8 @@ Two things about how it was made, which matter if you touch it:
   arithmetic: it decides what prints on a GST return.
 - `PAYLOAD_KEYS` in `billingMath.mjs` is the **frozen list of fields** the save
   request carries — 31 extracted mechanically from the four pages before
-  anything moved, plus `partyBillNo` added deliberately since (§5). The server
+  anything moved, plus `partyBillNo` and `mri` added deliberately since (§5,
+  §6.41) — 33 in all. The server
   derives what it must (§6.5), but adding a key here changes what four screens
   send — check the route reads it, and remember Mongoose strict mode silently
   drops an undeclared field (§9.18).
@@ -2215,6 +2287,12 @@ strip. The draft is read **once and removed** — a refresh must not re-apply it
 over what the person has since typed, and an abandoned import must not land on
 a different bill tomorrow. Nothing in that path sets a place of supply or a tax
 type; both follow whichever party is picked (§6.26).
+
+On the purchase screen (not the return) it also carries the **M.R.I.** strip
+(`MriPanel`, §6.41): ticking it adds Received and Rejected columns around the
+quantity, which becomes Accepted, and `?mri=1` opens a new bill already ticked.
+The Received box shares the row's `setActiveRow` focus, so the row shortcuts
+act on it like the other three boxes (`billing.test.mjs` counts four).
 
 ### 8.5 Report pages print, and they compute nothing
 
@@ -2484,8 +2562,10 @@ return, so fixing it is a decision with the client, not a tidy-up.
 **Migrations that have not been run against the live database**
 
 23. `npm run sync:indexes` — `orders`, `boms`, `productions` (now
-    `{companyId, kind, docNo}`) and the voucher-allocation indexes all want
-    building; stale global uniques want dropping (§2).
+    `{companyId, kind, docNo}`), `challans`, the invoice line-challan index,
+    the M.R.I. indexes (`mriNo`, `againstMriNo` on invoices and challans) and
+    the voucher-allocation indexes all want building; stale global uniques
+    want dropping (§2).
 24. `node scripts/backfill-stock-kind.mjs` — stamps `kind: "FR"` on production
     rows written before the field existed (§5).
 25. `npm run backfill:gl-legs` — adds GL legs to invoices raised before
@@ -2502,6 +2582,26 @@ return, so fixing it is a decision with the client, not a tidy-up.
     the statements, company settings and branding, and the invoice import all
     exist **only** in `vyapaar-einvoice`. The two repos have diverged a long
     way; treat `vyapaar-einvoice` as the live one.
+
+**Left behind by a parallel session (13 Oct)**
+
+28. `lib/challan.mjs` and `scripts/challan.test.mjs` are an abandoned second
+    challan design (challans that never move stock). Nothing imports them and
+    the test is not in `npm test`. **Delete both.** That session also worked
+    from a stale copy and reverted several fixes in the files it touched; they
+    were restored on 14 Oct (§6.39, §6.40), but if anything from before then
+    looks missing, compare against git history before assuming it never
+    existed.
+29. `scripts/inventory-reports.test.mjs` was written for the first stock
+    report (`lib/inventoryReports.mjs`). That report was replaced by Sigfa's
+    five (§6.40); the two route/page checks now assert the new route's
+    validation and the page's stale-reply guard. `lib/inventoryReports.mjs`
+    itself is still tested but no longer behind `/stock-report`.
+30. **M.R.I. has not been saved against a real database.** The rules and the
+    wiring are tested; the counter, the Re-MRI lock and the unique indexes
+    need one end-to-end run (create an MRI with a rejection, a Re-MRI against
+    it, try a second Re-MRI and a delete) after `npm run sync:indexes` on a
+    development database.
 
 **E-invoicing is built but not exercised**
 
@@ -2547,6 +2647,7 @@ The suites that matter most:
 | `backfill-hsn-totals.test.mjs` | HSN summary derivation |
 | `index-audit.test.mjs` | Schema indexes against the ones the database has; catches a stale **global** unique that should be `{companyId, …}` |
 | `orders.test.mjs`, `order-reports.test.mjs` | Order claims and cancellation; the pending-order reports and SIGFA's exact headings |
+| `challans.test.mjs` | Challans (§6.39): SIGFA's two kinds and stock keys, status and totals, claims and over-billing, the picker, input refusals, the routes' wiring, permissions, Alt+L, clearing, the model |
 | `bom.test.mjs` | Nested explosion, wastage, by-product, and the three stock vouchers' direction and reversal |
 | `account-books.test.mjs`, `financials.test.mjs` | The books, and that all four statements agree with each other |
 | `production-plan.test.mjs` | What to make, net of stock |
@@ -2860,7 +2961,9 @@ other firm. `npm test` fails if the plugin is missing.
 > calendar days, and there are two different day numbers), §6.17
 > (`totalAmount` is tax-inclusive), §6.22 (one date resolver for every report)
 > and §6.26 (an extraction is a guess: an exact match applies, a likely one is
-> only ever suggested).
+> only ever suggested). For challans and purchase M.R.I., read §6.39 and §6.41:
+> on an MRI line `quantity` is the ACCEPTED quantity and `receivedQty` sits
+> beside it.
 >
 > Constraints: **JavaScript, not TypeScript. React 18. Mongoose. Tailwind plus
 > the component classes in §8.1 — do not hand-roll styling or hard-code
