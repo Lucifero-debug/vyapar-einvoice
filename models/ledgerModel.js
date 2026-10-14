@@ -33,6 +33,24 @@ const ledgerSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Voucher",
   },
+  /*
+    Which of the four money vouchers wrote this row -- RECEIPT, PAYMENT,
+    JOURNAL or CONTRA (lib/voucherKinds.mjs).
+
+    Copied onto the row rather than looked up, because the day book and the
+    cash book read ROWS and never open the voucher: without it they cannot
+    tell a receipt from a payment, which is the one thing somebody reading a
+    day book wants to know. Absent on an invoice's rows, which have no
+    voucher behind them, and on every voucher row written before the kinds
+    existed -- both read as blank and print nothing.
+
+    Declared, or Mongoose strict mode drops it silently and the chip never
+    appears. That mistake has cost this project several afternoons already;
+    see the note on `allocations` in models/voucherModel.js.
+  */
+  voucherKind: {
+    type: String,
+  },
 }, {
   timestamps: true,
 });

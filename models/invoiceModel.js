@@ -74,6 +74,16 @@ const partyTaxSchema = new mongoose.Schema({
 const invoiceSchema = new mongoose.Schema(
   {
     invoiceNo: { type: Number, required: true },
+    // === The series this bill was raised under (Sigfa's Series Master) ===
+    //
+    // A LABEL, not part of the number. `invoiceNo` above is still this firm's
+    // own sequence with a unique index on it, and lib/series.mjs records why a
+    // series deliberately numbers nothing. Stored as the master's own
+    // upper-cased code so a bill and its series cannot differ by spelling.
+    //
+    // Declared, or Mongoose strict mode drops it -- and a dropped series is a
+    // bill that comes back with an empty Series box on every edit.
+    series: { type: String, trim: true, default: "" },
     againstInvoiceNo: { type: Number },
     date: { type: Date, required: true },
     

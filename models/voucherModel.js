@@ -1,10 +1,35 @@
 import mongoose from "mongoose";
 import { tenantPlugin } from "../lib/tenantPlugin.mjs";
+import { VOUCHER_KIND_CODES } from "../lib/voucherKinds.mjs";
 
 const voucherSchema = new mongoose.Schema({
+  /*
+    Receipt, Payment, Journal or Contra -- lib/voucherKinds.mjs.
+
+    ABSENT on every entry saved before the four kinds existed, and nothing
+    backfills it: `kindOf` reads an absent one off the figures, the same way
+    stockVoucher reads an absent MKEY as Production. So no `default` here
+    either -- a default would stamp a guess on the next save of an old row
+    and turn a reading into a stored fact.
+  */
+  kind: {
+    type: String,
+    enum: VOUCHER_KIND_CODES,
+  },
+  /*
+    The cash or bank account the money moved through. Required for the three
+    kinds that move money and absent for a journal, which moves none -- a
+    journal carrying one would post a cash leg for an adjustment that never
+    touched cash.
+  */
   acName: {
     type: String,
-    required: [true, "Please provide an Ac Name"],
+    required: [
+      function () {
+        return this.kind !== "JOURNAL";
+      },
+      "Please provide an Ac Name",
+    ],
   },
    date: { type: Date }, 
 

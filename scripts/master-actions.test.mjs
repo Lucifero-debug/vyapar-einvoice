@@ -228,6 +228,7 @@ const ALTER_ROUTES = [
   { kind: "hsn", path: "../app/api/hsn-update/route.js", bodyNames: ["body"] },
   { kind: "group", path: "../app/api/group-update/route.js", bodyNames: ["body"] },
   { kind: "state", path: "../app/api/state-update/route.js", bodyNames: ["body"] },
+  { kind: "series", path: "../app/api/series-update/route.js", bodyNames: ["body"] },
 ];
 
 test("toPayload produces every field its alter route reads", () => {

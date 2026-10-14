@@ -10,6 +10,7 @@ import {
 } from '@/lib/voucherLedger.mjs';
 import { recomputeLedgerBalances } from '@/lib/runningBalances.mjs';
 import { validateAllocations } from '@/lib/openBillsFor.mjs';
+import { voucherProblems } from '@/lib/voucherKinds.mjs';
 import { withTransaction, AbortTransaction } from '@/lib/withTransaction.mjs';
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 
@@ -18,10 +19,18 @@ async function handlePOST(req, auth) {
     const data = await req.json();
 
 
-    const { id, acName, date, againstBill, acType, paymentType, narration, customers } = data;
+    const { id, kind, acName, date, againstBill, acType, paymentType, narration, customers } = data;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return NextResponse.json({ error: 'Invalid voucher ID' }, { status: 400 });
+    }
+
+    // The same validator voucher-add runs, so an edit cannot save a shape a
+    // new entry would have been refused -- which is how a journal comes to
+    // be out of balance only after somebody edited it.
+    const problems = voucherProblems({ kind, acName, paymentType, customers });
+    if (problems.length) {
+      return NextResponse.json({ error: problems[0], problems }, { status: 400 });
     }
 
     // Reversal, row replacement and re-application are one unit. Failing
@@ -36,7 +45,11 @@ async function handlePOST(req, auth) {
     // 2. Reverse balances and delete old ledger entries.
     // Derived from the same builder `voucher-add` applies, so the reversal
     // covers the account the money moved through as well as the parties.
+    // The STORED kind, not the incoming one: this is undoing what was
+    // posted. Reversing a journal as though it had a cash leg would look for
+    // an account called undefined and leave its real lines un-reversed.
     const previousDeltas = buildVoucherBalanceDeltas({
+      kind: existingVoucher.kind,
       acName: existingVoucher.acName,
       customers: existingVoucher.customers || [],
     });
@@ -71,7 +84,7 @@ async function handlePOST(req, auth) {
     // 3. Update the voucher document
     const updatedVoucher = await Voucher.findByIdAndUpdate(
       id,
-      { acName, date, againstBill, acType, paymentType, narration, customers: lines },
+      { kind, acName, date, againstBill, acType, paymentType, narration, customers: lines },
       { new: true, session }
     );
 
@@ -84,6 +97,7 @@ async function handlePOST(req, auth) {
     // main-account row per line instead of a single aggregate.
     await Ledger.insertMany(
       buildVoucherLedgerRows({
+        kind,
         acName,
         date,
         paymentType,
@@ -98,7 +112,7 @@ async function handlePOST(req, auth) {
     // This used to add `amount` regardless of whether the line was a debit or a
     // credit, so editing a receipt flipped it into a payment.
     const missing = [];
-    for (const { name, delta } of buildVoucherBalanceDeltas({ acName, customers })) {
+    for (const { name, delta } of buildVoucherBalanceDeltas({ kind, acName, customers })) {
       const updated = await Customer.findOneAndUpdate(
         { name },
         balancePipeline(delta),
@@ -115,12 +129,15 @@ async function handlePOST(req, auth) {
     }
 
       await recomputeLedgerBalances(
+        // Either acName is absent when the kind is a journal -- before or
+        // after the edit -- and a blank name would send the recompute after
+        // an account nobody has.
         [
           existingVoucher.acName,
           acName,
           ...previousDeltas.map((d) => d.name),
           ...customers.map((c) => c.name),
-        ],
+        ].filter(Boolean),
         session
       );
 

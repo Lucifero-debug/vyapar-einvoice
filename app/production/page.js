@@ -3,6 +3,13 @@ import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LINE_KIND_LABELS } from '@/lib/bom.mjs';
 import ItemSearch from '@/components/billing/ItemSearch';
+import MasterShortcuts from '@/components/masters/MasterShortcuts';
+import {
+  defaultSeries,
+  docTypeForStockKind,
+  normalizeSeriesCode,
+  seriesOptions,
+} from '@/lib/series.mjs';
 import {
   DEFAULT_KIND,
   SLIP_COLUMNS,
@@ -66,6 +73,11 @@ function ProductionScreen() {
   const [customers, setCustomers] = useState([]);
   const [register, setRegister] = useState([]);
   const [loadingRegister, setLoadingRegister] = useState(true);
+  // The series master -- Sigfa's SubKey. Until it existed the Series box was
+  // free text with a datalist built from the slips already written; that list
+  // is still offered alongside this, so a firm's existing labels stay
+  // pickable. See lib/series.mjs.
+  const [seriesMaster, setSeriesMaster] = useState([]);
 
   // WHICH OF THE THREE this screen is. Sigfa keeps Production, Goods Issued
   // and Goods Received in one table under three MKEYs, and this is one screen
@@ -161,10 +173,52 @@ function ProductionScreen() {
     };
   }, [config.usesFormula]);
 
+  const loadSeries = useCallback(async () => {
+    try {
+      const res = await fetch('/api/get-series');
+      const data = await res.json();
+      if (data.success) setSeriesMaster(data.series || []);
+    } catch {
+      /* the box still offers whatever the slips already carry */
+    }
+  }, []);
+
   useEffect(() => {
     loadBoms();
     loadRegister();
-  }, [loadBoms, loadRegister]);
+    loadSeries();
+  }, [loadBoms, loadRegister, loadSeries]);
+
+  // Which document Sigfa's Series Master files this slip's series under:
+  // 'FR' is its Production row, 'IS' Goods Issued, 'RS' Goods Received.
+  const seriesDocType = docTypeForStockKind(kind);
+
+  // The series marked default for this slip, on a BLANK form only. Never over
+  // a slip being altered -- that would relabel a document that is already in
+  // the register -- and never over a choice already made.
+  useEffect(() => {
+    if (editing) return;
+    setForm((prev) => {
+      if (prev.series) return prev;
+      const preset = defaultSeries(seriesMaster, seriesDocType);
+      return preset ? { ...prev, series: preset } : prev;
+    });
+  }, [seriesMaster, seriesDocType, editing]);
+
+  // What the Series box offers: the master for this slip kind, then whatever
+  // the slips already carry that the master does not hold.
+  const chosenSeries = normalizeSeriesCode(form.series);
+  const seriesChoices = (() => {
+    const offered = seriesOptions(seriesMaster, seriesUsed(register), seriesDocType);
+    // A value that is not one of the options makes a <select> render BLANK,
+    // and because onChange never fires the slip would then be saved with its
+    // series cleared. So a series this box is holding is always one of its own
+    // options -- a slip altered after its series was deleted, say.
+    if (chosenSeries && !offered.some((option) => option.code === chosenSeries)) {
+      return [...offered, { code: chosenSeries, name: '', inMaster: false }];
+    }
+    return offered;
+  })();
 
   const explode = async () => {
     setError('');
@@ -229,7 +283,7 @@ function ProductionScreen() {
           partyName: form.partyName,
           // Sigfa's slip header. Rates are still not sent -- the server reads
           // them from the item master.
-          series: form.series,
+          series: chosenSeries,
           store: form.store,
           remarks: form.remarks,
           nested: form.nested,
@@ -292,7 +346,11 @@ function ProductionScreen() {
         partyName: entry.partyName || '',
         remarks: entry.remarks || '',
         nested: true,
-        series: entry.series || '',
+        // Normalized, because the box is a <select> and its options are. A
+        // slip written as "mi" before the master existed would otherwise show
+        // a blank Series and save with it cleared. The only thing this changes
+        // in stored data is the letter case of a label.
+        series: normalizeSeriesCode(entry.series),
         store: entry.store || '',
       });
       setLines(entry.lines || []);
@@ -444,23 +502,29 @@ function ProductionScreen() {
               <label className="field-label mb-1.5 block" htmlFor="slip-series">
                 Series
               </label>
-              <input
+              {/* Sigfa backs this with a master -- its SubKey, seeded with MI,
+                  MO and RMI -- and now so does this app. The options are that
+                  master plus any series the slips already carry that it does
+                  not hold, since this box was free text before it existed. */}
+              <select
                 id="slip-series"
-                type="text"
-                className="field-input"
-                list="slip-series-used"
-                value={form.series}
-                placeholder="Optional"
+                className="field-select"
+                data-master-field="series"
+                value={chosenSeries}
                 onChange={(e) => setForm({ ...form, series: e.target.value })}
-              />
-              {/* Sigfa backs this with a master (its SubKey -- MI, MO, RMI).
-                  There is none here, so the list fills itself from the slips
-                  already written and nothing has to be maintained. */}
-              <datalist id="slip-series-used">
-                {seriesUsed(register).map((value) => (
-                  <option key={value} value={value} />
+              >
+                <option value="">None</option>
+                {seriesChoices.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.name ? `${option.code} — ${option.name}` : option.code}
+                    {option.inMaster ? '' : ' (not in the master)'}
+                  </option>
                 ))}
-              </datalist>
+              </select>
+              <p className="field-hint mt-1">
+                Alt+A adds a series without leaving the slip. It labels the slip
+                and groups the register — it does not number it.
+              </p>
             </div>
 
             <div className="field">
@@ -1022,6 +1086,34 @@ function ProductionScreen() {
           </div>
         </div>
       )}
+
+      {/* Sigfa's Create / Alter / Delete keys. A series -- or a party, or an
+          item -- can be added from the field you are standing in rather than
+          by abandoning a half-filled slip, which is the whole reason the keys
+          exist. Mounted here because this screen has no keydown listener of
+          its own; the billing screen calls the hook directly instead, since
+          two listeners would both fire on Alt+A. */}
+      <MasterShortcuts
+        lists={{ series: seriesMaster, customer: customers, item: items }}
+        onChanged={({ kind: changed }) => {
+          // Reload the master that changed, not all of them. Every join in
+          // this app is BY NAME, so a dropdown still offering a renamed record
+          // is a posting error rather than a cosmetic one.
+          if (changed === 'series') loadSeries();
+          if (changed === 'item') {
+            fetch('/api/get-item')
+              .then((r) => r.json())
+              .then((d) => setItems(d.item || []))
+              .catch(() => {});
+          }
+          if (changed === 'customer') {
+            fetch('/api/get-customer')
+              .then((r) => r.json())
+              .then((d) => setCustomers(d.customer || []))
+              .catch(() => {});
+          }
+        }}
+      />
     </div>
   );
 }

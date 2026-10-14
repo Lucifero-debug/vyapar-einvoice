@@ -1,6 +1,7 @@
 'use client';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useCompany } from '@/context/CompanyContext';
+import { VOUCHER_KINDS } from '@/lib/voucherKinds.mjs';
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const formatAmount = (n = 0) => round2(n).toFixed(2);
@@ -86,6 +87,12 @@ export default function VoucherPage() {
         key,
         date: rows[0].date,
         narration: rows[0].narration || '',
+        // Which money voucher wrote these rows, copied onto them when they
+        // were written (models/ledgerModel.js). Blank for an invoice's rows,
+        // which have no voucher, and for voucher rows written before the
+        // kinds existed -- a day book should say nothing rather than guess,
+        // so there is deliberately no fallback here.
+        kind: VOUCHER_KINDS[rows[0].voucherKind]?.label || '',
         lines,
         debit,
         credit,
@@ -120,10 +127,13 @@ export default function VoucherPage() {
               className="mb-5 overflow-hidden rounded-xl border border-border bg-card shadow-sm"
             >
               <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/60 px-4 py-3">
-                <h3 className="text-sm font-semibold text-foreground">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
                   {entry.date
                     ? new Date(entry.date).toLocaleDateString('en-IN')
                     : '—'}
+                  {/* Receipt or Payment, which the figures alone do not say
+                      to somebody reading a day book. */}
+                  {entry.kind && <span className="chip">{entry.kind}</span>}
                 </h3>
                 <span className="chip">{entry.narration}</span>
               </div>

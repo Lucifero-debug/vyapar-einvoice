@@ -1,6 +1,7 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
 import { alterPayload, masterSpec } from '@/lib/masterActions.mjs';
+import { SERIES_DOC_TYPES } from '@/lib/series.mjs';
 
 /**
  * Sigfa's "Create [ Alt + A ]" and "Alter [ Alt + M ]", in one dialog.
@@ -110,6 +111,29 @@ export const MASTER_FORMS = {
     fields: [
       { name: 'name', label: 'State', type: 'text', required: true, autoFocus: true },
       { name: 'code', label: 'GST state code', type: 'text', required: true },
+    ],
+  },
+  // Sigfa's Series Master. Alt+A in a Series box creates the series whose
+  // code is half typed, which is the whole reason the key exists.
+  //
+  // The document is a SELECT and is required, because a series belongs to
+  // exactly one document and this form cannot guess which screen it was
+  // opened from. The rest of Sigfa's twenty-odd fields -- the print profile,
+  // the headings, the slip size -- are filled in on the real master screen in
+  // Setup, which is what this dialog says.
+  series: {
+    title: 'New series',
+    endpoint: '/api/series-add',
+    fields: [
+      { name: 'code', label: 'Series [Initial]', type: 'text', required: true, autoFocus: true },
+      {
+        name: 'docType',
+        label: 'For',
+        type: 'select',
+        required: true,
+        options: SERIES_DOC_TYPES.map((doc) => ({ value: doc.code, label: doc.label })),
+      },
+      { name: 'name', label: 'Series Name', type: 'text', hint: 'What the initial stands for' },
     ],
   },
   unit: {
@@ -301,19 +325,39 @@ export default function QuickMaster({ kind, mode = 'create', record, prefill, on
                   </span>
                 )}
               </label>
-              <input
-                id={`qm-${field.name}`}
-                ref={index === 0 ? first : undefined}
-                type={field.type}
-                step={field.type === 'number' ? 'any' : undefined}
-                className="field-input mt-1.5"
-                value={values[field.name] ?? ''}
-                required={field.required}
-                autoComplete="off"
-                onChange={(e) =>
-                  setValues((prev) => ({ ...prev, [field.name]: e.target.value }))
-                }
-              />
+              {field.type === 'select' ? (
+                <select
+                  id={`qm-${field.name}`}
+                  ref={index === 0 ? first : undefined}
+                  className="field-select mt-1.5"
+                  value={values[field.name] ?? ''}
+                  required={field.required}
+                  onChange={(e) =>
+                    setValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                  }
+                >
+                  <option value="">Choose…</option>
+                  {(field.options || []).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id={`qm-${field.name}`}
+                  ref={index === 0 ? first : undefined}
+                  type={field.type}
+                  step={field.type === 'number' ? 'any' : undefined}
+                  className="field-input mt-1.5"
+                  value={values[field.name] ?? ''}
+                  required={field.required}
+                  autoComplete="off"
+                  onChange={(e) =>
+                    setValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                  }
+                />
+              )}
               {field.hint && <p className="field-hint mt-1">{field.hint}</p>}
             </div>
           ))}

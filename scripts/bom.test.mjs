@@ -2258,13 +2258,20 @@ test("Series and Store are stored, and Store is honest about itself", () => {
 
 test("the slip carries Series and Store through to the save", () => {
   const page = read("../app/production/page.js");
-  assert.ok(/series: form\.series/.test(page));
+  // The series is sent NORMALIZED -- the box became a <select> off the series
+  // master (lib/series.mjs), and its options are upper-cased codes. `store` is
+  // still free text with no master behind it.
+  assert.ok(/series: chosenSeries/.test(page));
+  assert.ok(/const chosenSeries = normalizeSeriesCode\(form\.series\)/.test(page));
   assert.ok(/store: form\.store/.test(page));
   const save = read("../lib/productionSave.mjs");
   assert.ok(/series: text\(body\.series\)/.test(save));
   assert.ok(/store: text\(body\.store\)/.test(save));
-  // And an edit loads them back, or re-saving a slip would blank them.
-  assert.ok(/series: entry\.series \|\| ''/.test(page));
+  // And an edit loads them back, or re-saving a slip would blank them. The
+  // series goes through the same normalization on the way in: a slip written
+  // as "mi" before the master existed must not land on a <select> that has no
+  // such option, which would show blank and then save the series cleared.
+  assert.ok(/series: normalizeSeriesCode\(entry\.series\)/.test(page));
   assert.ok(/store: entry\.store \|\| ''/.test(page));
 });
 

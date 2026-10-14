@@ -221,10 +221,15 @@ test("the frozen list is the 31 keys the pages sent, plus the two added since", 
   // somebody meant to make, which is the point of asserting it.
   //
   // And `mri` since that: the purchase M.R.I. block (lib/mri.mjs), sent by
-  // the purchase screen only. Two deliberate additions, so 33.
-  assert.equal(PAYLOAD_KEYS.length, 33);
+  // the purchase screen only. Then `series`. Three deliberate additions,
+  // so 34.
+  assert.equal(PAYLOAD_KEYS.length, 34);
   assert.ok(PAYLOAD_KEYS.includes("partyBillNo"));
   assert.ok(PAYLOAD_KEYS.includes("mri"));
+  // The contract grew by one more: Sigfa's Series Master code for this
+  // document (lib/series.mjs). A LABEL -- `invoiceNo` is still the firm's own
+  // sequence, and the series takes no part in choosing it.
+  assert.ok(PAYLOAD_KEYS.includes("series"));
   // Spot-checked against the extract: the ones whose absence would be silent.
   for (const key of ["return", "type", "hsnTotals", "balanceDue", "originalInvoiceNo"]) {
     assert.ok(PAYLOAD_KEYS.includes(key), `${key} is missing from the contract`);

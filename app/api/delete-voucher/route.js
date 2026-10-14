@@ -31,7 +31,11 @@ async function handlePOST(req, auth) {
     //
     // Derived from the same builder voucher-add applies, so it covers the
     // account the money moved through as well as the parties.
+    // The stored kind travels with it: a journal has no cash leg, and
+    // reversing one as though it had would look for an account called
+    // undefined and leave the lines it really moved un-reversed.
     const deltas = buildVoucherBalanceDeltas({
+      kind: voucher.kind,
       acName: voucher.acName,
       customers: customers || [],
     });

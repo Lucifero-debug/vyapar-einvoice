@@ -301,6 +301,9 @@ async function handlePOST(req, auth) {
         [
           {
             invoiceNo,
+            // The series is a label on the bill. It does not take part in
+            // choosing `invoiceNo` above -- see lib/series.mjs.
+            series: input.series,
             date: input.date,
             type: input.type,
             return: input.return,

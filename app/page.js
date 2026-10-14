@@ -29,7 +29,11 @@ import {
   Users,
   Wallet,
   X,
+  BookOpen,
+  ArrowLeftRight,
+  Hash,
 } from 'lucide-react';
+import { kindOf } from '@/lib/voucherKinds.mjs';
 import { Button } from '../components/ui/button';
 import {
   DropdownMenu,
@@ -57,6 +61,7 @@ import {
 import HsnMaster from '@/components/HsnMaster';
 import CustomerGroupMaster from '@/components/CustomerGroupMaster';
 import StateMaster from '@/components/StateMaster';
+import SeriesMaster from '@/components/SeriesMaster';
 import PriceListMaster from '@/components/PriceListMaster';
 import { priceListLabel } from '@/lib/priceList.mjs';
 import { Notice, useNotice } from '@/components/ui/notice';
@@ -97,6 +102,11 @@ const Page = () => {
   const [hsn, setHsn] = useState([]);
   const [bank, setBank] = useState([]);
   const [cash, setCash] = useState([]);
+  // The two money vouchers the app could not make until the four kinds
+  // existed: a journal with no cash leg, and a transfer between our own
+  // accounts. lib/voucherKinds.mjs.
+  const [journal, setJournal] = useState([]);
+  const [contra, setContra] = useState([]);
   const [alter, setAlter] = useState(false);
   const [del, setDel] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -105,7 +115,11 @@ const Page = () => {
   const [groups, setGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [states, setStates] = useState([]);
+  // The series master -- Sigfa's SubKey, which it keeps under Setup.
+  const [series, setSeries] = useState([]);
   const [selectedState, setSelectedState] = useState(null);
+  const [showSeriesMaster, setShowSeriesMaster] = useState(false);
+  const [selectedSeries, setSelectedSeries] = useState(null);
   const [priceLists, setPriceLists] = useState([]);
   const [showPriceListMaster, setShowPriceListMaster] = useState(false);
   const [selectedPriceList, setSelectedPriceList] = useState(null);
@@ -153,8 +167,17 @@ const Page = () => {
 
     const fetchData = async () => {
       try {
-        const [items, customers, invoices, hsnCodes, vouchers, lists, groupList, stateList] =
-          await Promise.all([
+        const [
+          items,
+          customers,
+          invoices,
+          hsnCodes,
+          vouchers,
+          lists,
+          groupList,
+          stateList,
+          seriesList,
+        ] = await Promise.all([
             loadJson('/api/get-item', (d) => d.item),
             loadJson('/api/get-customer', (d) => d.customer),
             loadJson('/api/get-invoice', (d) => d.invoice),
@@ -163,6 +186,7 @@ const Page = () => {
             loadJson('/api/get-price-list', (d) => d.priceList),
             loadJson('/api/get-group', (d) => d.group),
             loadJson('/api/get-state', (d) => d.state),
+            loadJson('/api/get-series', (d) => d.series),
           ]);
 
         setCustomer(
@@ -185,6 +209,8 @@ const Page = () => {
 
         setStates(stateList.map(s => ({ ...s, id: s._id })));
 
+        setSeries(seriesList.map(s => ({ ...s, id: s._id })));
+
         setPriceLists(
           lists.map(pl => ({
             ...pl,
@@ -193,15 +219,44 @@ const Page = () => {
           }))
         );
 
+        /*
+          Split by KIND first, then by instrument.
+
+          A contra carries a cash or bank paymentType exactly as a receipt
+          does, so filtering on the instrument alone counted every one of
+          them twice -- once under Cash or Bank and again under Contra. An
+          entry saved before the kinds existed has none, and `kindOf` reads
+          it off the figures as a receipt or a payment, so it still lands
+          under its own instrument where it always did.
+        */
+        const codeOf = (v) => kindOf(v).code;
+
         setBank(
-          vouchers.filter(v => v.paymentType === 'Bank').map(v => ({
+          vouchers.filter(v => v.paymentType === 'Bank' && codeOf(v) !== 'CONTRA').map(v => ({
             id: v._id,
             name: v.acName || v.accountName || v._id
           }))
         );
 
         setCash(
-          vouchers.filter(v => v.paymentType === 'Cash').map(v => ({
+          vouchers.filter(v => v.paymentType === 'Cash' && codeOf(v) !== 'CONTRA').map(v => ({
+            id: v._id,
+            name: v.acName || v.accountName || v._id
+          }))
+        );
+
+        setJournal(
+          vouchers.filter(v => codeOf(v) === 'JOURNAL').map(v => ({
+            id: v._id,
+            // A journal has no acName to be named after, so it is named by
+            // what it was for -- its narration, or the first account it
+            // touched.
+            name: v.narration || v.customers?.[0]?.name || v._id
+          }))
+        );
+
+        setContra(
+          vouchers.filter(v => codeOf(v) === 'CONTRA').map(v => ({
             id: v._id,
             name: v.acName || v.accountName || v._id
           }))
@@ -313,6 +368,14 @@ const Page = () => {
           }
           break;
         }
+        case 'Series': {
+          const selected = series.find(s => s.id === newValue);
+          if (selected) {
+            setSelectedSeries(selected);
+            setShowSeriesMaster(true);
+          }
+          break;
+        }
         case 'CustomerGroup': {
           const selected = groups.find(g => g.id === newValue);
           if (selected) {
@@ -334,6 +397,14 @@ const Page = () => {
           break;
         case 'Cash':
           router.push(`/voucheradd?type=Cash&value=${newValue}`);
+          break;
+        // No `type` on these two: the form takes the kind and the instrument
+        // from the voucher it loads, and a journal has no instrument to
+        // name. A ?type= here would be ignored anyway -- the form applies
+        // the URL's own only when there is no voucher to read.
+        case 'Journal':
+        case 'Contra':
+          router.push(`/voucheradd?value=${newValue}`);
           break;
         default:
           console.warn('Unsupported alterState:', alterState);
@@ -366,6 +437,11 @@ const Page = () => {
       case 'State':
         endpoint = `/api/delete-state?id=${currentValue}`;
         break;
+      // Refused while any slip carries it. Switching the series off is the
+      // way to retire one -- the slips keep their label.
+      case 'Series':
+        endpoint = `/api/delete-series?id=${currentValue}`;
+        break;
       case 'PriceList':
         endpoint = `/api/delete-price-list?id=${currentValue}`;
         break;
@@ -374,6 +450,12 @@ const Page = () => {
         break;
       case 'Cash':
         endpoint = `/api/delete-voucher?id=${currentValue}&type=Cash`;
+        break;
+      // Same route: it reverses from the voucher's OWN stored kind, which is
+      // the only thing that can undo what was posted.
+      case 'Journal':
+      case 'Contra':
+        endpoint = `/api/delete-voucher?id=${currentValue}`;
         break;
       default:
         notify.error(`Deleting ${deleteState} is not available from here.`);
@@ -431,9 +513,12 @@ const Page = () => {
       case 'HSN': return hsn;
       case 'CustomerGroup': return groups;
       case 'State': return states;
+      case 'Series': return series;
       case 'PriceList': return priceLists;
       case 'Bank': return bank;
       case 'Cash': return cash;
+      case 'Journal': return journal;
+      case 'Contra': return contra;
       case 'SaleInvoice': return saleInvoices;
       case 'PurchaseInvoice': return purchaseInvoices;
       case 'SaleReturn': return saleReturns;
@@ -463,12 +548,17 @@ const Page = () => {
 
       const selected = entities.find((e) => {
         if (sectionName === 'HSN') return e.hsncode === value;
+        // A series is known by its CODE -- `name` on the record is the
+        // description, so it is listed under its own branch rather than with
+        // the named masters.
+        if (sectionName === 'Series') return e.id === value;
         if (isNamed(sectionName)) return e.id === value || e.name === value;
         return e.invoiceNo === value;
       });
 
       if (!selected) return `Select ${sectionName}`;
       if (sectionName === 'HSN') return selected.hsncode;
+      if (sectionName === 'Series') return selected.code;
       if (isNamed(sectionName)) return selected.name;
       return selected.invoiceNo;
     };
@@ -507,6 +597,12 @@ const Page = () => {
                     if (sectionName === 'HSN') {
                       label = entity.hsncode;
                       alterValue = entity.hsncode;
+                      deleteValue = entity.id;
+                    } else if (sectionName === 'Series') {
+                      // The description alongside the code, because "MI" six
+                      // months later is not self-explanatory.
+                      label = entity.name ? `${entity.code} — ${entity.name}` : entity.code;
+                      alterValue = entity.id;
                       deleteValue = entity.id;
                     } else if (isNamed(sectionName)) {
                       label = entity.name;
@@ -958,6 +1054,18 @@ const Page = () => {
                 setShowStateMaster(true);
               },
             })}
+            {/* Sigfa's SubKey, which it seeds with MI, MO and RMI. Labels a
+                slip and groups the register; it does not number anything. */}
+            {renderModuleRow({
+              section: "Series",
+              label: "Document Series",
+              icon: Hash,
+              count: series.length,
+              onCreate: () => {
+                setSelectedSeries(null);
+                setShowSeriesMaster(true);
+              },
+            })}
             {renderModuleRow({
               section: "PriceList",
               label: "Price Lists",
@@ -990,6 +1098,28 @@ const Page = () => {
               icon: Wallet,
               count: cash.length,
               onCreate: () => router.push('/voucheradd?type=Cash'),
+            })}
+            {/* The two this section could not offer before.
+
+                A JOURNAL has no cash or bank leg at all -- depreciation, a
+                bad debt written off, discount allowed, a provision -- and
+                was impossible while every voucher required a payment type.
+                A CONTRA moves money between our own accounts: cash banked,
+                cash drawn. Both reach the same form, which heads itself by
+                the kind in the link. lib/voucherKinds.mjs. */}
+            {renderModuleRow({
+              section: "Journal",
+              label: "Journal",
+              icon: BookOpen,
+              count: journal.length,
+              onCreate: () => router.push('/voucheradd?kind=JOURNAL'),
+            })}
+            {renderModuleRow({
+              section: "Contra",
+              label: "Contra",
+              icon: ArrowLeftRight,
+              count: contra.length,
+              onCreate: () => router.push('/voucheradd?kind=CONTRA&type=Bank'),
             })}
 
             {/* The three stock vouchers. Sigfa keeps them in one table,
@@ -1268,6 +1398,18 @@ const Page = () => {
             if (saved === true) window.location.reload();
           }}
           selected={selectedState}
+        />
+      )}
+
+      {showSeriesMaster && (
+        <SeriesMaster
+          open={showSeriesMaster}
+          onClose={(saved) => {
+            setShowSeriesMaster(false);
+            setSelectedSeries(null);
+            if (saved === true) window.location.reload();
+          }}
+          selected={selectedSeries}
         />
       )}
 

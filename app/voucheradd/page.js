@@ -5,6 +5,15 @@ import VoucherSearchParams from "@/components/VoucherSearchparams";
 import PartyBalance from "@/components/PartyBalance";
 import BillAdjust from "@/components/BillAdjust";
 import { allocatedTotal, billTypeFor, lineAmount } from "@/lib/billAdjust.mjs";
+import {
+  VOUCHER_KINDS,
+  VOUCHER_KIND_CODES,
+  isVoucherKind,
+  kindOf,
+  lineTotals,
+  voucherProblems,
+  voucherTitle,
+} from "@/lib/voucherKinds.mjs";
 import { istToday } from "@/lib/istDate.mjs";
 import { Notice, useNotice } from "@/components/ui/notice";
 import { NETWORK_ERROR, readResponse } from "@/lib/apiResponse.mjs";
@@ -12,8 +21,37 @@ import { NETWORK_ERROR, readResponse } from "@/lib/apiResponse.mjs";
 /** Today in India, not in UTC -- see istToday in lib/istDate.mjs. */
 const todayIst = () => istToday();
 
+/**
+ * The parties filed under one of these groups.
+ *
+ * A contra moves money between our OWN accounts, so its line may only name
+ * cash or bank -- offering the whole party list would let somebody book a
+ * transfer to a customer, which is a payment wearing a contra's name.
+ */
+const customersInGroups = (customers = [], groups = []) =>
+  customers.filter((c) => groups.includes(String(c?.group || "").toLowerCase()));
+
 const AddVoucher = () => {
-  const [voucherParams, setVoucherParams] = useState({ type: "", value: "" });
+  const [voucherParams, setVoucherParams] = useState({ type: "", value: "", kind: "" });
+
+  /*
+    Which of the four this is -- lib/voucherKinds.mjs.
+
+    Receipt and Payment name the direction the money went, which the old
+    Cash/Bank pair never did: that said which ACCOUNT it moved through, and
+    which way was decided only by the column somebody typed into. Journal has
+    no cash leg at all, and Contra moves money between two of our own
+    accounts.
+  */
+  const [kind, setKind] = useState("RECEIPT");
+
+  /*
+    Cash or bank -- the instrument, which is a separate question from the
+    direction. It used to arrive only in the URL, so opening /voucheradd
+    without one left it blank and the save was refused with nothing on screen
+    to set it with.
+  */
+  const [instrument, setInstrument] = useState("Cash");
 
   const [form, setForm] = useState({
     acName: "",
@@ -35,6 +73,59 @@ const AddVoucher = () => {
   // per-line thing: one voucher can settle two parties' bills at once.
   const [adjusting, setAdjusting] = useState(null);
 
+  const spec = VOUCHER_KINDS[kind] ?? VOUCHER_KINDS.RECEIPT;
+
+  /** The accounts a line may name: our own cash and bank for a contra. */
+  const lineAccounts = spec.ownAccounts
+    ? customersInGroups(customers, ["cash", "bank"])
+    : customers;
+
+  /** What the lines come to, for the journal's own balance check. */
+  const totals = lineTotals(
+    entries.map((e) => ({ debit: parseFloat(e.debit) || 0, credit: parseFloat(e.credit) || 0 }))
+  );
+  const outBy = Math.round((totals.debit - totals.credit) * 100) / 100;
+
+  /**
+   * Changing the kind moves the figures rather than dropping them.
+   *
+   * Switching Receipt to Payment means the same amounts going the other way,
+   * so a figure in the column the new kind forbids is carried across instead
+   * of being left somewhere the save would refuse. The ADJUSTMENTS do go:
+   * the direction decides which bills are eligible, which is the same reason
+   * handleEntryChange clears them when a side is flipped.
+   */
+  const changeKind = (next) => {
+    if (!isVoucherKind(next)) return;
+    const to = VOUCHER_KINDS[next];
+    setKind(next);
+
+    setEntries((prev) => {
+      const moved = prev.map((entry) => {
+        const amount = parseFloat(entry.debit) || parseFloat(entry.credit) || "";
+        if (!to.side) return { ...entry, allocations: [] };
+        return {
+          ...entry,
+          debit: to.side === "debit" ? String(amount || "") : "",
+          credit: to.side === "credit" ? String(amount || "") : "",
+          allocations: [],
+        };
+      });
+      // A contra is one line: cash out of here, into there.
+      return to.code === "CONTRA" ? moved.slice(0, 1) : moved;
+    });
+
+    // A journal has no cash leg, so holding one would have the save refuse
+    // it -- and a bill adjustment needs a party with bills, which neither a
+    // journal nor a contra has.
+    setForm((prev) => ({
+      ...prev,
+      acName: to.needsAccount ? prev.acName : "",
+      acType: to.needsAccount ? prev.acType : "",
+      againstBill: to.needsAccount && !to.ownAccounts ? prev.againstBill : false,
+    }));
+  };
+
   // --- existing fetch logic unchanged ---
   useEffect(() => {
     const fetchCust = async () => {
@@ -51,6 +142,22 @@ const AddVoucher = () => {
     fetchCust();
   }, []);
 
+  /*
+    The kind and the instrument a deep link asked for -- so the dashboard can
+    open a Payment or a Journal directly.
+
+    Only for a NEW voucher. An existing one takes both from what was stored
+    (or, with no stored kind, from its own figures), and a stray ?kind= in the
+    URL must not quietly re-post it as something else.
+  */
+  useEffect(() => {
+    if (voucherParams.value) return;
+    if (isVoucherKind(voucherParams.kind)) setKind(voucherParams.kind);
+    if (voucherParams.type === "Cash" || voucherParams.type === "Bank") {
+      setInstrument(voucherParams.type);
+    }
+  }, [voucherParams.kind, voucherParams.type, voucherParams.value]);
+
   // --- existing voucher fetch logic unchanged (just add narration) ---
   useEffect(() => {
     if (voucherParams.value && customers.length > 0) {
@@ -65,6 +172,12 @@ const AddVoucher = () => {
           const result = await res.json();
           const voucher = result.final;
           if (!voucher) throw new Error("Voucher not found");
+
+          // Its own kind, or -- for an entry saved before the four existed --
+          // the one read off its figures. Nothing is rewritten: the reading
+          // only decides what the form shows and what the next save stores.
+          setKind(kindOf(voucher).code);
+          if (voucher.paymentType) setInstrument(voucher.paymentType);
 
           setForm({
             acName: voucher.acName || "",
@@ -204,24 +317,42 @@ const AddVoucher = () => {
         ? "/api/voucher-alter"
         : "/api/voucher-add";
 
+      const lines = entries.map((entry) => ({
+        name: entry.name,
+        debit: parseFloat(entry.debit) || 0,
+        credit: parseFloat(entry.credit) || 0,
+        custId: entry.custId,
+        narration: entry.narration, // 🔹 send customer narration
+        allocations: entry.allocations || [],
+      }));
+
+      // Blank for a journal, whatever is left in state or in the URL: the
+      // kind decides whether there is an account at all, and sending one
+      // would have the route refuse the voucher.
+      const acName = spec.needsAccount ? form.acName : "";
+      const paymentType = spec.needsAccount ? instrument : "";
+
+      // The same rules the routes apply, run here first so a refusal is a
+      // message beside the form rather than a round trip. The routes' copy
+      // is the one that counts -- lib/voucherKinds.mjs owns both.
+      const problems = voucherProblems({ kind, acName, paymentType, customers: lines });
+      if (problems.length) {
+        notify.error(problems[0]);
+        return;
+      }
+
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          acName: form.acName,
+          kind,
+          acName,
           date: form.date,
           againstBill: form.againstBill,
           acType: form.acType,
           narration: form.narration, // 🔹 send main narration
-          paymentType: voucherParams.type,
-          customers: entries.map((entry) => ({
-            name: entry.name,
-            debit: parseFloat(entry.debit) || 0,
-            credit: parseFloat(entry.credit) || 0,
-            custId: entry.custId,
-            narration: entry.narration, // 🔹 send customer narration
-            allocations: entry.allocations || [],
-          })),
+          paymentType,
+          customers: lines,
           ...(voucherParams.value && { id: voucherParams.value }),
         }),
       });
@@ -245,7 +376,10 @@ const AddVoucher = () => {
       });
 
       setEntries([{ name: "", debit: "", credit: "", custId: "", narration: "", allocations: [] }]);
-      setVoucherParams({ type: "", value: "" });
+      // The KIND and the instrument are deliberately kept: receipts are
+      // entered in a run, and resetting to Receipt-Cash after every save
+      // would have somebody re-pick them for each of twenty payments.
+      setVoucherParams((prev) => ({ ...prev, value: "" }));
     } catch (error) {
       console.error("Voucher save error:", error);
       notify.error(`The voucher was not saved. ${NETWORK_ERROR}`);
@@ -263,18 +397,20 @@ const AddVoucher = () => {
       <div className="page-shell">
         <div className="page-header items-start">
           <div>
-            <h1 className="page-title">
-              {voucherParams.type === "Cash" ? "Cash Voucher" : "Bank Voucher"}
-            </h1>
-            <p className="page-subtitle">Date: {form.date}</p>
+            <h1 className="page-title">{voucherTitle(kind)}</h1>
+            <p className="page-subtitle">
+              {spec.blurb} Date: {form.date}
+            </p>
           </div>
           <div className="space-y-1 text-right text-sm text-muted-foreground">
-            <p>
-              {voucherParams.type === "Cash" ? "Cash" : "Bank"} A/c:{" "}
-              <span className="font-semibold">
-                {form.acName || "Select Account"}
-              </span>
-            </p>
+            {spec.needsAccount && (
+              <p>
+                {spec.code === "CONTRA" ? "Into" : `${instrument} A/c`}:{" "}
+                <span className="font-semibold">
+                  {form.acName || "Select Account"}
+                </span>
+              </p>
+            )}
             <p>
               Type:{" "}
               <span className="font-semibold">{form.acType || "None"}</span>
@@ -288,6 +424,46 @@ const AddVoucher = () => {
           </div>
         </div>
 
+        {/* The four kinds. Receipt and Payment are the same screen read the
+            other way round; Journal drops the cash leg entirely; Contra is
+            one line between two of our own accounts. Cash-or-bank is a
+            separate question -- it says which account, not which way. */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {VOUCHER_KIND_CODES.map((code) => (
+            <button
+              key={code}
+              type="button"
+              className={`btn btn-sm ${kind === code ? "btn-primary" : "btn-secondary"}`}
+              aria-pressed={kind === code}
+              onClick={() => changeKind(code)}
+            >
+              {VOUCHER_KINDS[code].label}
+            </button>
+          ))}
+
+          {spec.needsAccount && (
+            <>
+              <span className="mx-1 h-5 w-px bg-border" />
+              {["Cash", "Bank"].map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`btn btn-sm ${instrument === option ? "btn-primary" : "btn-ghost"}`}
+                  aria-pressed={instrument === option}
+                  onClick={() => {
+                    setInstrument(option);
+                    // The account picker is filtered by this, so whatever was
+                    // chosen is from the other group and is no longer offered.
+                    setForm((prev) => ({ ...prev, acName: "" }));
+                  }}
+                >
+                  {option}
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+
         <Notice notice={notice} onClose={notify.clear} />
 
         {/* --- VOUCHER FORM --- */}
@@ -297,12 +473,20 @@ const AddVoucher = () => {
               account fields, so ticking it changed something off-screen above
               and read as having done nothing at all. */}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
+            {/* Only a receipt or a payment has bills to settle. A journal
+                moves no money and a contra moves it between our own
+                accounts, so neither has an invoice to adjust against. */}
+            <label
+              className={`flex items-center gap-2 text-sm font-medium text-foreground ${
+                spec.needsAccount && !spec.ownAccounts ? "cursor-pointer" : "opacity-50"
+              }`}
+            >
               <input
                 type="checkbox"
                 name="againstBill"
                 checked={form.againstBill}
                 onChange={handleFormChange}
+                disabled={!spec.needsAccount || spec.ownAccounts}
                 className="field-check"
               />
               <span className="whitespace-nowrap">Against Bill</span>
@@ -320,7 +504,10 @@ const AddVoucher = () => {
             <table className="data-table min-w-[760px]">
               <thead>
                 <tr>
-                  <th>Account Name</th>
+                  {/* Named by the kind: "Received from" on a receipt, "Paid
+                      to" on a payment, "Moved from" on a contra. The column
+                      said "Account Name" whichever way the money went. */}
+                  <th>{spec.lineLabel}</th>
                   <th>Narration</th> {/* 🔹 Added */}
                   <th className="text-right">Debit</th>
                   <th className="text-right">Credit</th>
@@ -339,9 +526,9 @@ const AddVoucher = () => {
                         required
                       >
                         <option value="" disabled>
-                          Select Customer
+                          {spec.ownAccounts ? "Select Cash or Bank A/c" : "Select Customer"}
                         </option>
-                        {customers.map((cust, i) => (
+                        {lineAccounts.map((cust, i) => (
                           <option key={i} value={cust.name}>
                             {cust.name}
                           </option>
@@ -366,12 +553,18 @@ const AddVoucher = () => {
                       />
                     </td>
                     <td>
+                      {/* The direction is the kind's, not a column the
+                          operator picks. A receipt credits the party and a
+                          payment debits it; only a journal is free to use
+                          either side, line by line. */}
                       <input
                         type="number"
                         name="debit"
                         value={entry.debit}
                         onChange={(e) => handleEntryChange(index, e)}
                         onBlur={leaveLine(index)}
+                        disabled={spec.side === "credit"}
+                        title={spec.side === "credit" ? `A ${spec.label.toLowerCase()} is a credit` : undefined}
                         className="field-input field-input-sm num"
                       />
                     </td>
@@ -382,6 +575,8 @@ const AddVoucher = () => {
                         value={entry.credit}
                         onChange={(e) => handleEntryChange(index, e)}
                         onBlur={leaveLine(index)}
+                        disabled={spec.side === "debit"}
+                        title={spec.side === "debit" ? `A ${spec.label.toLowerCase()} is a debit` : undefined}
                         className="field-input field-input-sm num"
                       />
                     </td>
@@ -438,67 +633,93 @@ const AddVoucher = () => {
                 ))}
               </tbody>
               <tfoot>
+                {/* The running total, and what a journal is out by.
+
+                    A journal has no account to absorb the difference, so its
+                    own lines have to balance -- and the figure belongs on
+                    screen while it is being typed, not only in the refusal
+                    afterwards. */}
                 <tr>
-                  <td colSpan={5}>
-                    <button
-                      type="button"
-                      onClick={addEntry}
-                      className="btn btn-ghost btn-sm text-primary hover:text-primary"
-                    >
-                      + Add Customer Row
-                    </button>
+                  <td colSpan={2} className="text-right font-medium">
+                    Total
+                  </td>
+                  <td className="num font-medium">{totals.debit.toFixed(2)}</td>
+                  <td className="num font-medium">{totals.credit.toFixed(2)}</td>
+                  <td className="text-center">
+                    {spec.mustBalance &&
+                      (outBy === 0 ? (
+                        <span className="field-hint">balanced</span>
+                      ) : (
+                        <span className="text-xs font-medium text-destructive">
+                          out by {Math.abs(outBy).toFixed(2)}
+                        </span>
+                      ))}
                   </td>
                 </tr>
+                {/* A contra is one line by definition: out of one account,
+                    into another. */}
+                {spec.code !== "CONTRA" && (
+                  <tr>
+                    <td colSpan={5}>
+                      <button
+                        type="button"
+                        onClick={addEntry}
+                        className="btn btn-ghost btn-sm text-primary hover:text-primary"
+                      >
+                        + Add Row
+                      </button>
+                    </td>
+                  </tr>
+                )}
               </tfoot>
             </table>
           </div>
 
-          {/* Account Details + Main Narration */}
-          <div className="panel panel-body grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
-            <div>
-              <label className="field-label">
-                {voucherParams.type === "Cash" ? "Cash A/c" : "Bank A/c"}
-              </label>
-              <select
-                name="acName"
-                value={form.acName}
-                onChange={handleFormChange}
-                required
-                className="field-select mt-1.5"
-              >
-                <option value="" disabled>
-                  Select {voucherParams.type === "Cash" ? "Cash" : "Bank"} Account
-                </option>
-                {customers
-                  .filter((cust) =>
-                    voucherParams.type === "Cash"
-                      ? cust.group?.toLowerCase() === "cash"
-                      : cust.group?.toLowerCase() === "bank"
-                  )
-                  .map((cust, i) => (
+          {/* The account the money moved through. A journal moved none, so it
+              has no such account and the whole panel goes -- holding one
+              would post a cash leg for an adjustment that never touched
+              cash, and the save refuses it. */}
+          {spec.needsAccount && (
+            <div className="panel panel-body grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
+              <div>
+                <label className="field-label">
+                  {spec.code === "CONTRA" ? `Moved into (${instrument})` : `${instrument} A/c`}
+                </label>
+                <select
+                  name="acName"
+                  value={form.acName}
+                  onChange={handleFormChange}
+                  required
+                  className="field-select mt-1.5"
+                >
+                  <option value="" disabled>
+                    Select {instrument} Account
+                  </option>
+                  {customersInGroups(customers, [instrument.toLowerCase()]).map((cust, i) => (
                     <option key={i} value={cust.name}>
                       {cust.name}
                     </option>
                   ))}
-              </select>
-              {/* The cash drawer / bank account itself. Dr here is money held,
-                  not money owed, which is why the wording is group-aware. */}
-              <PartyBalance selected={{ name: form.acName }} customers={customers} />
-            </div>
+                </select>
+                {/* The cash drawer / bank account itself. Dr here is money held,
+                    not money owed, which is why the wording is group-aware. */}
+                <PartyBalance selected={{ name: form.acName }} customers={customers} />
+              </div>
 
-            <div>
-              <label className="field-label">Account Type</label>
-              <input
-                type="text"
-                name="acType"
-                value={form.acType}
-                onChange={handleFormChange}
-                placeholder="e.g. Cash, Bank"
-                className="field-input mt-1.5"
-              />
-            </div>
+              <div>
+                <label className="field-label">Account Type</label>
+                <input
+                  type="text"
+                  name="acType"
+                  value={form.acType}
+                  onChange={handleFormChange}
+                  placeholder="e.g. Cash, Bank"
+                  className="field-input mt-1.5"
+                />
+              </div>
 
-          </div>
+            </div>
+          )}
 
           {/* 🔹 Main Narration Field */}
           <div>

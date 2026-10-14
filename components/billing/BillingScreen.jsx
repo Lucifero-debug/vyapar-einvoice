@@ -32,6 +32,12 @@ const IMPORT_REFUSED = {
 };
 import { trim as trimQty } from '@/lib/orderStatus.mjs';
 import { billingType, canBillFromOrder } from '@/lib/billingTypes.mjs';
+import {
+    defaultSeries,
+    docTypeForBilling,
+    normalizeSeriesCode,
+    seriesFor,
+} from '@/lib/series.mjs';
 import { buildHsnTotals, buildInvoicePayload, recalcItem, saveEndpoint } from '@/lib/billingMath.mjs';
 import { hsnKey } from '@/lib/hsnTotals.mjs';
 import ItemSearch from '@/components/billing/ItemSearch';
@@ -125,6 +131,10 @@ const [ewayBillNo, setEwayBillNo] = useState('');
     // supplier printed on the bill they sent. Not `invoiceNo`, which is this
     // firm's own sequence. See models/invoiceModel.js.
     const [partyBillNo, setPartyBillNo] = useState('');
+    // Sigfa's Series Master, for this screen's own document type. A label on
+    // the bill and nothing more -- it does not choose the invoice number.
+    const [series, setSeries] = useState('');
+    const [seriesMaster, setSeriesMaster] = useState([]);
     // ─── Purchase M.R.I. (lib/mri.mjs) ───────────────────────────────────────
     // A purchase bill (not a return) may be an MRI: each line then carries
     // what was RECEIVED beside the quantity, which is what was ACCEPTED.
@@ -326,6 +336,10 @@ useEffect(() => {
                 setWeight(data.weight || '');
                 setEwayBillNo(data.ewayBillNo || '');
                 setPartyBillNo(data.partyBillNo || '');
+                // Normalized because the box is a <select> and its options
+                // are. A bill saved before the master existed carries no
+                // series at all and simply comes back on "None".
+                setSeries(normalizeSeriesCode(data.series));
                 setMriNo(data.mriNo || null);
                 setMri({
                     on: Boolean(data.mriNo),
@@ -747,6 +761,19 @@ const addPartyTax = () => {
             }
         }
         
+        const fetchSeries = async () => {
+            try {
+                const response = await fetch('/api/get-series')
+                const result = await response.json()
+                setSeriesMaster(result.series || [])
+            } catch (error) {
+                // The Series box is optional on every bill, so a firm that has
+                // defined none is the normal case and this is not worth a
+                // notice the clerk has to dismiss.
+                console.error('Error fetching series data:', error);
+            }
+        }
+
         const fetchCust = async () => {
             try {
                 const response = await fetch('/api/get-customer')
@@ -773,7 +800,36 @@ const addPartyTax = () => {
         fetchItem()
         fetchStock()
         fetchPriceLists()
+        fetchSeries()
     }, [])
+
+    /**
+     * Which series this screen may offer, and which it starts on.
+     *
+     * `docTypeForBilling` turns this screen's own key -- sale, purchase,
+     * salereturn, purchasereturn -- into the document Sigfa's Series Master
+     * files a series under, so a sales-invoice series is never offered on a
+     * purchase return.
+     */
+    const seriesDocType = docTypeForBilling(config.key);
+    const chosenSeries = normalizeSeriesCode(series);
+    const offeredSeries = seriesFor(seriesMaster, seriesDocType);
+    // A bill whose series has since been switched off would otherwise show a
+    // BLANK box -- and because onChange never fires for an option that is not
+    // there, it would look cleared while still being saved. Kept as an option
+    // of its own instead.
+    const seriesChoices =
+        chosenSeries && !offeredSeries.some((s) => normalizeSeriesCode(s.code) === chosenSeries)
+            ? [...offeredSeries, { code: chosenSeries, name: '' }]
+            : offeredSeries;
+
+    // The default, on a BLANK bill only. Never over one being edited -- that
+    // would relabel a document already in the book -- and never over a choice
+    // already made.
+    useEffect(() => {
+        if (value) return;
+        setSeries((prev) => prev || defaultSeries(seriesMaster, seriesDocType));
+    }, [seriesMaster, seriesDocType, value]);
 
     // Calculate totals
     useEffect(() => {
@@ -1009,6 +1065,7 @@ const saveItem = (e) => {
                 orderNo,
                 partyBillNo,
                 mri: takesMri ? mri : undefined,
+                series: chosenSeries,
             },
             config
         );
@@ -1159,6 +1216,12 @@ const handleDispatchSave = () => {
                 .then((d) => setCustomer(d.customer || []))
                 .catch(() => {});
         }
+        if (kind === 'series') {
+            fetch('/api/get-series')
+                .then((r) => r.json())
+                .then((d) => setSeriesMaster(d.series || []))
+                .catch(() => {});
+        }
     };
 
     /**
@@ -1170,7 +1233,7 @@ const handleDispatchSave = () => {
      * showing a record that has just been renamed or deleted.
      */
     const masters = useMasterActions({
-        lists: { item, customer },
+        lists: { item, customer, series: seriesMaster },
         onChanged: ({ kind, mode, record }) => {
             reloadMaster(kind);
             // A deleted or renamed party is still sitting in `selectedCustomer`
@@ -1495,8 +1558,29 @@ const handleDispatchSave = () => {
                     </div>
                 )}
 
-                {/* Invoice & Date */}
+                {/* Series, Invoice & Date -- Sigfa's own order, series first. */}
                 <div className='panel panel-body flex flex-wrap gap-5'>
+                    {/* Hidden until a series exists for this document: a box
+                        whose only entry is "None" is a question with no answer.
+                        Alt+A creates one from here once it is shown. */}
+                    {seriesChoices.length > 0 && (
+                        <div className='field w-40'>
+                            <label className='field-label mb-1'>Series</label>
+                            <select
+                                className='field-select'
+                                data-master-field='series'
+                                value={chosenSeries}
+                                onChange={(e) => setSeries(e.target.value)}
+                            >
+                                <option value=''>None</option>
+                                {seriesChoices.map((option) => (
+                                    <option key={option._id || option.code} value={option.code}>
+                                        {option.name ? `${option.code} — ${option.name}` : option.code}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
                     <div className='field w-40'>
                         <label className='field-label mb-1'>Invoice No</label>
                         <input 

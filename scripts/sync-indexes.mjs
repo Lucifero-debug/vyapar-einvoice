@@ -85,6 +85,9 @@ const MODELS = Object.fromEntries(
       ["pricelists", "priceListModel"],
       ["customergroups", "customerGroupModel"],
       ["states", "stateModel"],
+      // The document series: unique per firm AND per scope, so the audit has
+      // to read the declaration rather than assume (companyId, code).
+      ["series", "seriesModel"],
       ["invoices", "invoiceModel"],
       ["orders", "orderModel"],
       ["vouchers", "voucherModel"],

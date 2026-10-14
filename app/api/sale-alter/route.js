@@ -276,6 +276,10 @@ async function handlePOST(req, auth) {
         // writing them would blank what the bill was saved with.
         {
           invoiceNo: nextNo,
+          // Written on an edit, unlike `shippedTo` and the two beside it: the
+          // edit screen DOES reload the series, so leaving it out would blank
+          // the label every time a bill was corrected.
+          series: invoiceData.series,
           date: invoiceData.date,
           customer: buyerBlock,
           paymentType: invoiceData.paymentType,
