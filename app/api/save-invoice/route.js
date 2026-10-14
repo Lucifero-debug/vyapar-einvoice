@@ -20,6 +20,7 @@ import {
   recomputeLedgerBalances,
 } from "@/lib/runningBalances.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
+import { mriFields } from "@/lib/mriSave.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import {
   BUYER_PROJECTION,
@@ -29,6 +30,14 @@ import {
 } from "@/lib/buyerSnapshot.mjs";
 import { stampItemLines } from "@/lib/uqc.mjs";
 import { claimOrderQty } from "@/lib/orderClaims.mjs";
+import { claimChallanQty } from "@/lib/challanClaims.mjs";
+import Challan from "@/models/challanModel";
+import {
+  challanLineProblems,
+  challanRefsOf,
+  invoiceStockLines,
+  stampChallanStock,
+} from "@/lib/challanStatus.mjs";
 import Order from "@/models/orderModel";
 import {
   isDuplicateSubmission,
@@ -205,6 +214,33 @@ async function handlePOST(req, auth) {
         }
       }
 
+      // === The challans this bill draws on (lib/challanStatus.mjs) ===
+      //
+      // Each challan line must exist on THIS firm's challan, of this bill's
+      // side, for this party, and name the same item -- and one bill does not
+      // mix challans that moved stock with ones that did not (SIGFA: "Please
+      // Select Challans With Same Effect Value !"). Then each line is stamped,
+      // from the challan, with whether its stock has already moved.
+      const challanRefs = challanRefsOf(input.items);
+      if (challanRefs.length) {
+        const challans = await Challan.find(
+          { $or: challanRefs.map((r) => ({ challanNo: r.challanNo, type: r.type })) },
+          { challanNo: 1, type: 1, stockEffect: 1, "customer.name": 1, "items._id": 1, "items.name": 1 },
+          { session }
+        ).lean();
+        const challanProblems = challanLineProblems(input.items, challans, {
+          invoiceType: input.type,
+          partyName: customer.name,
+        });
+        if (challanProblems.length) {
+          throw new AbortTransaction({ success: false, error: challanProblems.join(" ") }, 400);
+        }
+        input.items = stampChallanStock(input.items, challans);
+      }
+
+      // === A purchase M.R.I.? Its number, and any Ag. MRI No. (lib/mriSave.mjs) ===
+      const mriData = await mriFields({ session, mri: input.mri, party: customer.name, items: input.items });
+
       // Posting the net `balanceDue` is what made a fully-paid sale vanish:
       // the delta came out as zero and the money received was never booked.
       const deltas = invoicePostingDeltas({
@@ -264,6 +300,10 @@ async function handlePOST(req, auth) {
             ewayBillNo: input.ewayBillNo,
             ewayBillDate: input.ewayBillDate,
             partyBillNo: input.partyBillNo,
+            // Purchase M.R.I. -- set only when it is one (lib/mriSave.mjs).
+            mriNo: mriData.mriNo || undefined,
+            mriRemark: mriData.mriNo ? mriData.mriRemark : undefined,
+            againstMriNo: mriData.againstMriNo || undefined,
             // Who raised it, from the session. Server-set like companyId:
             // the double-submit check above only matches a user's own bill.
             createdBy: auth?.userId,
@@ -337,14 +377,16 @@ async function handlePOST(req, auth) {
 
       await Ledger.create(rows, { session });
 
-      // ITEM LEDGER LOGIC (always runs)
+      // ITEM LEDGER LOGIC (always runs). Lines billing a challan that
+      // already moved the goods write no stock row of their own -- SIGFA's
+      // Dsale -- or the stock would go out twice.
       await writeItemLedgerRows({
         session,
         invoiceNo,
         date: invoice.date || new Date(),
         type: input.type,
         isReturn: input.return,
-        items: input.items,
+        items: invoiceStockLines(input.items),
         partyName: customer.name,
       });
 
@@ -365,6 +407,8 @@ async function handlePOST(req, auth) {
       // The arithmetic lives in lib/orderClaims.mjs and nowhere else -- see
       // the note there about why three call sites would not stay in step.
       await claimOrderQty({ session, items: invoice.items });
+      // And the challans, the same way (lib/challanClaims.mjs).
+      await claimChallanQty({ session, items: invoice.items });
 
       return { invoice, duplicate: false };
     });

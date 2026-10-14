@@ -33,6 +33,10 @@ import { billingType, canBillFromOrder } from '@/lib/billingTypes.mjs';
 import { buildHsnTotals, buildInvoicePayload, recalcItem, saveEndpoint } from '@/lib/billingMath.mjs';
 import { hsnKey } from '@/lib/hsnTotals.mjs';
 import ItemSearch from '@/components/billing/ItemSearch';
+import ChallanPicker from '@/components/billing/ChallanPicker';
+import MriPanel from '@/components/billing/MriPanel';
+import { isMriSide, rejectedQty } from '@/lib/mri.mjs';
+import { CHALLAN_KINDS } from '@/lib/challanStatus.mjs';
 import QuickMaster from '@/components/billing/QuickMaster';
 import ShortcutHelp from '@/components/billing/ShortcutHelp';
 import { useBillingKeys } from '@/components/billing/useBillingKeys';
@@ -115,6 +119,14 @@ const [ewayBillNo, setEwayBillNo] = useState('');
     // supplier printed on the bill they sent. Not `invoiceNo`, which is this
     // firm's own sequence. See models/invoiceModel.js.
     const [partyBillNo, setPartyBillNo] = useState('');
+    // ─── Purchase M.R.I. (lib/mri.mjs) ───────────────────────────────────────
+    // A purchase bill (not a return) may be an MRI: each line then carries
+    // what was RECEIVED beside the quantity, which is what was ACCEPTED.
+    // `mriNo` is the stored number when editing one; a new one is numbered
+    // by the server on save.
+    const takesMri = isMriSide({ type: config.type, isReturn: config.isReturn });
+    const [mri, setMri] = useState({ on: false, remark: '', againstMriNo: null });
+    const [mriNo, setMriNo] = useState(null);
 const [ewayBillDate, setEwayBillDate] = useState('');
 const [showDispatchPopup, setShowDispatchPopup] = useState(false);
 const [dispatchFrom, setDispatchFrom] = useState('');
@@ -227,7 +239,14 @@ useEffect(() => {
                     const gstAmount       = item.gstAmount     ?? (taxableAmount * gstRate) / 100;
                     const total           = item.total         ?? (taxableAmount + gstAmount);
 
-                    return { ...item, cost, gstRate, taxableAmount, gstAmount, total };
+                    // An MRI line whose received figure equals the accepted one
+                    // was entered blank ("received what was accepted"). Kept
+                    // blank, so raising the accepted quantity raises it too
+                    // instead of being refused against a stale copy.
+                    const { receivedQty, ...rest } = item;
+                    const keepReceived =
+                        receivedQty !== undefined && receivedQty !== null && Number(receivedQty) !== quantity;
+                    return { ...rest, ...(keepReceived ? { receivedQty } : {}), cost, gstRate, taxableAmount, gstAmount, total };
                 });
 
                 setGst(data.gst || normalizedItems.reduce((sum, i) => sum + (i.gstAmount || 0), 0));
@@ -301,11 +320,26 @@ useEffect(() => {
                 setWeight(data.weight || '');
                 setEwayBillNo(data.ewayBillNo || '');
                 setPartyBillNo(data.partyBillNo || '');
+                setMriNo(data.mriNo || null);
+                setMri({
+                    on: Boolean(data.mriNo),
+                    remark: data.mriRemark || '',
+                    againstMriNo: data.againstMriNo || null,
+                });
                 setEwayBillDate(data.ewayBillDate ? formatDate(data.ewayBillDate) : '');
             })
             .catch(err => console.error('Error:', err));
         }
     }, [value]);
+
+    // Opened as /purchaseadd?mri=1 -- the "Purchase MRI" entry on the home
+    // page -- a new bill starts as an MRI. Read once, in the browser.
+    useEffect(() => {
+        if (!takesMri || value) return;
+        if (new URLSearchParams(window.location.search).get('mri') === '1') {
+            setMri((m) => ({ ...m, on: true }));
+        }
+    }, [takesMri, value]);
 
     // (A party used to be pre-selected here from localStorage 'selectedCustomer'
     // -- one browser-wide key read by all four screens, for every company and
@@ -327,6 +361,16 @@ useEffect(() => {
     // and the party taxes all recompute off `selectedItem`.
     const ORDER_DOC = config.orderDoc;
     const [orderPrefill, setOrderPrefill] = useState(null);
+
+    // ─── Pending challans (SIGFA's SC / PC) ──────────────────────────────────
+    //
+    // A sale bills sales challans and a purchase bills purchase challans; a
+    // return bills none (lib/challanStatus.mjs). The picker is its own
+    // component; the server re-checks every line and decides from the
+    // challan whether its stock has already moved.
+    const billsFromChallan = !config.isReturn;
+    const [showChallanPicker, setShowChallanPicker] = useState(false);
+    const [challanPrefill, setChallanPrefill] = useState(null);
     // A bill read off a photograph, handed over by /upload. See the effect.
     const [importPrefill, setImportPrefill] = useState(null);
 
@@ -907,7 +951,11 @@ const saveItem = (e) => {
                 totalAmount,
                 finalAmount,
                 received,
-                items: selectedItem,
+                // A received quantity belongs to an MRI only; switching the
+                // MRI off drops them rather than sending figures nobody sees.
+                items: takesMri && mri.on
+                    ? selectedItem
+                    : selectedItem.map(({ receivedQty: _received, ...line }) => line),
                 partyTaxes,
                 shippedTo,
                 dispatchFrom,
@@ -924,6 +972,7 @@ const saveItem = (e) => {
                 orderDate,
                 orderNo,
                 partyBillNo,
+                mri: takesMri ? mri : undefined,
             },
             config
         );
@@ -945,6 +994,7 @@ const saveItem = (e) => {
             if (ok && result.success) {
                 setSelectedItem([]);
                 setPartyTaxes([]);
+                setChallanPrefill(null);
                 // The server settles the number -- a clash with a concurrent
                 // invoice means the one it assigned differs from the one typed.
                 const savedNo =
@@ -1024,6 +1074,22 @@ const handleDispatchSave = () => {
         // is typed. Nothing is added by itself -- a row appears only when an
         // item is actually chosen, so Enter cannot create a blank line.
         itemBoxRef.current?.focus();
+    };
+
+    // The received quantity on an MRI line. Blank stays blank -- "received
+    // what was accepted" -- rather than turning into a zero.
+    const handleReceivedChange = (index, rawValue) => {
+        setSelectedItem(prev =>
+            prev.map((item, idx) => {
+                if (idx !== index) return item;
+                if (rawValue === '' || rawValue === null) {
+                    const { receivedQty: _received, ...rest } = item;
+                    return rest;
+                }
+                const n = parseFloat(rawValue);
+                return { ...item, receivedQty: Number.isFinite(n) ? n : 0 };
+            })
+        );
     };
 
     const handleItemFieldChange = (index, field, rawValue) => {
@@ -1177,6 +1243,8 @@ const handleDispatchSave = () => {
         // Alter edits IN PLACE. It used to push the master screen, which
         // threw away a half-typed bill -- and it only knew about items and
         // parties, so Alt+M in an HSN or state box did nothing at all.
+        pendingChallan: billsFromChallan ? () => setShowChallanPicker(true) : undefined,
+
         newMaster: () => masters.create(),
         alterMaster: () => masters.alter(),
         deleteMaster: () => masters.remove(),
@@ -1228,7 +1296,11 @@ const handleDispatchSave = () => {
                         { label: 'MRP', value: master.mrp },
                         { label: 'Discount %', value: master.discount },
                         { label: 'Group', value: master.group },
-                        { label: 'Minimum stock', value: master.minQuantity },
+                        // Sigfa's own stock warning prints all three levels
+                        // beside the current stock, under these names.
+                        { label: 'Minimum Level', value: master.minQuantity },
+                        { label: 'Re-Order Level', value: master.reorderLevel },
+                        { label: 'Maximum Level', value: master.maxLevel },
                         // The rate ON THIS LINE, which may have been edited
                         // or come off a price list, beside the master's.
                         { label: 'Rate on this line', value: line.cost },
@@ -1361,11 +1433,29 @@ const handleDispatchSave = () => {
                     </div>
                 )}
 
-                {billsFromOrder && (
-                    <div className="no-print flex justify-end">
-                        <button type="button" className="btn btn-secondary" onClick={openPicker}>
-                            Bill from order
-                        </button>
+                {challanPrefill && (
+                    <div className='mb-1 rounded-lg border border-border bg-muted/50 px-4 py-3 text-sm'>
+                        <div className='font-medium'>{challanPrefill.title}</div>
+                        <div className='mt-1'>{challanPrefill.note}</div>
+                    </div>
+                )}
+
+                {takesMri && (
+                    <MriPanel mri={mri} onChange={setMri} mriNo={mriNo} party={selectedCustomer?.name || ''} />
+                )}
+
+                {(billsFromOrder || billsFromChallan) && (
+                    <div className="no-print flex justify-end gap-2">
+                        {billsFromChallan && (
+                            <button type="button" className="btn btn-secondary" onClick={() => setShowChallanPicker(true)}>
+                                Pending challan [Alt+L]
+                            </button>
+                        )}
+                        {billsFromOrder && (
+                            <button type="button" className="btn btn-secondary" onClick={openPicker}>
+                                Bill from order
+                            </button>
+                        )}
                     </div>
                 )}
 
@@ -1563,7 +1653,9 @@ const handleDispatchSave = () => {
                                 <thead>
                                     <tr>
                                         <th>Name</th>
-                                        <th className='text-right'>Quantity</th>
+                                        {mri.on && takesMri && <th className='text-right'>Received</th>}
+                                        <th className='text-right'>{mri.on && takesMri ? 'Accepted' : 'Quantity'}</th>
+                                        {mri.on && takesMri && <th className='text-right'>Rejected</th>}
                                         <th className='text-right'>Rate</th>
                                         <th className='text-right'>Discount (%)</th>
                                         <th>HSN Code</th>
@@ -1581,10 +1673,24 @@ const handleDispatchSave = () => {
                                                     ledger until it is saved. */}
                                                 <ItemStock name={items.name} stock={stock} />
                                             </td>
+                                            {mri.on && takesMri && (
+                                                <td>
+                                                    <input
+                                                        type='number'
+                                                        min='0'
+                                                        className='field-input field-input-sm num w-20'
+                                                        value={items.receivedQty ?? ''}
+                                                        placeholder={String(items.quantity ?? '')}
+                                                        onChange={(e) => handleReceivedChange(index, e.target.value)}
+                                                        onFocus={() => setActiveRow(index)}
+                                                        title='Received. Blank means everything received was accepted.'
+                                                    />
+                                                </td>
+                                            )}
                                             <td>
                                                 <input 
                                                     type='number' 
-                                                    min='1' 
+                                                    min={mri.on && takesMri ? '0' : '1'} 
                                                     className='field-input field-input-sm num w-20' 
                                                     value={items.quantity} 
                                                     onChange={(e) => handleItemFieldChange(index, 'quantity', e.target.value)}
@@ -1597,6 +1703,15 @@ const handleDispatchSave = () => {
                                                     onKeyDown={(e) => onRowKeyDown(e, index, 'quantity')}
                                                 />
                                             </td>
+                                            {mri.on && takesMri && (
+                                                <td className='num'>
+                                                    {rejectedQty(items) > 0 ? (
+                                                        <span className='font-medium text-destructive'>{trimQty(rejectedQty(items))}</span>
+                                                    ) : (
+                                                        '—'
+                                                    )}
+                                                </td>
+                                            )}
                                             <td>
                                                 <input 
                                                     type='number' 
@@ -1884,6 +1999,34 @@ const handleDispatchSave = () => {
                     )}
                     </div>
                 </section>
+
+                {billsFromChallan && showChallanPicker && (
+                    <ChallanPicker
+                        type={config.type}
+                        partyName={selectedCustomer?.name || ''}
+                        items={item}
+                        recalc={recalcItem}
+                        onClose={() => setShowChallanPicker(false)}
+                        onPick={({ lines, used }) => {
+                            // The party, when none was chosen yet: every picked
+                            // challan is for the same one (the rule refuses a mix).
+                            if (!selectedCustomer?.name && used[0]?.party) {
+                                const party = customer.find((c) => c.name === used[0].party);
+                                if (party) setSelectedCustomer(party);
+                            }
+                            setSelectedItem((prev) => [...prev, ...lines]);
+                            setShowChallanPicker(false);
+                            const label = CHALLAN_KINDS[config.type]?.label || 'Challan';
+                            const moved = used.some((u) => u.stockEffect);
+                            setChallanPrefill({
+                                title: `From ${label} ${used.map((u) => u.challanNo).join(', ')}: ${lines.length} line${lines.length === 1 ? '' : 's'}.`,
+                                note: moved
+                                    ? 'Those challans already moved the stock, so this bill will not move it again.'
+                                    : 'Those challans did not move stock, so this bill moves it as usual.',
+                            });
+                        }}
+                    />
+                )}
 
                 {billsFromOrder && showPicker && (
                     <div className="modal-overlay no-print" role="dialog" aria-modal="true">

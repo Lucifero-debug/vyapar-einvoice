@@ -211,15 +211,19 @@ test("there are only two directions, and no third slips in", () => {
 
 console.log("\n--- the payload contract, frozen before anything moved ---");
 
-test("the frozen list is the 31 keys the pages sent, plus the one added since", () => {
+test("the frozen list is the 31 keys the pages sent, plus the two added since", () => {
   // 31 was the count extracted mechanically from all four pages before
   // anything moved. `partyBillNo` is the one deliberate addition since: the
   // other party's own bill number, which had nowhere to go before and which
   // the AI import was putting in `invoiceNo` -- this firm's own sequence,
   // with a unique index on it. A change to this number should be a change
   // somebody meant to make, which is the point of asserting it.
-  assert.equal(PAYLOAD_KEYS.length, 32);
+  //
+  // And `mri` since that: the purchase M.R.I. block (lib/mri.mjs), sent by
+  // the purchase screen only. Two deliberate additions, so 33.
+  assert.equal(PAYLOAD_KEYS.length, 33);
   assert.ok(PAYLOAD_KEYS.includes("partyBillNo"));
+  assert.ok(PAYLOAD_KEYS.includes("mri"));
   // Spot-checked against the extract: the ones whose absence would be silent.
   for (const key of ["return", "type", "hsnTotals", "balanceDue", "originalInvoiceNo"]) {
     assert.ok(PAYLOAD_KEYS.includes(key), `${key} is missing from the contract`);
@@ -432,7 +436,10 @@ test("the moved shortcuts say what they used to be", () => {
   // So somebody with Sigfa's habits can find out why their key did something
   // else, rather than concluding the feature is broken.
   const moved = BILLING_SHORTCUTS.filter((s) => /moved/.test(s.sigfa || ""));
-  assert.equal(moved.length, 2, "Alt+F12 and Shift+F5");
+  // Alt+F12 and Shift+F5, and SIGFA's Pending Challan (Alt+H there, which
+  // is this app's shortcut help -- so Alt+L).
+  assert.equal(moved.length, 3, "Alt+F12, Shift+F5 and Pending Challan's Alt+H");
+  assert.ok(moved.some((s) => s.action === "pendingChallan" && s.keys.includes("Alt+L")));
   for (const s of moved) assert.match(s.sigfa, /moved:/);
 });
 
@@ -725,7 +732,9 @@ test("Enter in a row advances and never submits", () => {
 
 test("the row shortcuts act on the focused line, not the last one", () => {
   const src = read("../components/billing/BillingScreen.jsx");
-  assert.equal((src.match(/onFocus=\{\(\) => setActiveRow\(index\)\}/g) || []).length, 3);
+  // Quantity, rate and discount -- and, on a purchase M.R.I., the received
+  // box, which is on the same line and so acts on the same row.
+  assert.equal((src.match(/onFocus=\{\(\) => setActiveRow\(index\)\}/g) || []).length, 4);
   assert.ok(/activeRow === null \|\| !selectedItem\[activeRow\]/.test(src), "deleteRow guesses");
 });
 

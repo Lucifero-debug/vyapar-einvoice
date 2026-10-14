@@ -29,6 +29,8 @@ import {
   PARTY_SIDES,
   PERIOD_PRESETS,
   POINT_IN_TIME,
+  DASHBOARD_REASONS,
+  STOCK_REASONS,
   STOCK_REASON_LABELS,
   bucketLabel,
   bucketOf,
@@ -681,6 +683,30 @@ test("an item with no minimum is not compared against an invented one", () => {
   assert.equal(stockReason(-3, 10), "negative", "negative outranks below");
 });
 
+test("the re-order level fires after the minimum, and the maximum last", () => {
+  // Sigfa's own warning prints both levels, with the re-order level ABOVE the
+  // minimum -- you order again before you reach the floor. So an item below
+  // both is reported as below its MINIMUM, which is the more urgent of the
+  // two, and one below only the re-order level says so.
+  const levels = { minimum: 25, reorder: 60, maximum: 500 };
+  assert.equal(stockReason(20, levels), "below");
+  assert.equal(stockReason(40, levels), "reorder");
+  // Exactly AT a level is not past it, for all three -- the same rule the
+  // minimum has always had, so the three cannot drift apart.
+  assert.equal(stockReason(60, levels), null, "at the re-order level is not below it");
+  assert.equal(stockReason(100, levels), null);
+  assert.equal(stockReason(600, levels), "over");
+  assert.equal(stockReason(500, levels), null, "at the maximum is not over it");
+  // Each one is optional on its own.
+  assert.equal(stockReason(40, { reorder: 60 }), "reorder");
+  assert.equal(stockReason(600, { maximum: 500 }), "over");
+  assert.equal(stockReason(600, { maximum: 0 }), null, "a zero maximum is not a maximum");
+  assert.equal(stockReason(40, {}), null);
+  // And the bare number still means the minimum, which is all this rule knew
+  // before the other two levels existed.
+  assert.equal(stockReason(5, 10), "below");
+});
+
 test("the alerts run most urgent first and carry the shortfall", () => {
   const items = [
     { _id: "i1", name: "Plate", unit: "KGS", hsn: "7308", openingQuantity: 0, minQuantity: 10 },
@@ -708,7 +734,33 @@ test("the alerts run most urgent first and carry the shortfall", () => {
   assert.equal(rows.find((r) => r.name === "Plate").hsn, "7308");
   // The well-stocked item is not an alert at all.
   assert.equal(rows.some((r) => r.name === "Plenty"), false);
-  assert.deepEqual(Object.keys(STOCK_REASON_LABELS), ["negative", "out", "below"]);
+  // Five reasons now -- the re-order level and the maximum came with Sigfa's
+  // Under-Over Stock report (lib/inventory.mjs). The TILE still shows three.
+  assert.deepEqual(Object.keys(STOCK_REASON_LABELS), [
+    "negative", "out", "below", "reorder", "over",
+  ]);
+  assert.deepEqual(DASHBOARD_REASONS, ["negative", "out", "below"]);
+});
+
+test("the dashboard tile does not fill up with planning thresholds", () => {
+  // An item between its re-order level and its maximum is a purchasing
+  // question, not an alert, and a tile headed low stock that fired on it
+  // would be permanently full. The Short List asks for all five.
+  const items = [
+    { _id: "i1", name: "Plate", openingQuantity: 40, minQuantity: 25, reorderLevel: 60, maxLevel: 500 },
+    { _id: "i2", name: "Pipe", openingQuantity: 900, minQuantity: 10, maxLevel: 500 },
+  ];
+  const stock = buildStockIndex({ items, movements: [] });
+  assert.deepEqual(lowStockRows({ stock, items }), [], "neither belongs on the tile");
+
+  const all = lowStockRows({ stock, items, reasons: STOCK_REASONS });
+  assert.deepEqual(all.map((r) => [r.name, r.reason]), [["Plate", "reorder"], ["Pipe", "over"]]);
+  // Required is measured against the level that FIRED, not against the
+  // minimum it is still above.
+  assert.equal(all[0].shortfall, 20, "60 wanted, 40 on hand");
+  assert.equal(all[0].excess, null);
+  assert.equal(all[1].shortfall, null, "nothing is required when there is too much");
+  assert.equal(all[1].excess, 400, "900 on hand against a maximum of 500");
 });
 
 test("the stock cards say how much of the master has a minimum at all", () => {

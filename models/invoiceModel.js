@@ -43,7 +43,25 @@ const itemSchema = new mongoose.Schema({
   // year must not change the date on an invoice already issued. It also means
   // the print can list every order a bill draws on -- with its date -- from
   // the lines alone, with no second query and no header array to keep in step.
-  orderDate:{type:Date}
+  orderDate:{type:Date},
+  // === Which challan line this bills, if any (SIGFA's Challan + ChRefNo) ===
+  //
+  // All three or none, like the order reference above. Only
+  // lib/challanClaims.mjs acts on them.
+  challanNo:{type:Number},
+  challanType:{type:String},
+  challanLineId:{type:String},
+  // The challan's own date, copied for the print ("Challan No. / Date").
+  challanDate:{type:Date},
+  // Did that challan already move the stock (its stock effect)? Then this
+  // line writes no stock row of its own. Set by the server FROM THE CHALLAN
+  // (lib/challanStatus.mjs stampChallanStock), never from the screen.
+  challanStock:{type:Boolean},
+  // === Purchase M.R.I.: what came in (lib/mri.mjs) ===
+  // `quantity` above is the ACCEPTED quantity -- billed, taxed and stocked as
+  // always -- and this is what was received; the difference was rejected.
+  // Set only on a bill that is an MRI (it has an `mriNo`).
+  receivedQty:{type:Number}
 });
 
 const partyTaxSchema = new mongoose.Schema({
@@ -161,6 +179,16 @@ customer: {
     // Declared, or Mongoose strict mode drops it -- and a dropped supplier
     // bill number is a purchase you cannot find again when they chase it.
     partyBillNo: { type: String, trim: true },
+    // === Purchase M.R.I. (SIGFA's MRINo / MRI Remark / Ag. MRI No.) ===
+    // Its own series, shared with purchase challans and reserved by the
+    // server (lib/mriSave.mjs). `againstMriNo` makes this a Re-MRI of an
+    // earlier MRI's rejected material. lib/mri.mjs.
+    mriNo: { type: Number },
+    mriRemark: { type: String },
+    againstMriNo: { type: Number },
+    // Written by a Re-MRI raised against this one, so concurrent ones
+    // conflict (lib/mriSave.mjs). Means nothing on its own.
+    mriLock: { type: Number },
     ewayBillNo: { type: String },        // E-Way No.
     ewayBillDate: { type: Date },
     // === E-invoicing (IRN) ===
@@ -239,6 +267,21 @@ invoiceSchema.plugin(tenantPlugin);
 // routinely billed by several invoices, which is the whole point of tracking
 // a pending quantity.
 invoiceSchema.index({ companyId: 1, "items.orderNo": 1, "items.orderType": 1 });
+// And which invoices billed a given challan (get-challan's "Used In Invoice").
+invoiceSchema.index({ companyId: 1, "items.challanNo": 1, "items.challanType": 1 });
+
+// One MRI number per firm (the series is shared with purchase challans,
+// whose own index does the same there; the counter keeps the two apart).
+// Partial, so the many bills that are not MRIs do not collide on null.
+invoiceSchema.index(
+  { companyId: 1, mriNo: 1 },
+  { unique: true, partialFilterExpression: { mriNo: { $type: "number" } } }
+);
+invoiceSchema.index(
+  { companyId: 1, againstMriNo: 1 },
+  // One Re-MRI per MRI, as SIGFA's pending query assumes.
+  { unique: true, partialFilterExpression: { againstMriNo: { $type: "number" } } }
+);
 
 // Unique per FIRM. Globally unique invoice numbers meant the second firm to
 // open could not write invoice 1.

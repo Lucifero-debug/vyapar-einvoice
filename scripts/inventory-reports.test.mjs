@@ -462,11 +462,19 @@ test("the stock report is read-only, tenant-wrapped, and validates what it is gi
   const src = code(read("app/api/stock-report/route.js"));
   assert.match(src, /export const GET = tenantRoute\(handleGET\)/);
   assert.doesNotMatch(src, /\.(create|updateOne|updateMany|deleteMany|deleteOne|insertMany|bulkWrite)\(/, "the report writes");
-  assert.match(src, /isIsoDate\(value\)/);
-  assert.match(src, /MOVEMENT_TYPE_KEYS\.includes\(type\)/);
-  assert.match(src, /SUMMARY_STATUSES\.includes\(status\)/);
-  assert.match(src, /MAX_MOVEMENTS/);
-  assert.match(src, /istDayWindow\(/, "the period is not cut at IST day boundaries");
+  // The route is now Sigfa's five stock reports (lib/inventory.mjs, tested in
+  // scripts/inventory.test.mjs). Every parameter it is given is still
+  // checked against the module that owns it, and refused with a 400 rather
+  // than quietly defaulted.
+  assert.match(src, /isStockReport\(report\)/);
+  assert.match(src, /isStockFilter\(filter\)/);
+  assert.match(src, /isPreset\(preset\)/);
+  assert.match(src, /isReportFormat\(format\)/);
+  assert.match(src, /basisProblem\(basis\)/);
+  assert.match(src, /slabProblem\(slabs\)/);
+  // The period is the shared resolver's, which cuts at IST day boundaries
+  // (scripts/report-periods.test.mjs).
+  assert.match(src, /resolvePeriod\(/);
   // Only HTTP methods and route options may be exported from a route file.
   for (const m of src.matchAll(/^export (?:const|async function|function) (\w+)/gm)) {
     assert.ok(["GET", "POST", "dynamic"].includes(m[1]), `route exports "${m[1]}"`);
@@ -504,11 +512,10 @@ test("the report page ignores a reply for filters it has already left", () => {
   const src = code(read("app/stock-report/page.js"));
   assert.match(src, /const mine = \+\+latest\.current;/);
   assert.match(src, /if \(mine !== latest\.current\) return;/);
-  assert.match(src, /if \(mine === latest\.current\) \{\s*setLoadedFor/);
-  // Typing is applied after a pause, not per keystroke.
-  assert.match(src, /setTimeout\(\(\) => \{\s*setQ\(qInput\);/);
-  // The link is read before the first fetch, as the other report pages do.
-  assert.match(src, /useState\(\(\) => parseReportQuery\(REPORT_QUERIES\.stockReport, searchParams\)\.values\)/);
+  assert.match(src, /if \(mine === latest\.current\) setLoading\(false\)/);
+  // The link is read by its own params reader (the report hub's tiles
+  // preselect a sheet; scripts/report-catalogue.test.mjs checks the keys).
+  assert.match(src, /<StockReportSearchParams/);
 });
 
 test("an item edit rewrites its running figures only when the opening or the name changed", () => {

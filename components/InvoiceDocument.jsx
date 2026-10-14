@@ -5,6 +5,8 @@ import {
   orderRefsText,
   printableOrderRefs,
 } from '@/lib/orderStatus.mjs';
+import { printableChallanRefs } from '@/lib/challanStatus.mjs';
+import { MRI_LABEL, mriTotals, rejectedQty } from '@/lib/mri.mjs';
 import { splitGst } from '@/lib/gst.mjs';
 import { buildHsnSummary, hsnGrandTotal } from '@/lib/hsnTotals.mjs';
 // The firm's identity, framed in one place so the invoice, the statements and
@@ -62,6 +64,22 @@ const InvoiceDocument = forwardRef(({ invoice, isRollStationary }, ref) => {
   // the header pair for bills raised before that existed or where the clerk
   // typed the customer's own order number by hand.
   const orderRefs = printableOrderRefs(invoice);
+  // The challans this bill draws on (lib/challanStatus.mjs), from the lines.
+  const challanRefs = printableChallanRefs(invoice);
+  // A purchase M.R.I.: its number, and what was received, accepted and
+  // rejected (lib/mri.mjs). The lines below are priced on the ACCEPTED
+  // quantity, so the rejections are listed separately.
+  const mriNo = Number(invoice?.mriNo) || null;
+  const mri = mriNo ? mriTotals(invoice.items) : null;
+  const mriLine = mri
+    ? `${mriNo}${invoice.againstMriNo ? ` (Re-MRI of ${invoice.againstMriNo})` : ''} -- received ${mri.received}, accepted ${mri.accepted}${mri.rejected > 0 ? `, rejected ${mri.rejected}` : ''}`
+    : '';
+  const mriRejected = mriNo
+    ? (invoice.items || []).filter((l) => rejectedQty(l) > 0).map((l) => `${l.name}: ${rejectedQty(l)}`).join('; ')
+    : '';
+  const challanRefsLine = challanRefs
+    .map((r) => (r.date ? `${r.challanNo} dt. ${new Date(r.date).toLocaleDateString('en-IN')}` : String(r.challanNo)))
+    .join(', ');
   const orderRefsLine = orderRefsText(orderRefs, (d) =>
     new Date(d).toLocaleDateString('en-IN')
   );
@@ -197,7 +215,7 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
         </section>
 
         {/* Transport Details */}
-{(transport || grNo || grDate || pvtMark || caseDetails || freight || weight || ewayBillNo || ewayBillDate || orderRefsLine) && (
+{(transport || grNo || grDate || pvtMark || caseDetails || freight || weight || ewayBillNo || ewayBillDate || orderRefsLine || challanRefsLine || mriLine) && (
   <section className="mb-6 rounded-md border border-gray-300 bg-gray-50 p-3 sm:p-4">
     <h3 className="text-md font-semibold text-gray-700 mb-3">Order Details</h3>
     <div className="grid grid-cols-1 gap-2 text-[13px] text-gray-700 sm:grid-cols-3 sm:gap-3 sm:text-sm">
@@ -231,6 +249,18 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
       {orderRefsLine && (
         <div className="break-words sm:col-span-3">
           <span className="font-medium">{orderRefsLabel(orderRefs)}:</span> {orderRefsLine}
+        </div>
+      )}
+      {challanRefsLine && (
+        <div className="break-words sm:col-span-3">
+          <span className="font-medium">Challan No.:</span> {challanRefsLine}
+        </div>
+      )}
+      {mriLine && (
+        <div className="break-words sm:col-span-3">
+          <span className="font-medium">{MRI_LABEL} No.:</span> {mriLine}
+          {mriRejected && <div>Rejected: {mriRejected}</div>}
+          {invoice.mriRemark && <div>Remark: {invoice.mriRemark}</div>}
         </div>
       )}
     </div>

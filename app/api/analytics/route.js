@@ -134,7 +134,10 @@ async function handleGET(req, auth) {
         {},
         { name: 1, group: 1, city: 1, phone: 1, lastBal: 1, lastMode: 1 }
       ).lean(),
-      Item.find({}, { name: 1, unit: 1, hsn: 1, openingQuantity: 1, minQuantity: 1, isService: 1 }).lean(),
+      Item.find(
+        {},
+        { name: 1, unit: 1, hsn: 1, openingQuantity: 1, minQuantity: 1, reorderLevel: 1, maxLevel: 1, isService: 1 }
+      ).lean(),
       // The one aggregation that matters for cost: the stock ledger summed in
       // the database, as /api/item-stock does it.
       ItemLedger.aggregate([

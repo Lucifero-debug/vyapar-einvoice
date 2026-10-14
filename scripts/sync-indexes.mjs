@@ -98,6 +98,8 @@ const MODELS = Object.fromEntries(
       // per-firm replacements exist.
       ["boms", "bomModel"],
       ["productions", "productionModel"],
+      // Sales and purchase challans: one number per kind per firm.
+      ["challans", "challanModel"],
       // The persistent low-stock alerts, whose "one open alert per item"
       // partial unique index is declared on the schema.
       ["stockalerts", "stockAlertModel"],

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Item from "../../../models/itemModel";
 import ItemLedger from "../../../models/itemLedgerModel";
+import Challan from "@/models/challanModel";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import { recomputeItemBalances } from "@/lib/runningBalances.mjs";
 import { findNameClash, normalizeName } from "@/lib/uniqueName.mjs";
@@ -54,6 +55,8 @@ async function handlePOST(req, auth) {
                 short: itemData.short,
                 openingQuantity: itemData.openBal,
                 minQuantity: itemData.minBal,
+                reorderLevel: itemData.reorderBal,
+                maxLevel: itemData.maxBal,
                 lastQuantity: itemData.lastBal,
                 uqc: normalizeUqc(itemData.uqc) || UQC_DEFAULT,
                 isService: Boolean(itemData.isService),
@@ -68,6 +71,13 @@ async function handlePOST(req, auth) {
                     { itemName: previousName },
                     { $set: { itemName: nextName } },
                     { session }
+                );
+                // A challan's lines too, so its pending goods can still be
+                // billed under the item's new name.
+                await Challan.updateMany(
+                    { "items.name": previousName },
+                    { $set: { "items.$[line].name": nextName } },
+                    { session, arrayFilters: [{ "line.name": previousName }] }
                 );
             }
 

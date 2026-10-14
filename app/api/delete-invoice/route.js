@@ -14,9 +14,11 @@ import {
   recomputeLedgerBalances,
 } from "@/lib/runningBalances.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
+import { assertMriDeletable } from "@/lib/mriSave.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { LOCKED_STATUS, deleteBlockedReason } from "@/lib/einvoiceLock.mjs";
 import { releaseOrderQty } from "@/lib/orderClaims.mjs";
+import { releaseChallanQty } from "@/lib/challanClaims.mjs";
 import { settledBillProblem } from "@/lib/billAdjust.mjs";
 import { settledAgainst } from "@/lib/openBillsFor.mjs";
 
@@ -42,7 +44,7 @@ async function handlePOST(req, auth) {
         // below.
         const existing = await Invoice.findOne(
           { invoiceNo: Number(invoiceNo) },
-          { invoiceNo: 1, irn: 1, ackDt: 1, einvoiceStatus: 1, type: 1, return: 1, customer: 1 }
+          { invoiceNo: 1, irn: 1, ackDt: 1, einvoiceStatus: 1, type: 1, return: 1, customer: 1, mriNo: 1 }
         )
           .session(session)
           .lean();
@@ -67,6 +69,8 @@ async function handlePOST(req, auth) {
           });
           const problem = settledBillProblem({ before: existing, after: null, ...settled });
           if (problem) throw new AbortTransaction({ error: problem }, 409);
+          // SIGFA: an MRI a Re-MRI was raised against cannot go. lib/mriSave.mjs.
+          await assertMriDeletable(existing, session);
         }
 
         const deletedInvoice = await Invoice.findOneAndDelete(
@@ -164,6 +168,8 @@ async function handlePOST(req, auth) {
         // the goods become pending again rather than staying billed against an
         // invoice that no longer exists. lib/orderClaims.mjs.
         await releaseOrderQty({ session, items: deletedInvoice.items });
+        // And hand billed quantities back to the challans it drew on.
+        await releaseChallanQty({ session, items: deletedInvoice.items });
 
         return {
           deletedInvoice,

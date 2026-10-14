@@ -41,6 +41,10 @@ async function handlePOST(req, auth) {
             group:itemData.group,
             openingQuantity:itemData.openBal,
             minQuantity:itemData.minBal,
+            // Sigfa's other two levels. Allowlisted like every other field here,
+            // so a stale form cannot store something undeclared.
+            reorderLevel:itemData.reorderBal,
+            maxLevel:itemData.maxBal,
             lastQuantity:itemData.lastBal,
             short:itemData.short,
             // Whitelisted like everything else here, so an unknown code from a

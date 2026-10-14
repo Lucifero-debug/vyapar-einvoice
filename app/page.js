@@ -7,6 +7,7 @@ import {
   Boxes,
   Check,
   ChevronsUpDown,
+  ClipboardCheck,
   Landmark,
   Package,
   Pencil,
@@ -21,6 +22,7 @@ import {
   Tags,
   ShoppingCart,
   Trash2,
+  Truck,
   Undo2,
   Upload,
   UserCog,
@@ -83,6 +85,11 @@ const Page = () => {
   const [saleInvoices, setSaleInvoices] = useState([]);
   const [purchaseInvoices, setPurchaseInvoices] = useState([]);
   const [saleReturns, setSaleReturns] = useState([]);
+  // Challans still to bill, per side -- the count on the Sales Challan and
+  // Purchase Challan rows. null until loaded.
+  const [pendingChallans, setPendingChallans] = useState({ Sale: null, Purchase: null });
+  // Purchase MRIs with rejected material and no Re-MRI yet (lib/mri.mjs).
+  const [pendingMriCount, setPendingMriCount] = useState(null);
   const [purchaseReturns, setPurchaseReturns] = useState([]);
   const [alterState, setAlterState] = useState('');
   const [deleteState, setDeleteState] = useState('');
@@ -238,6 +245,31 @@ const Page = () => {
       }
     };
     fetchData();
+  }, []);
+
+  // Pending challans for the two rows. Best effort: a failure leaves the
+  // count blank rather than holding up the page.
+  useEffect(() => {
+    let live = true;
+    for (const type of ['Sale', 'Purchase']) {
+      fetch(`/api/challan?type=${type}&status=pending&limit=500`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (live && d?.success) {
+            setPendingChallans((p) => ({ ...p, [type]: (d.challans || []).length }));
+          }
+        })
+        .catch(() => {});
+    }
+    fetch('/api/mri?view=pending')
+      .then((r) => r.json())
+      .then((d) => {
+        if (live && d?.success) setPendingMriCount((d.rows || []).length);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
   }, []);
 
   const handleSelect = (currentValue) => {
@@ -620,6 +652,105 @@ const Page = () => {
     </div>
   );
 
+  // A challan row (SIGFA's SC / PC) in the Sales or Purchases panel. Create
+  // opens the form; Alter and Delete open the register, where each challan
+  // carries its own protections (a billed challan cannot be deleted).
+  const renderChallanRow = ({ type, label }) => {
+    const pending = pendingChallans[type];
+    return (
+      <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 transition-colors hover:border-primary/30">
+        <span className="nav-tile-icon h-8 w-8">
+          <Truck className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-foreground">{label}</p>
+          {typeof pending === 'number' && (
+            <p className="text-xs text-muted-foreground">
+              {pending} pending to bill
+            </p>
+          )}
+        </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="shrink-0">
+              Manage
+              <ChevronsUpDown className="opacity-50" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuLabel>{label}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem onClick={() => router.push(`/challanadd?type=${type}`)}>
+                <Plus className="h-4 w-4" /> Create
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push(`/challan?type=${type}&status=`)}>
+                <Pencil className="h-4 w-4" /> Alter / Delete
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push(`/challan?type=${type}&status=pending`)}>
+                <ScrollText className="h-4 w-4" /> Pending challans
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    );
+  };
+
+  // Purchase M.R.I. (SIGFA's material receipt note) in the Purchases panel.
+  // An MRI is a purchase bill or a purchase challan with received, accepted
+  // and rejected quantities, so Create offers both; the registers are one
+  // page with four views. lib/mri.mjs.
+  const renderMriRow = () => (
+    <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 transition-colors hover:border-primary/30">
+      <span className="nav-tile-icon h-8 w-8">
+        <ClipboardCheck className="h-4 w-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-foreground">Purchase M.R.I.</p>
+        {typeof pendingMriCount === 'number' && (
+          <p className="text-xs text-muted-foreground">
+            {pendingMriCount ? `${pendingMriCount} with rejected material pending` : 'Material receipt & inspection'}
+          </p>
+        )}
+      </div>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className="shrink-0">
+            Manage
+            <ChevronsUpDown className="opacity-50" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-60">
+          <DropdownMenuLabel>Purchase M.R.I.</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuItem onClick={() => router.push('/purchaseadd?mri=1')}>
+              <Plus className="h-4 w-4" /> Create on a purchase bill
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push('/challanadd?type=Purchase&mri=1')}>
+              <Plus className="h-4 w-4" /> Create on a purchase challan
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push('/mri?view=register')}>
+              <Pencil className="h-4 w-4" /> M.R.I. register (alter)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push('/mri?view=pending')}>
+              <ScrollText className="h-4 w-4" /> Pending M.R.I.
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push('/mri?view=rejected')}>
+              <ScrollText className="h-4 w-4" /> Rejected material
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push('/mri?view=party')}>
+              <ScrollText className="h-4 w-4" /> Party wise rejected
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+
   // Ledger / stock-ledger report pickers
   const renderReportPicker = ({ label, icon: Icon, options, emptyText, allLabel, onPick, busyText }) => (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5">
@@ -744,6 +875,7 @@ const Page = () => {
               count: saleReturns.length,
               onCreate: () => router.push('/salereturn'),
             })}
+            {renderChallanRow({ type: 'Sale', label: 'Sales Challan' })}
           </div>
         </section>
 
@@ -771,6 +903,8 @@ const Page = () => {
               count: purchaseReturns.length,
               onCreate: () => router.push('/purchasereturn'),
             })}
+            {renderChallanRow({ type: 'Purchase', label: 'Purchase Challan' })}
+            {renderMriRow()}
           </div>
         </section>
 
@@ -941,6 +1075,18 @@ const Page = () => {
                 Customer &amp; Supplier Statements
                 <span className="block text-xs font-normal text-muted-foreground">
                   Opening, the period&apos;s entries and what is outstanding &mdash; print or send
+                </span>
+              </span>
+            </button>
+
+            <button type="button" className="nav-tile" onClick={() => router.push('/stock-report')}>
+              <span className="nav-tile-icon">
+                <Boxes className="h-[18px] w-[18px]" />
+              </span>
+              <span className="flex-1">
+                Stock Reports
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Summary, value wise, short list, ageing and the day book
                 </span>
               </span>
             </button>

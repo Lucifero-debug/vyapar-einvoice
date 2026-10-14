@@ -66,6 +66,24 @@ const itemSchema = new mongoose.Schema({
    minQuantity:{
     type:Number
    },
+   // === The other two of Sigfa's three levels ===
+   //
+   // ITMAST carries MINLVL, ORDLVL and MAXLVL, and Sigfa's stock warning
+   // prints all three beside the current stock. The re-order level normally
+   // sits ABOVE the minimum -- you order again before you reach the floor --
+   // and the maximum is the other half of its `Under-Over Stock` report.
+   //
+   // Optional and with no default, for the same reason as `minQuantity`
+   // above: a level nobody set must not become a comparison nobody asked
+   // for. lib/dashboard.mjs's `stockReason` is the one rule that reads all
+   // three, and lib/inventory.mjs's Short List calls it rather than keeping
+   // its own.
+   reorderLevel:{
+    type:Number
+   },
+   maxLevel:{
+    type:Number
+   },
    // === E-invoicing ===
    //
    // `unit` above is free text -- what the shop calls it, and what the stock

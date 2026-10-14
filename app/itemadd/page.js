@@ -23,6 +23,7 @@ import { UQC_CODES, UQC_DEFAULT, normalizeUqc } from '@/lib/uqc.mjs'
 import MasterShortcuts from '@/components/masters/MasterShortcuts'
 import { Notice, useNotice } from '@/components/ui/notice';
 import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
+import { levelProblem } from '@/lib/inventory.mjs';
 
 const PageContent = () => {
   const searchParams = useSearchParams();
@@ -34,6 +35,10 @@ const PageContent = () => {
   const [group, setGroup] = useState('')
   const [openBal, setOpenBal] = useState('')
   const [minBal, setMinBal] = useState('')
+  // Sigfa's other two levels (ITMAST's ORDLVL and MAXLVL). Blank means not
+  // set, exactly like the minimum.
+  const [reorderBal, setReorderBal] = useState('')
+  const [maxBal, setMaxBal] = useState('')
   const [lastBal, setLastBal] = useState('')
   // Read-only: what is on the shelf now. Shown when editing an item.
   const [currentStock, setCurrentStock] = useState('')
@@ -86,6 +91,8 @@ const PageContent = () => {
           setGroup(data.group || '')
           setOpenBal(data.openingQuantity ?? '')
           setMinBal(data.minQuantity ?? '')
+          setReorderBal(data.reorderLevel ?? '')
+          setMaxBal(data.maxLevel ?? '')
           setLastBal(data.lastQuantity ?? '')
           setCost(data.cost ?? '')
           setUnit(data.unit || 0)
@@ -147,9 +154,24 @@ const PageContent = () => {
       discount: numOrNull(discount),
       openBal: numOrNull(openBal),
       minBal: numOrNull(minBal),
+      reorderBal: numOrNull(reorderBal),
+      maxBal: numOrNull(maxBal),
       lastBal: numOrNull(lastBal),
       id,
     };
+
+    // A maximum under a minimum is the two boxes swapped, and saving it would
+    // make the Short List report an item as both. lib/inventory.mjs holds the
+    // rule so the form and the report agree.
+    const levels = levelProblem({
+      minQuantity: itemData.minBal,
+      reorderLevel: itemData.reorderBal,
+      maxLevel: itemData.maxBal,
+    });
+    if (levels) {
+      notify.error(levels);
+      return;
+    }
 
     const endpoint = value ? '/api/item-alter' : '/api/item-add';
 
@@ -325,13 +347,29 @@ const PageContent = () => {
                   </div>
 
                   <div className="space-y-1">
-                    <Label>Minimum Stock</Label>
+                    <Label>Minimum Level</Label>
                     <Input type="number" onChange={e => setMinBal(e.target.value)} value={minBal} />
                     {/* Left blank on purpose by default: an item with no
                         minimum is not compared against a made-up one. It is
                         still flagged when it runs out. */}
                     <p className="field-hint">
                       Leave blank and this item is only flagged when it runs out.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>Re-Order Level</Label>
+                    <Input type="number" onChange={e => setReorderBal(e.target.value)} value={reorderBal} />
+                    <p className="field-hint">
+                      Usually above the minimum — when to order again, not when you have run out.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>Maximum Level</Label>
+                    <Input type="number" onChange={e => setMaxBal(e.target.value)} value={maxBal} />
+                    <p className="field-hint">
+                      Over this and the item shows on the Short List as overstocked.
                     </p>
                   </div>
                 </div>

@@ -37,7 +37,7 @@ and [`EINVOICE_IMPLEMENTATION.md`](./EINVOICE_IMPLEMENTATION.md).
 ```bash
 npm install
 npm run dev        # http://localhost:3000
-npm test           # 48 suites, ~1,900 assertions — run before calling anything done
+npm test           # 64 suites, ~2,500 assertions — run before calling anything done
 npm run build
 ```
 
@@ -95,7 +95,8 @@ Sale/Purchase invoices and returns · Sale/Purchase orders with cancellation and
 order→invoice linkage · Production, Goods Issued, Goods Received and production
 planning · Receipt and payment vouchers with bill-wise adjustment · Cash Book,
 Bank Book, A/C Ledger · Trial Balance, Trading A/c, P&L, Balance Sheet ·
-customer and supplier statements · a Reports hub with thirteen shared date
+customer and supplier statements · Sigfa's stock reports: summary, value wise,
+short list, ageing analysis and day book · a Reports hub with thirteen shared date
 presets, CSV and `.xlsx` downloads and A4/A5 print · Sales/Purchase Book,
 party-wise and item-wise · GSTR-1 (e-return JSON and readable tables), GSTR-3,
 GSTR-3B · a business dashboard · per-firm branding: logo, legal name and

@@ -55,6 +55,7 @@ What it does:
 | Masters | Customers/parties, Items, HSN codes, Party price lists, Customer groups, GST states, Bill of Material |
 | Transactions | Sale, Sale Return, Purchase, Purchase Return invoices |
 | Orders | Sale/Purchase orders, order cancellation, order→invoice linkage, pending-order reports |
+| Challans | Sales/Purchase challans (SIGFA's SC/PC), stock effect, billing pending challans into invoices, pending challan book, challan print |
 | Production | Production (from a BOM), Goods Issued, Goods Received, Production planning |
 | Money | Receipt/payment vouchers, bill-wise adjustment ("Against Bill") |
 | Books | Cash Book, Bank Book, A/C Ledger |
@@ -269,6 +270,9 @@ components/
                          the pattern ItemLedgerSearchParams established. Each
                          fires ONCE: a deep link sets the opening state and the
                          page's own controls own it afterwards
+  StockReportSearchParams.jsx
+                         `?report=` off the hub's five stock tiles, behind the
+                         page's Suspense boundary (§6.40)
   TodaysOrders.jsx       The once-a-day reminder of orders dated today
   InvoiceDocument.jsx    The printable invoice body. `forwardRef`, props
                          `{ invoice, isRollStationary }` — takes a whole saved
@@ -297,6 +301,11 @@ lib/                     ← THE DOMAIN LAYER. Read §6 before touching any of i
                          bills, and every refusal, in words (§6.18)
   openBillsFor.mjs       A party's unsettled bills      (imports Mongoose)
   itemLedger.mjs         Stock rows for an invoice      (imports Mongoose)
+  inventory.mjs          Sigfa's stock reports: the period split, the FIFO
+                         ageing, the five supportable valuation bases and the
+                         two refused ones, the day book and a physical count.
+                         Holds no figure itemStock / dashboard / salesReports /
+                         financials already own (§6.40)
   itemStock.mjs          Current stock = opening + receipts − issues (§9.9)
   runningBalances.mjs    Recompute stored running figures (imports Mongoose)
   cashAccount.mjs        Resolve the cash/bank account   (imports Mongoose)
@@ -451,7 +460,8 @@ bank accounts (distinguished by `group` being `cash` or `bank`).
 
 `name` (**join key**, no unique index), `hsn`, `short`, `group`, `unit`,
 `uqc`, `isService`, `mrp`, `cost`, `salePrice`, `purchasePrice`, `discount`,
-`gst`, `weight`, `itemType`, `openingQuantity`, `lastQuantity`, `minQuantity`.
+`gst`, `weight`, `itemType`, `openingQuantity`, `lastQuantity`, `minQuantity`,
+`reorderLevel`, `maxLevel`.
 
 > **`lastQuantity` is dead data.** Nothing updates it from stock movement; only
 > the item form writes it. Real stock comes from the item ledger. Never display
@@ -460,12 +470,15 @@ bank accounts (distinguished by `group` being `cash` or `bank`).
 - `uqc` is the **GST unit code** the IRP accepts (`KGS`, `NOS`, `MTR`…),
   deliberately not guessed from the free-text `unit`. `lib/uqc.mjs` stamps it
   onto every saved invoice line, so a bill keeps the code it was reported with.
-- `minQuantity` is the **reorder level, and is optional with no default.** An
-  item that has never had one set is left out of the dashboard's "below
-  minimum" alert rather than compared against an invented number — a
-  wholesaler's minimum for steel plate is not a shop's for washers. Such an
-  item is still reported when its stock runs out or goes negative, which needs
-  no threshold.
+- `minQuantity`, `reorderLevel` and `maxLevel` are **Sigfa's three levels** —
+  ITMAST's MINLVL, ORDLVL and MAXLVL — and all three are **optional with no
+  default.** An item that has never had one set is left out of the comparison
+  rather than measured against an invented number: a wholesaler's minimum for
+  steel plate is not a shop's for washers. Such an item is still reported when
+  its stock runs out or goes negative, which needs no threshold. The re-order
+  level normally sits ABOVE the minimum, and `lib/dashboard.mjs`'s
+  `stockReason` is the ONE rule that reads all three (§6.40). The dashboard's
+  stored alerts still raise only negative / out / below minimum.
 
 ### `Invoice` (`models/invoiceModel.js`)
 
@@ -1516,7 +1529,8 @@ production entry no longer leaves later `balanceQuantity` values wrong; and
 `TRANSACTION_COLLECTIONS` — orders and productions had been listed and never
 wired, so its own guard refused every clear.
 
-**Reports** (`/stock-report`, `/api/stock-report`, `lib/inventoryReports.mjs`,
+**Reports** — *replaced by Sigfa's five stock reports, §6.40; `lib/inventoryReports.mjs`
+is kept and tested but no longer behind `/stock-report`.* As first built (`/stock-report`, `/api/stock-report`, `lib/inventoryReports.mjs`,
 read-only, `report:read`, CSV/xlsx/print/URL filters as §6.29):
 - *Summary* — opening at the From date (master opening + movements before
   it), in, out, closing, minimum, status; search and status filter.
@@ -1768,6 +1782,104 @@ Not fixed, kept visible: `react-hooks/set-state-in-effect` (~32 sites, mostly `u
 - `/api/invoice-extract` takes `kind`; `{ extraction, kind }` re-drafts without the model (changing the type after reading). Photo reads capped per firm per day: `BILL_READ_DAILY_LIMIT` (default 200).
 - A matched party whose group contradicts the kind (supplier on a sale) gets a check warning.
 - Still open, app-wide: the tax-type radio on a TYPED bill is manual and defaults to local; it is not derived from the party's state.
+
+### 6.39 Sales and purchase challans (SIGFA's SC / PC)
+
+*One implementation.* A second, partial challan design (`lib/challan.mjs` with `scripts/challan.test.mjs`: challans that never move stock, no screens or routes) was written in parallel and is superseded by this one, which follows SIGFA's per-challan stock effect. Nothing imports `lib/challan.mjs`, and its test is not in `npm test`; both files can be deleted.
+
+Read out of `SIGFA105.exe` (§6.19): MKEYs `SC` Sales Challan and `PC` Purchase Challan, printed "SALES CHALLAN" / "PURCHASE CHALLAN"; a per-challan stock-effect flag (`Dsale` — SIGFA's stock query counts only `Dsale='Y'` lines); invoice lines carry `Challan` + `ChRefNo`; pending = challan qty less what invoices took; "Pending Challan [Alt+H]" on the invoice screen; "Please Select Challans With Same Effect Value"; "Can't Delete, Used In …"; "Quantity Is Less Than Quantity Entered Against This Challan".
+
+- **Model** `models/challanModel.js`: one collection, `type` Sale|Purchase, own number series per type (`lib/getNextChallanNo.js`, counter `challanNo:<type>`), unique `{companyId, type, challanNo}`. Lines carry qty, rate, discount, GST and `billedQty` (written only by `lib/challanClaims.mjs`). Party snapshot as on invoices. `stockEffect` default true.
+- **Rules** `lib/challanStatus.mjs` (pure): status pending/partial/billed, totals via `recalcItem`, stock rows, claims/net claims/apply (over-billing refused), edit/delete guards, picker, print refs. Input checking `lib/challanInput.mjs` (billed figures, totals, status never accepted; line ids must be existing ObjectIds, once).
+- **Stock**: a challan with stock effect writes ItemLedger rows keyed `SC-<n>` / `PC-<n>` (`writeChallanLedgerRows`), typeOfVoucher "Sale Challan"/"Purchase Challan". **Posts nothing to the accounts.**
+- **Billing**: invoice lines carry `challanNo/challanType/challanLineId/challanDate` and a server-set `challanStock`. save-invoice and sale-alter check the refs (same side, same party, same item, no mixing stock effects), stamp `challanStock` from the challan, and **skip stock rows for those lines** (`invoiceStockLines`). Claims: save → claim, alter → net difference, delete → release. Returns cannot bill a challan; a line bills an order or a challan, not both.
+- **Screens**: `/challan` (register / pending challan book, Sale|Purchase, Pending|Billed|All), `/challanadd?type=` (make/alter), `/challan/print`. On the sale/purchase screens: "Pending challan [Alt+L]" (SIGFA's Alt+H is shortcut help here). Invoice print lists "Challan No.".
+- **Renames** of a party or item cascade into challans. Clearing transactions clears challans.
+- **Not done (SIGFA has them)**: Transfer Challan (branches), carrying pending challans into a new year, returns against a challan, "Sales Challan" option in the Sales Book, the "Accept qty more than challan" setup switch (over-billing is refused), a firm-level "Stock Effect With Challan" default (it is a tick box on each challan, default on).
+- **Financials note**: an unbilled stock-moving challan changes closing stock with no matching sale/purchase entry, as in SIGFA.
+
+### 6.40 Sigfa's stock reports hold no figure of their own (supersedes the report half of §6.30)
+
+`/stock-report` serves five of Sigfa's stock reports — **Stock Summary, Stock
+Summary Value Wise, Stock Short List, Stock Aging Analysis, Stock Day Book** —
+from one page and one route. `lib/inventory.mjs` has the arithmetic; the route
+and the page compute nothing, and a test asserts neither contains a `reduce`.
+
+The column captions are **Sigfa's own, read out of the binary**, not invented:
+`Opening Quantity`, `Rcpt. Qty.`, `Issue Qty.`, `Balance Qty.`, and on the day
+book `Vch Type`, `Voucher`, `Party Name`. The shortfall column is headed
+**`Required`**, which is the word Sigfa's own stock warning uses beside
+`Minimum Level` and `Re-Order Level`.
+
+**Four figures this module is forbidden to have an opinion about:**
+
+- **The closing quantity is `buildStockIndex`'s** (§6 and `lib/itemStock.mjs`).
+  A window that reaches today foots to it exactly, and a test pins that — if
+  the two disagree, the stock sheet and the stock line under an invoice item
+  are two answers to one question. Neither `Item.lastQuantity` nor a row's
+  `balanceQuantity` is read anywhere; a test asserts the words do not appear.
+- **What counts as low is `lowStockRows`'s** (`lib/dashboard.mjs`). The Short
+  List calls it, so the dashboard tile and the printed sheet cannot drift.
+  `STOCK_REASONS` has five — negative, out, below, reorder, over — and
+  `DASHBOARD_REASONS` has the three the tile shows: an item between its
+  re-order level and its maximum is a purchasing question, and a tile that
+  fired on it would be permanently full.
+- **The weighted average rate is `itemWise`'s** (`lib/salesReports.mjs`), whose
+  `rate` is already taxable value over quantity across the purchase bills, with
+  returns netted off.
+- **Valued at cost, this sheet IS the balance sheet's closing stock.**
+  `lib/financials.mjs`'s `stockValue` is the figure the balance sheet carries,
+  and a test asserts the two are the same number — including that a NEGATIVE
+  quantity is valued rather than skipped.
+
+**The period split.** `Opening Quantity` is the master's opening plus
+everything dated before `from`; receipts and issues are the window's; `Balance
+Qty.` is the sum. The same arithmetic `accountBook()` does for a party, and for
+the same reason: an opening computed from before the window is the only way a
+back-dated entry lands in the right place.
+
+**Five of Sigfa's seven valuation bases, and two refusals.** Sigfa offers
+`Weighted Rate : Fifo Basis : Lifo Basis : On Purchase Price : On Last Purc
+Price : On Cost Price : On MRP`. `ItemLedger` has **no rate column** — every row
+is quantities and a date — so a FIFO or LIFO *valuation* cannot be computed from
+it, and both are listed, refused with the reason, and shown disabled on the
+screen rather than quietly dropped. A route asked for one answers **400**: a
+sheet headed FIFO that was valued some other way is the one mistake here that
+would be carried into a balance sheet. A missing rate is **null, never zero** —
+zero writes the stock off — and the headline total goes null the moment one row
+is unvalued, with the valued subtotal and the count of what was left out
+printed beside it.
+
+FIFO **ageing** is a different question and IS done properly, because ageing
+needs only quantities and dates: receipts are consumed oldest-first by the
+total issued, and what survives is the stock still on hand with the date it
+came in. An over-issue is covered by the next receipt before any of it is
+treated as stock, or a shop that billed before the bill arrived would show the
+same goods as both missing and sitting on a shelf. Stock of unknown age goes in
+the OLDEST slab, which is the truthful place for it.
+
+**A sales return is told from a sale by its DIRECTION.** The ledger writer
+records only `"Sale"` or `"Purchase"` and not the return flag
+(`lib/itemLedger.mjs`), so inward on a Sale can only be a return and outward on
+a Purchase can only be a return — which is exactly
+`isInwardStock({ type, isReturn })`. The three stock vouchers are told apart by
+their key's prefix (`PRD-`, `GI-`, `GR-`), because `typeOfVoucher` is hardcoded
+to `"Production"` for all three.
+
+Two of the five reports take **no date range** — a level and an age are about
+the stock on the shelf now — and the screen says "As on" instead of offering a
+filter that could not change the answer.
+
+### 6.41 Purchase M.R.I. (SIGFA's material receipt note)
+
+Read out of `SIGFA105.exe`: an MRI is not a document of its own but a Purchase Invoice or Purchase Challan flagged as one (`Subkey='MI'`, menus "Purchase Invoice & MRI" / "Purchase Challan & MRI"), with its own MRI series, a remark, and Received / Accepted / Rejected quantities ("Accepted Qty. Is More Than Received Qty."). Rejected material taken in again is a Re-MRI against the earlier one ("Ag. MRI No."); "List Of Pending MRI [Alt+H]" is every MRI with rejected material and no Re-MRI yet (`RCQty>Qty and MRINO not in (AgMRINo…)`). Reports: Rejected Material Register, Party Wise Rejected Material.
+
+- **Rules** `lib/mri.mjs` (pure, `scripts/mri.test.mjs`). **DB half** `lib/mriSave.mjs`: the number series (counter `mriNo`, ONE series across bills and challans, nudged past the highest used on either), the Ag. MRI No. check (exists, same supplier, has a rejection, not already re-MRI'd, not itself) and the guard that an MRI a Re-MRI points at cannot stop being an MRI, change supplier or be deleted.
+- **Posting is unchanged.** `quantity` on the line stays the ACCEPTED quantity — billed, taxed and stocked exactly as before — and `receivedQty` is stored beside it. A lot rejected outright is a line at quantity 0 (allowed on an MRI only, when something was received); `invoiceStockLines` skips it. Debit notes for the rejected value are NOT passed (no debit note voucher exists yet); `rejectedValue` is the figure one would use.
+- **Fields.** Invoice and challan headers: `mriNo`, `mriRemark`, `againstMriNo` (unique partial index on `{companyId, mriNo}` in each collection; the shared counter keeps them apart). Lines: `receivedQty`. The request carries `mri: { on, remark, againstMriNo }` — one more key in the frozen billing contract (`PAYLOAD_KEYS`, now 33) — never the number. A received figure on a non-MRI document is refused.
+- **Routes.** `save-invoice`, `sale-alter`, `challan-add`/`challan-alter` (via `lib/challanSave.mjs`) call `mriFields` inside their transaction; `delete-invoice` and `delete-challan` call `assertMriDeletable`. `/api/mri?view=register|pending|rejected|party` (read-only, `invoice:read`); `/api/next-mri-no` (peek, `invoice:write`).
+- **Screens.** `components/billing/MriPanel.jsx` on the purchase bill and the purchase challan form (tick M.R.I., remark, Ag. MRI No. from the supplier's pending list); a Received and a Rejected column appear on the lines. `/mri` — the four registers, printable. Home page: "Purchase M.R.I." row in the Purchases section after Purchase Challan (create on a bill / on a challan, register, pending, rejected, party wise). The bill and challan prints show the MRI No., totals and rejected lines.
+
 
 ## 7. API routes
 
@@ -2423,6 +2535,8 @@ The suites that matter most:
 | `posting-invariants.test.mjs` | Replays the routes against an in-memory store. Asserts that posting-then-deleting leaves balances untouched and no rows behind, that every account's balance equals its own ledger rows, and that edits cancel exactly |
 | `posting-consistency.test.mjs` | Create/edit/delete derive the same figures |
 | `inventory-reports.test.mjs` | Stock replayed through receipts, issues, both returns, production, edits, deletes and back-dated entries; summary, movements and valuation agree with the dashboard's figure and the balance sheet's closing stock |
+| `inventory.test.mjs` | That a window reaching today foots to `buildStockIndex`, that a back-dated entry lands in the opening, that the Short List keeps no rule of its own, that FIFO and LIFO valuation are refused with the reason, and that valued at cost the sheet IS the balance sheet's closing stock (§6.40) |
+| `mri.test.mjs` | Purchase M.R.I.: received/accepted/rejected and SIGFA's refusal, the MRI block and the 33-key contract, zero-accepted lines moving no stock, Re-MRI rules, the pending list, the rejected and party-wise registers, the shared session-carrying counter, the delete guards, permissions and the home-page row (§6.41) |
 | `stock-alerts.test.mjs` | Low-stock alerts over time: one per condition, worse re-notifies, recovery resolves, per-firm isolation, transaction wiring |
 | `report-sheets.test.mjs` | Sales book, GST return and financial statement downloads, built from the real report modules and read back from the workbook bytes |
 | `report-query.test.mjs` | Report filters in the URL: validation, defaults, clearing, the 13 presets, round trips, and that the URL is replaced, never pushed |

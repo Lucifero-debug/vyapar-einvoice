@@ -8,6 +8,7 @@ import Ledger from "@/models/ledgerModel";
 import Voucher from "@/models/voucherModel";
 import Order from "@/models/orderModel";
 import Production from "@/models/productionModel";
+import Challan from "@/models/challanModel";
 import StockAlert from "@/models/stockAlertModel";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
 import {
@@ -39,6 +40,7 @@ const MODELS = {
   // now, with the low-stock alerts, so the wipe empties what the list says.
   orders: Order,
   productions: Production,
+  challans: Challan,
   stockalerts: StockAlert,
 };
 

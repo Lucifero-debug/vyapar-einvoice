@@ -5,6 +5,7 @@ import Invoice from '../../../models/invoiceModel'
 import Ledger from '../../../models/ledgerModel'
 import ItemLedger from '../../../models/itemLedgerModel'
 import Voucher from '../../../models/voucherModel'
+import Challan from "@/models/challanModel";
 import { applyDelta, modeOf, round2, toSigned } from '@/lib/balance.mjs'
 import { withTransaction, AbortTransaction } from '@/lib/withTransaction.mjs'
 import { findNameClash, normalizeName } from "@/lib/uniqueName.mjs";
@@ -138,6 +139,14 @@ async function handlePOST(req, auth) {
                     { "customers.name": previousName },
                     { $set: { "customers.$[line].name": nextName } },
                     { session, arrayFilters: [{ "line.name": previousName }] }
+                );
+                // Challans name their party too, and an invoice billing one
+                // checks the two names agree (lib/challanStatus.mjs). Left
+                // behind, the party's pending challans could never be billed.
+                await Challan.updateMany(
+                    { "customer.name": previousName },
+                    { $set: { "customer.name": nextName } },
+                    { session }
                 );
             }
 

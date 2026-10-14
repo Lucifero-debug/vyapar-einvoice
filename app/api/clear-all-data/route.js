@@ -6,6 +6,7 @@ import Voucher from "../../../models/voucherModel";
 import ItemLedger from "@/models/itemLedgerModel";
 import Ledger from "../../../models/ledgerModel";
 import Counter from "../../../models/counterModel";
+import Challan from "@/models/challanModel";
 import PriceList from "../../../models/priceListModel";
 import { NextResponse } from "next/server";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
@@ -61,6 +62,8 @@ async function handleDELETE(req, auth) {
         Voucher,
         ItemLedger,
         Ledger,
+        // Challans: they reference the items and parties wiped here.
+        Challan,
         // Without this the invoice counter survives the wipe and numbering
         // carries on from wherever it left off instead of starting again.
         Counter,

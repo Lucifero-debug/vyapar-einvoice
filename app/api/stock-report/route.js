@@ -2,181 +2,253 @@ import { NextResponse } from "next/server";
 import { connect } from "@/lib/mongodb";
 import Company from "@/models/companyModel";
 import Item from "@/models/itemModel";
+import Invoice from "@/models/invoiceModel";
 import ItemLedger from "@/models/itemLedgerModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
-import { istDayWindow } from "@/lib/istDate.mjs";
 import { companyFrom } from "@/lib/company.mjs";
 import { formatOf, isReportFormat, reportResponse } from "@/lib/reportHttp.js";
-import { isIsoDate, MAX_TEXT } from "@/lib/reportQuery.mjs";
+import { isPreset, istIso, resolvePeriod } from "@/lib/reportPeriods.mjs";
+import { buildStockIndex } from "@/lib/itemStock.mjs";
+import { STOCK_REASONS } from "@/lib/dashboard.mjs";
 import {
-  COSTING_METHOD,
-  MOVEMENT_TYPE_KEYS,
-  MOVEMENT_TYPES,
-  SUMMARY_STATUSES,
-  inventorySheets,
-  movementRows,
-  movementTotals,
-  stockSummaryRows,
-  stockSummaryTotals,
-  valuationRows,
-} from "@/lib/inventoryReports.mjs";
+  DEFAULT_AGING_SLABS,
+  DEFAULT_BASIS,
+  DEFAULT_FILTER,
+  STOCK_REPORTS,
+  VALUATION_BASES,
+  agingColumns,
+  agingOf,
+  agingTotals,
+  applyFilter,
+  basisProblem,
+  dayBook,
+  dayBookTotals,
+  isStockFilter,
+  isStockReport,
+  lastPurchaseRates,
+  reportTakesPeriod,
+  sheetTotals,
+  shortList,
+  shortListSummary,
+  slabProblem,
+  stockPeriod,
+  stockPeriodTotals,
+  stockReportName,
+  stockSheets,
+  valueCoverage,
+  valueRows,
+  weightedRates,
+} from "@/lib/inventory.mjs";
 
+// Every invoice and every stock voucher changes these, so a cached stock
+// sheet is a wrong stock sheet -- the same reason /api/financials and
+// /api/item-stock say this.
 export const dynamic = "force-dynamic";
 
 /**
- * The inventory reports.
+ * Sigfa's stock reports, from one route.
  *
- *   GET /api/stock-report
- *         ?view=summary|movements|valuation
- *         &from=&to=            IST calendar days; valuation is as at `to`
- *         &item=                one item, by its exact name (movements)
- *         &type=                a movement type (lib/inventoryReports.mjs)
- *         &ref=                 document number, or part of one
- *         &q=                   search: item, party, document, HSN, group
- *         &status=              summary: all|low|negative|out|below|in-stock
- *         &page=&size=          movements on screen only; exports are whole
- *         &format=json|csv|xlsx
+ *   report    summary | value | short | aging | daybook
+ *   preset    one of lib/reportPeriods.mjs's thirteen (the period reports)
+ *   from,to   inclusive IST calendar days; required when preset=custom
+ *   basis     the valuation basis, for report=value
+ *   filter    all | negative | nonzero | moved
+ *   slabs     the aging day slabs, comma-separated
+ *   item      one item only, for the day book
+ *   format    json | csv | xlsx
  *
- * Every figure is the stock ledger summed (lib/itemStock.mjs) -- the number
- * the dashboard, the billing screens and the financial statements use -- and
- * the arithmetic is all in lib/inventoryReports.mjs. This route only fetches.
- * Read-only: nothing here writes.
+ * ONE ROUTE SERVES THE SCREEN AND BOTH DOWNLOADS, which is how the rule that
+ * a user who cannot see a report cannot download it is made true by
+ * construction rather than by a second permission entry somebody has to
+ * remember. See the note atop lib/reportHttp.js.
+ *
+ * The route computes nothing. Every figure comes from lib/inventory.mjs,
+ * which in turn defers to lib/itemStock.mjs for the closing quantity,
+ * lib/dashboard.mjs for what counts as low and lib/salesReports.mjs for the
+ * weighted average rate -- so this route cannot hold a second opinion about
+ * any of them.
+ *
+ * WHAT IS FETCHED, AND WHY IT IS NOT TRIMMED TO THE WINDOW. The stock rows
+ * are read in FULL, not filtered to the period, because the Opening Quantity
+ * column is everything that happened before `from` -- the same reason
+ * /api/account-book fetches a party's whole ledger. The invoices are fetched
+ * only for the two valuation bases that need them, and then only their lines.
  */
-
-/** Movements read for one report, at most. A range wider than this is narrowed, not truncated. */
-const MAX_MOVEMENTS = 20000;
-
-const groupMoves = (match) => [
-  ...(match ? [{ $match: match }] : []),
-  { $group: { _id: "$itemName", received: { $sum: "$receiptQuantity" }, issued: { $sum: "$issueQuantity" } } },
-];
-
-const bad = (error) => NextResponse.json({ success: false, error }, { status: 400 });
-
 async function handleGET(req, auth) {
   try {
-    const params = new URL(req.url).searchParams;
-    const get = (k) => (params.get(k) || "").trim();
-    const view = get("view") || "summary";
-    const from = get("from");
-    const to = get("to");
-    const item = get("item");
-    const type = get("type");
-    const ref = get("ref");
-    const q = get("q");
-    const status = get("status") || "all";
-    const format = formatOf(params);
-
-    if (!["summary", "movements", "valuation"].includes(view)) return bad(`"${view}" is not one of the stock reports.`);
-    if (!isReportFormat(format)) return bad(`"${format}" is not a format. Use json, csv or xlsx.`);
-    for (const [label, value] of [["from", from], ["to", to]]) {
-      if (value && !isIsoDate(value)) return bad(`"${value}" is not a date (${label}).`);
-    }
-    if (from && to && from > to) return bad("The From date is after the To date.");
-    if (type && !MOVEMENT_TYPE_KEYS.includes(type)) return bad(`"${type}" is not a movement type.`);
-    if (!SUMMARY_STATUSES.includes(status)) return bad(`"${status}" is not a stock status.`);
-    for (const value of [item, ref, q]) if (value.length > MAX_TEXT) return bad("That search is too long.");
-
     await connect();
 
-    // IST day boundaries, as every report in the app uses them.
-    const start = from ? istDayWindow(from).from : null;
-    const end = to ? istDayWindow(to).to : null;
+    const { searchParams } = new URL(req.url);
+    const report = (searchParams.get("report") || "summary").trim();
+    const preset = (searchParams.get("preset") || "thisFy").trim();
+    const basis = (searchParams.get("basis") || DEFAULT_BASIS).trim();
+    const filter = (searchParams.get("filter") || DEFAULT_FILTER).trim();
+    const item = (searchParams.get("item") || "").trim();
+    const format = formatOf(searchParams);
 
-    const items = await Item.find(
-      {},
-      { name: 1, unit: 1, hsn: 1, group: 1, openingQuantity: 1, minQuantity: 1, isService: 1, cost: 1 }
-    ).lean();
-
-    let payload;
-    let sheetRows;
-    let sheetTotals;
-
-    if (view === "valuation") {
-      const movements = await ItemLedger.aggregate(groupMoves(end ? { date: { $lt: end } } : null));
-      const { rows, totals } = valuationRows({ items, movements, q });
-      payload = { success: true, view, asAt: to || null, method: COSTING_METHOD, rows, totals };
-      sheetRows = rows;
-      sheetTotals = totals;
-    } else if (view === "summary") {
-      const [before, inside] = await Promise.all([
-        start ? ItemLedger.aggregate(groupMoves({ date: { $lt: start } })) : Promise.resolve([]),
-        ItemLedger.aggregate(
-          groupMoves(
-            start || end
-              ? { date: { ...(start ? { $gte: start } : {}), ...(end ? { $lt: end } : {}) } }
-              : null
-          )
-        ),
-      ]);
-      const rows = stockSummaryRows({ items, before, inside, q, status });
-      payload = { success: true, view, from: from || null, to: to || null, rows, totals: stockSummaryTotals(rows) };
-      sheetRows = rows;
-      sheetTotals = payload.totals;
-    } else {
-      // Movements. The opening for each item is everything before the window,
-      // summed in the database; only the window's own rows are read.
-      const scope = item ? { itemName: item } : {};
-      const window = start || end ? { date: { ...(start ? { $gte: start } : {}), ...(end ? { $lt: end } : {}) } } : {};
-      const [before, rows] = await Promise.all([
-        start ? ItemLedger.aggregate(groupMoves({ ...scope, date: { $lt: start } })) : Promise.resolve([]),
-        ItemLedger.find(
-          { ...scope, ...window },
-          { date: 1, itemName: 1, invoiceNo: 1, typeOfVoucher: 1, partyName: 1, receiptQuantity: 1, issueQuantity: 1 }
-        )
-          .sort({ date: 1, _id: 1 })
-          .limit(MAX_MOVEMENTS + 1)
-          .lean(),
-      ]);
-      if (rows.length > MAX_MOVEMENTS) {
-        return bad(
-          `More than ${MAX_MOVEMENTS.toLocaleString("en-IN")} movements in this range. Narrow the dates or choose an item.`
-        );
-      }
-      const all = movementRows({ items, before, rows, from, to, type, ref, q });
-      const totals = movementTotals(all);
-      const size = Math.min(500, Math.max(1, Number(params.get("size")) || 100));
-      const pages = Math.max(1, Math.ceil(all.length / size));
-      const page = Math.min(pages, Math.max(1, Number(params.get("page")) || 1));
-      payload = {
-        success: true,
-        view,
-        from: from || null,
-        to: to || null,
-        types: MOVEMENT_TYPES,
-        // The screen pages through; the download is handed every row.
-        rows: format === "json" ? all.slice((page - 1) * size, page * size) : all,
-        page,
-        pages,
-        size,
-        totals,
-      };
-      sheetRows = all;
-      sheetTotals = totals;
+    if (!isStockReport(report)) {
+      return NextResponse.json(
+        { success: false, error: `"${report}" is not a stock report.` },
+        { status: 400 }
+      );
+    }
+    if (!isReportFormat(format)) {
+      return NextResponse.json(
+        { success: false, error: `"${format}" is not a format. Use json, csv or xlsx.` },
+        { status: 400 }
+      );
+    }
+    if (!isStockFilter(filter)) {
+      return NextResponse.json(
+        { success: false, error: `"${filter}" is not a filter.` },
+        { status: 400 }
+      );
+    }
+    // Validated rather than quietly defaulted: a preset this build does not
+    // know means the caller and the server disagree about which period they
+    // are discussing.
+    if (!isPreset(preset)) {
+      return NextResponse.json({ success: false, error: `"${preset}" is not a period.` }, { status: 400 });
     }
 
-    if (format === "json") return NextResponse.json(payload);
+    const slabsParam = (searchParams.get("slabs") || "").trim();
+    const slabs = slabsParam
+      ? slabsParam.split(",").map((s) => Number(s.trim()))
+      : DEFAULT_AGING_SLABS;
+    if (report === "aging") {
+      const bad = slabProblem(slabs);
+      if (bad) return NextResponse.json({ success: false, error: bad }, { status: 400 });
+    }
+    if (report === "value") {
+      const bad = basisProblem(basis);
+      // 400, not a silent fall back to the cost price: a sheet headed FIFO
+      // that was valued some other way is the one mistake in this module that
+      // would be carried into a balance sheet.
+      if (bad) return NextResponse.json({ success: false, error: bad }, { status: 400 });
+    }
 
-    const companyDoc = await Company.findById(auth.companyId).lean();
+    const period = resolvePeriod({
+      preset,
+      from: searchParams.get("from") || "",
+      to: searchParams.get("to") || "",
+    });
+
+    // A level is compared against stock as it stands, and the ageing against
+    // what is on the shelf today -- neither takes a period, so those two
+    // reports are headed "As on" instead.
+    const takesPeriod = reportTakesPeriod(report);
+    const asOf = takesPeriod ? period.to : istIso(Date.now());
+
+    const [companyDoc, items, rows] = await Promise.all([
+      Company.findOne({}).lean(),
+      Item.find(
+        {},
+        {
+          name: 1,
+          unit: 1,
+          hsn: 1,
+          group: 1,
+          openingQuantity: 1,
+          minQuantity: 1,
+          reorderLevel: 1,
+          maxLevel: 1,
+          cost: 1,
+          purchasePrice: 1,
+          mrp: 1,
+        }
+      ).lean(),
+      ItemLedger.find(
+        {},
+        { itemName: 1, date: 1, invoiceNo: 1, typeOfVoucher: 1, partyName: 1, receiptQuantity: 1, issueQuantity: 1 }
+      ).lean(),
+    ]);
+
+    const company = companyFrom(companyDoc);
+
+    let built = [];
+    let totals = null;
+    let extra = {};
+
+    if (report === "summary") {
+      built = applyFilter(stockPeriod({ items, rows, from: period.from, to: period.to }), filter);
+      totals = stockPeriodTotals(built);
+    } else if (report === "value") {
+      const base = applyFilter(stockPeriod({ items, rows, from: period.from, to: period.to }), filter);
+      // Only the two bases that read the bills go near the invoice
+      // collection, and then only the lines.
+      const needsBills = basis === "weighted" || basis === "lastPurchase";
+      const invoices = needsBills
+        ? await Invoice.find(
+            { type: "Purchase" },
+            { type: 1, return: 1, date: 1, invoiceNo: 1, "items.name": 1, "items.quantity": 1, "items.cost": 1, "items.taxableAmount": 1, "items.gstAmount": 1, "items.total": 1 }
+          ).lean()
+        : [];
+      const weighted = basis === "weighted" ? weightedRates({ invoices, upto: period.to }) : null;
+      const last = basis === "lastPurchase" ? lastPurchaseRates({ invoices, upto: period.to }) : null;
+
+      built = valueRows({ rows: base, items, basis, weighted, last });
+      totals = stockPeriodTotals(built);
+      extra = { coverage: valueCoverage(built), basis };
+    } else if (report === "short") {
+      const stock = buildStockIndex({
+        items,
+        movements: rows.map((r) => ({
+          itemName: r.itemName,
+          received: r.receiptQuantity,
+          issued: r.issueQuantity,
+        })),
+      });
+      // All five reasons here -- Sigfa's Short List and Under-Over Stock in
+      // one sheet. The dashboard tile asks for three; see
+      // DASHBOARD_REASONS in lib/dashboard.mjs.
+      built = shortList({ items, stock, reasons: STOCK_REASONS });
+      extra = { summary: shortListSummary({ items, stock, rows: built }) };
+    } else if (report === "aging") {
+      built = agingOf({ items, rows, asOf, slabs });
+      totals = agingTotals(built, slabs);
+      extra = { slabs, columns: agingColumns(slabs) };
+    } else if (report === "daybook") {
+      built = dayBook({ rows, from: period.from, to: period.to, item });
+      totals = dayBookTotals(built);
+      extra = { item };
+    }
+
+    const payload = {
+      success: true,
+      report,
+      reportName: stockReportName(report),
+      reports: STOCK_REPORTS,
+      bases: VALUATION_BASES,
+      period: takesPeriod ? period : null,
+      asOf,
+      filter,
+      company,
+      rows: built,
+      totals,
+      ...extra,
+    };
+
     return reportResponse({
       format,
       payload,
-      sheets: inventorySheets({
-        view,
-        rows: sheetRows,
-        totals: sheetTotals,
-        from,
-        to,
-        company: companyFrom(companyDoc),
-        filters: {
-          Item: item,
-          Type: type ? MOVEMENT_TYPES[type] : "",
-          Document: ref,
-          Search: q,
-          Status: status !== "all" ? status : "",
-        },
+      sheets: stockSheets({
+        report,
+        rows: built,
+        totals: sheetTotals({ report, rows: built, slabs }),
+        from: period.from,
+        to: period.to,
+        basis,
+        filter,
+        slabs,
+        asOf,
+        company,
       }),
-      filename: { report: `stock-${view}`, subject: item, from, to },
+      filename: {
+        report: `stock-${report}`,
+        subject: report === "daybook" ? item : "",
+        from: takesPeriod ? period.from : asOf,
+        to: takesPeriod ? period.to : asOf,
+      },
     });
   } catch (err) {
     console.error("Stock report error:", err);
@@ -184,6 +256,6 @@ async function handleGET(req, auth) {
   }
 }
 
-// Signed in, permission checked, and every query scoped to the caller's own
-// firm by the tenant plugin. See lib/tenantRoute.mjs.
+// Signed in, permission checked, and every query above scoped to the caller's
+// own firm. See lib/tenantRoute.mjs.
 export const GET = tenantRoute(handleGET);

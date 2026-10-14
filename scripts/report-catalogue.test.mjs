@@ -140,6 +140,7 @@ test("every preselecting query is one the target page actually reads", () => {
   const readers = {
     "/statement": "../components/StatementSearchParams.jsx",
     "/account-book": "../components/AccountBookSearchParams.jsx",
+    "/stock-report": "../components/StockReportSearchParams.jsx",
   };
   // Pages that read their filters through components/reports/ReportUrlSync.jsx
   // declare them as a schema in lib/reportQuery.mjs instead of a reader of
@@ -149,7 +150,6 @@ test("every preselecting query is one the target page actually reads", () => {
     "/gst-return": REPORT_QUERIES.gstReturn,
     "/financials": REPORT_QUERIES.financials,
     "/order-report": REPORT_QUERIES.orderReport,
-    "/stock-report": REPORT_QUERIES.stockReport,
   };
   for (const report of REPORTS) {
     const keys = Object.keys(report.query || {});

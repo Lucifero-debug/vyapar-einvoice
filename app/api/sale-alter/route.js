@@ -20,6 +20,7 @@ import {
   recomputeLedgerBalances,
 } from "@/lib/runningBalances.mjs";
 import { withTransaction, AbortTransaction } from "@/lib/withTransaction.mjs";
+import { mriFields } from "@/lib/mriSave.mjs";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import {
   BUYER_PROJECTION,
@@ -30,6 +31,14 @@ import {
 import { stampItemLines } from "@/lib/uqc.mjs";
 import { LOCKED_STATUS, editBlockedReason } from "@/lib/einvoiceLock.mjs";
 import { reconcileOrderQty } from "@/lib/orderClaims.mjs";
+import { reconcileChallanQty } from "@/lib/challanClaims.mjs";
+import Challan from "@/models/challanModel";
+import {
+  challanLineProblems,
+  challanRefsOf,
+  invoiceStockLines,
+  stampChallanStock,
+} from "@/lib/challanStatus.mjs";
 import { settledBillProblem } from "@/lib/billAdjust.mjs";
 import { settledAgainst } from "@/lib/openBillsFor.mjs";
 import Order from "@/models/orderModel";
@@ -209,6 +218,35 @@ async function handlePOST(req, auth) {
         }
       }
 
+      // The challans this bill draws on, checked and stamped from the
+      // challans themselves -- exactly as save-invoice does.
+      const challanRefs = challanRefsOf(invoiceData.items);
+      if (challanRefs.length) {
+        const challans = await Challan.find(
+          { $or: challanRefs.map((r) => ({ challanNo: r.challanNo, type: r.type })) },
+          { challanNo: 1, type: 1, stockEffect: 1, "customer.name": 1, "items._id": 1, "items.name": 1 },
+          { session }
+        ).lean();
+        const challanProblems = challanLineProblems(invoiceData.items, challans, {
+          invoiceType: invoiceData.type,
+          partyName: buyer.name,
+        });
+        if (challanProblems.length) {
+          throw new AbortTransaction({ success: false, error: challanProblems.join(" ") }, 400);
+        }
+        invoiceData.items = stampChallanStock(invoiceData.items, challans);
+      }
+
+      // A purchase M.R.I. keeps its number across an edit; one that a Re-MRI
+      // points at cannot stop being an MRI or change supplier. lib/mriSave.mjs.
+      const mriData = await mriFields({
+        session,
+        mri: invoiceData.mri,
+        previous: previousInvoice,
+        party: buyer.name,
+        items: invoiceData.items,
+      });
+
       const updatedInvoice = await Invoice.findOneAndUpdate(
         { invoiceNo: lookupNo },
         // The same fields this route has always written, now from the
@@ -248,6 +286,9 @@ async function handlePOST(req, auth) {
           ewayBillDate: invoiceData.ewayBillDate,
           type: invoiceData.type,
           return: invoiceData.return,
+          mriNo: mriData.mriNo,
+          mriRemark: mriData.mriRemark,
+          againstMriNo: mriData.againstMriNo,
         },
         { new: true, session }
       );
@@ -422,7 +463,8 @@ async function handlePOST(req, auth) {
         date: updatedInvoice.date || new Date(),
         type: invoiceData.type,
         isReturn: invoiceData.return,
-        items: invoiceData.items,
+        // Not the lines whose challan already moved the stock.
+        items: invoiceStockLines(invoiceData.items),
         partyName: invoiceData.customer.name,
       });
 
@@ -456,6 +498,12 @@ async function handlePOST(req, auth) {
       // `updatedInvoice.items` rather than `invoiceData.items`, so the
       // comparison is against what was actually stored. lib/orderClaims.mjs.
       await reconcileOrderQty({
+        session,
+        before: previousInvoice.items,
+        after: updatedInvoice.items,
+      });
+      // And the challans, by the difference only (lib/challanClaims.mjs).
+      await reconcileChallanQty({
         session,
         before: previousInvoice.items,
         after: updatedInvoice.items,
