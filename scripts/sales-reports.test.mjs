@@ -27,6 +27,7 @@ import {
   DEFAULT_GRAIN,
   DEFAULT_SCOPE,
   DOC_SCOPES,
+  NO_PARTY,
   REPORT_SIDES,
   SALES_VIEWS,
   bookRow,
@@ -490,6 +491,176 @@ test("a date sheet knows which month it came out of", () => {
   assert.equal(rows[0].month, "2026-06");
 });
 
+console.log("\n--- the book, split one row per party ---");
+
+/**
+ * Sigfa has no such sheet: its book is periods and its Party Wise is the
+ * whole range, one row per party. Neither answers "who did we sell to in
+ * March", which is what a period row carrying a name does.
+ */
+
+const BHARAT = { name: "Bharat Steel", gstin: "07AAACB2222B1Z5" };
+
+test("a period splits into one row per party", () => {
+  const invoices = [
+    invoice({ invoiceNo: 1, date: "2026-06-05" }),
+    invoice({ invoiceNo: 2, date: "2026-06-20" }),
+    invoice({ invoiceNo: 3, date: "2026-06-25", customer: BHARAT }),
+  ];
+  const docs = documentsFor({ invoices, side: "Sale" });
+  const plain = periodWise(docs, "month");
+  const split = periodWise(docs, "month", { byParty: true });
+
+  assert.equal(plain.length, 1, "one month");
+  assert.equal(split.length, 2, "one month, two parties");
+  assert.deepEqual(split.map((r) => r.party), ["Acme Traders", "Bharat Steel"]);
+  assert.equal(split[0].gstin, "07AAACA1111A1Z5");
+  assert.equal(split[0].documents, 2, "Acme's two bills");
+  assert.equal(split[1].documents, 1);
+  // Every row still names its period, and reads the same label as the plain
+  // sheet's -- the split cuts the sheet, it does not relabel it.
+  assert.deepEqual(split.map((r) => r.label), ["Jun 2026", "Jun 2026"]);
+  assert.deepEqual(split.map((r) => r.period), ["2026-06", "2026-06"]);
+  // And the plain sheet is untouched by any of it.
+  assert.equal(plain[0].party, undefined);
+});
+
+test("the split adds up to the sheet it split", () => {
+  // THE CHECK THAT MATTERS. A party-wise book that did not total to the
+  // plain book would have every row on it individually looking right.
+  const invoices = [
+    invoice({ invoiceNo: 1, date: "2026-06-05" }),
+    invoice({ invoiceNo: 2, date: "2026-07-02", customer: BHARAT }),
+    RETURN,
+  ];
+  const docs = documentsFor({ invoices, side: "Sale" });
+  const plain = periodTotals(periodWise(docs, "month"));
+  const split = periodTotals(periodWise(docs, "month", { byParty: true }));
+
+  for (const key of ["documents", "returns", "taxable", "gst", "net", "others", "total", "balanceDue"]) {
+    assert.equal(split[key], plain[key], `${key} disagrees`);
+  }
+  // Periods are counted as periods, not as rows: party-wise, one month is
+  // several rows, and a footer saying "3 periods" over one month is wrong.
+  assert.equal(split.periods, plain.periods);
+  assert.equal(split.periods, 2, "June and July");
+  assert.equal(split.parties, 2);
+  assert.equal(plain.parties, 0, "a plain period sheet has no party dimension");
+});
+
+test("a party's returns net off inside their own period row", () => {
+  // RETURN is Acme's, dated 15 June, so it lands on Acme's June row and on
+  // nobody else's -- the netting is per row now, not just per period.
+  const invoices = [
+    invoice({ invoiceNo: 1, date: "2026-06-10" }),
+    invoice({ invoiceNo: 4, date: "2026-06-12", customer: BHARAT }),
+    RETURN,
+  ];
+  const rows = periodWise(documentsFor({ invoices, side: "Sale" }), "month", { byParty: true });
+  const acme = rows.find((r) => r.party === "Acme Traders");
+  const bharat = rows.find((r) => r.party === "Bharat Steel");
+  assert.equal(acme.returns, 1);
+  assert.equal(acme.total, 944, "1180 less 236");
+  assert.equal(acme.balanceDue, 944);
+  assert.equal(bharat.returns, 0, "the credit note is not theirs");
+  assert.equal(bharat.total, 1180);
+});
+
+test("periods run forwards, and the biggest party leads each one", () => {
+  // A book is read forwards; inside a period, biggest first, which is how
+  // partyWise sorts and so the two sheets rank a party the same way.
+  const flat = (over) => invoice({ totalAmount: over.amount, gst: 0, finalAmount: over.amount, ...over });
+  const invoices = [
+    flat({ invoiceNo: 1, date: "2026-07-01", customer: { name: "Small" }, amount: 100 }),
+    flat({ invoiceNo: 2, date: "2026-07-02", customer: { name: "Big" }, amount: 9000 }),
+    flat({ invoiceNo: 3, date: "2026-06-02", customer: { name: "Small" }, amount: 50 }),
+  ];
+  const rows = periodWise(documentsFor({ invoices, side: "Sale" }), "month", { byParty: true });
+  assert.deepEqual(
+    rows.map((r) => `${r.label}/${r.party}`),
+    ["Jun 2026/Small", "Jul 2026/Big", "Jul 2026/Small"]
+  );
+});
+
+test("one party's name cannot swallow another's period", () => {
+  // The key joins the period and the party on \u0000, the one character a
+  // typed name cannot hold. Joined on a hyphen, "2026-06" + "-" + "A-B" and
+  // "2026-06-A" + "-" + "B" are the same string and two rows merge into one.
+  const invoices = [
+    invoice({ invoiceNo: 1, date: "2026-06-10", customer: { name: "A-B" } }),
+    invoice({ invoiceNo: 2, date: "2026-06-11", customer: { name: "A" } }),
+  ];
+  const rows = periodWise(documentsFor({ invoices, side: "Sale" }), "month", { byParty: true });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => r.party).sort(), ["A", "A-B"]);
+});
+
+test("an unnamed party is filed the same way on both sheets", () => {
+  // One constant, so a party-wise book reconciles row for row against a
+  // Party Wise sheet instead of calling the same bills something else.
+  const docs = documentsFor({ invoices: [invoice({ customer: {} })], side: "Sale" });
+  assert.equal(periodWise(docs, "month", { byParty: true })[0].party, NO_PARTY);
+  assert.equal(partyWise(docs)[0].party, NO_PARTY);
+  assert.equal(NO_PARTY, "(not named)");
+});
+
+test("a party's GSTIN survives a bill saved without it", () => {
+  // The backfill partyWise carries, in the direction an unconditional
+  // assignment gets wrong: the bill with no GSTIN arrives second.
+  const invoices = [
+    invoice({ invoiceNo: 1, date: "2026-06-10" }),
+    invoice({ invoiceNo: 2, date: "2026-06-20", customer: { name: "Acme Traders" } }),
+  ];
+  const rows = periodWise(documentsFor({ invoices, side: "Sale" }), "month", { byParty: true });
+  assert.equal(rows.length, 1, "one party, whatever the GSTIN says");
+  assert.equal(rows[0].gstin, "07AAACA1111A1Z5", "not wiped by the second bill");
+});
+
+test("the zoom keeps the split", () => {
+  // Opening a month on a party-wise book must not quietly drop the column
+  // the row that was clicked had.
+  const invoices = [
+    invoice({ invoiceNo: 1, date: "2026-06-15" }),
+    invoice({ invoiceNo: 2, date: "2026-06-15", customer: BHARAT }),
+    invoice({ invoiceNo: 3, date: "2026-07-01" }),
+  ];
+  const docs = documentsFor({ invoices, side: "Sale" });
+  const june = zoomInto(docs, "2026-06", { byParty: true });
+  assert.equal(june.length, 2, "one day, two parties");
+  assert.deepEqual(june.map((r) => r.label), ["15 Jun 2026", "15 Jun 2026"]);
+  assert.deepEqual(june.map((r) => r.party).sort(), ["Acme Traders", "Bharat Steel"]);
+  // The month it came out of, so the screen can still offer the way back.
+  assert.deepEqual(june.map((r) => r.month), ["2026-06", "2026-06"]);
+  // And asking without the option is still the plain zoom.
+  assert.equal(zoomInto(docs, "2026-06").length, 1);
+});
+
+test("the split's captions are the period's with a party in them", () => {
+  assert.deepEqual(
+    CSV_COLUMNS.periodParty.map((c) => c.label),
+    ["Month", "Party", "GSTIN", "Bills", "Returns", "Taxable Amount", "GST", "Net Amount", "Others", "Bill Amount"]
+  );
+  // Take the two new columns out and what is left IS the period sheet, in
+  // the period sheet's order -- so the two cannot drift apart.
+  assert.deepEqual(
+    CSV_COLUMNS.periodParty.filter((c) => !["party", "gstin"].includes(c.key)).map((c) => c.key),
+    CSV_COLUMNS.period.map((c) => c.key)
+  );
+  // Alignment is decided by key, not by position: positionally, the party
+  // name and the GSTIN are right-aligned like figures.
+  const shown = sheetHeadings("periodParty", "Date");
+  assert.equal(shown[0].label, "Date", "the grain still relabels the first one");
+  assert.deepEqual(
+    shown.map((h) => h.numeric),
+    [false, false, false, true, true, true, true, true, true, true]
+  );
+  // A plain month sheet and a party-wise one must not land under one name.
+  const plain = csvFilename("book", "Sale", "2026-06-01", "2026-06-30", "month");
+  const split = csvFilename("book", "Sale", "2026-06-01", "2026-06-30", "month", { byParty: true });
+  assert.notEqual(plain, split);
+  assert.match(split, /-party-wise-/);
+});
+
 test("a period label reads the way a date is written here", () => {
   assert.equal(periodLabel("2026-06"), "Jun 2026");
   assert.equal(periodLabel("2026-06-15"), "15 Jun 2026");
@@ -513,7 +684,7 @@ test("the period footer totals the column above it", () => {
   assert.equal(t.total, 2124);
   assert.equal(t.total, rows.reduce((sum, r) => sum + r.total, 0));
   assert.deepEqual(periodTotals([]), {
-    periods: 0, documents: 0, returns: 0,
+    periods: 0, parties: 0, documents: 0, returns: 0,
     taxable: 0, gst: 0, net: 0, others: 0, total: 0, balanceDue: 0,
   });
 });
@@ -893,7 +1064,7 @@ test("the route serves the grain, the scope and the zoom, and refuses the rest",
   // Defaults from the module, not spelled again here.
   assert.ok(src.includes("DEFAULT_SCOPE") && src.includes("DEFAULT_GRAIN"));
   // The zoom: a named month narrows to the dates inside it.
-  assert.ok(/grain === "date" && month \? zoomInto\(/.test(src));
+  assert.ok(/grain === "date" && month\s*\?\s*zoomInto\(/.test(src));
   // The scope reaches BOTH walkers -- the book's and the item sheet's.
   assert.ok(/itemWise\(\{[^}]*scope[^}]*\}\)/.test(src), "the item sheet ignores the scope");
   assert.ok(/documentsFor\(\{[^}]*scope[^}]*\}\)/.test(src), "the book ignores the scope");
@@ -939,6 +1110,32 @@ test("the page computes nothing and reaches the dashboard", () => {
   assert.doesNotMatch(page, /\.reduce\(/, "the page is doing its own totalling");
   assert.ok(/reportName\(view, side\)/.test(page), "the title comes from the module");
   assert.ok(/'\/sales-report'/.test(read("../app/page.js")), "no tile on the dashboard");
+});
+
+test("the party split reaches the rows, the columns and the filename", () => {
+  const src = read("../app/api/sales-report/route.js");
+  // Resolved ONCE in the route, so the rows, the columns and the filename
+  // cannot disagree about whether the sheet in hand is split.
+  assert.ok(
+    /const splitByParty = byParty && view === "book" && grain !== "document"/.test(src),
+    "the route decides the split in more than one place"
+  );
+  assert.ok(/zoomInto\(documents, month, \{ byParty: splitByParty \}\)/.test(src));
+  assert.ok(/periodWise\(documents, grain, \{ byParty: splitByParty \}\)/.test(src));
+  assert.ok(/byParty: splitByParty/.test(src), "the sheet builder is not told");
+  assert.ok(/party-wise/.test(src), "the download would overwrite the plain one");
+
+  // The workbook picks the split column set, not the plain one.
+  assert.ok(/return byParty \? "periodParty" : "period"/.test(read("../lib/reportSheets.mjs")));
+
+  // The screen offers it and switches its own columns with it.
+  const page = read("../app/sales-report/page.js");
+  assert.ok(/Party wise/.test(page), "no toggle on the screen");
+  assert.ok(/'periodParty'/.test(page), "the screen does not switch its columns");
+
+  // And a shared link carries it, so a party-wise book that is sent opens
+  // party-wise rather than on the plain month sheet.
+  assert.ok(/byparty: \{ type: "bool"/.test(read("../lib/reportQuery.mjs")));
 });
 
 test("the page offers the grain, the scope and the way back", () => {

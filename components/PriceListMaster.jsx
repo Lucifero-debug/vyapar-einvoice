@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { netRate } from '@/lib/priceList.mjs';
+import ItemSearch from '@/components/billing/ItemSearch';
 import { Notice, useNotice } from '@/components/ui/notice';
 import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 import { istToday } from '@/lib/istDate.mjs';
@@ -217,14 +218,25 @@ const PriceListMaster = ({ open, onClose, selected }) => {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, addRow, deleteRow, handleSave, activeRow]);
 
-  /** Enter moves down the same column, like a spreadsheet. */
-  const onCellKeyDown = (e, index, field) => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
+  /**
+   * Down one row in the same column, like a spreadsheet.
+   *
+   * Split out of the key handler because the item cell is a combobox now:
+   * it swallows Enter unconditionally (a bare Enter must never submit) and
+   * hands it back through `onEnter`, so it needs the move without the event.
+   */
+  const moveDown = (index, field) => {
     if (index === rows.length - 1) addRow();
     requestAnimationFrame(() => {
       gridRef.current?.querySelector(`[data-cell="${index + 1}:${field}"]`)?.focus();
     });
+  };
+
+  /** Enter moves down the same column, like a spreadsheet. */
+  const onCellKeyDown = (e, index, field) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    moveDown(index, field);
   };
 
   return (
@@ -270,12 +282,6 @@ const PriceListMaster = ({ open, onClose, selected }) => {
           </div>
         </div>
 
-        <datalist id="price-list-items">
-          {items.map((it) => (
-            <option value={it.name} key={it._id} />
-          ))}
-        </datalist>
-
         <div className="table-wrap max-h-[48vh] overflow-auto" ref={gridRef}>
           <table className="data-table text-sm">
             <thead>
@@ -302,14 +308,28 @@ const PriceListMaster = ({ open, onClose, selected }) => {
                   >
                     <td className="num text-center text-muted-foreground">{i + 1}</td>
                     <td>
-                      <input
-                        list="price-list-items"
-                        data-cell={`${i}:name`}
-                        className="field-input field-input-sm w-full"
+                      {/* Was an `<input list>` over a `<datalist>`. This
+                          screen WRITES to a master, so a name matching
+                          nothing was the worst place for it: chooseItem
+                          clears itemId and the row saves unlinked. The cell
+                          variant portals its list, because this grid is a
+                          max-height overflow-auto box that would clip it.
+
+                          `data-cell` is passed through so Enter still walks
+                          down the column -- moveDown finds the next cell by
+                          that attribute. */}
+                      <ItemSearch
+                        variant="cell"
+                        items={items}
+                        label="Item name"
                         placeholder="Type or pick an item"
                         value={row.name}
-                        onChange={(e) => chooseItem(i, e.target.value)}
-                        onKeyDown={(e) => onCellKeyDown(e, i, 'name')}
+                        onQueryChange={(text) => chooseItem(i, text)}
+                        onPick={(item) => chooseItem(i, item.name)}
+                        priceOf={(item) => Number(item.salePrice) || 0}
+                        onEnter={() => moveDown(i, 'name')}
+                        inputProps={{ 'data-cell': `${i}:name` }}
+                        emptyHint=""
                       />
                     </td>
                     <td>

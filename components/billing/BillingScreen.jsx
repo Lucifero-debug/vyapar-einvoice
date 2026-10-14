@@ -4,6 +4,8 @@ import React, { Suspense, useEffect, useRef, useState } from 'react'
 import AddIcon from '@mui/icons-material/Add';
 import InvoiceSearchParams from '@/components/suspense';
 import { useSaleOptions } from '@/context/SaleOptionContext';
+import { useCompany } from '@/context/CompanyContext';
+import { taxTypeFor } from '@/lib/gst.mjs';
 import { resolveItemPricing, latestPriceListFor } from '@/lib/priceList.mjs';
 import { placeOfSupply, placeOfSupplyLabel } from '@/lib/buyerSnapshot.mjs';
 import PartyBalance from '@/components/PartyBalance';
@@ -102,6 +104,10 @@ export default function BillingScreen({ typeKey }) {
    // Null on a new bill, which is why a new bill is never locked.
    const [einvoice, setEinvoice] = useState(null);
      const { options } = useSaleOptions();
+     // Our own state code, for the CGST+SGST / IGST decision further down.
+     // Fetched once and shared; BLANK_COMPANY until it arrives, which reads
+     // as "state unknown" and leaves the radios alone rather than guessing.
+     const { company } = useCompany();
      const [showShippedPopup, setShowShippedPopup] = useState(false);
 const [shippedTo, setShippedTo] = useState('');
 const [hsn,setHsn]=useState('')
@@ -912,6 +918,32 @@ const saveItem = (e) => {
         states
     );
 
+    /*
+      CGST+SGST or IGST, worked out rather than picked.
+
+      Our state against the place of supply: same state is local (CGST+SGST),
+      different is central (IGST). A Delhi firm billing a Haryana party is
+      central; billing a Delhi party is local; and it reads the same way for
+      every pair of states, because the rule is just whether the two codes
+      match -- lib/gst.mjs taxTypeFor.
+
+      It was two radio buttons, defaulting to local. Nothing checked them
+      against the party, so an inter-state bill left alone posted CGST and
+      SGST (lib/invoiceGl.mjs) and filed in the wrong GSTR-1 table
+      (lib/gstReturns.mjs). save-invoice and sale-alter now derive this by the
+      same rule and the derived answer is what gets stored, so the radios show
+      it rather than offering a choice the server would overrule.
+
+      Null when either state is unknown -- a firm whose profile predates the
+      state fields, or a party with no state on their master. The radios are
+      the person's to set then, which is also what the server falls back to.
+
+      On a bill being EDITED this reads the invoice's own buyer block, so it
+      follows the place of supply written on that document.
+    */
+    const derivedTaxType = taxTypeFor(company?.stateCode, place.stateCode);
+    const effectiveTaxType = derivedTaxType ?? taxType;
+
     // Save invoice function
     const submitInvoice = async () => {
         // sale-alter refuses this with a 409 as well. Stopping here is so the
@@ -946,7 +978,11 @@ const saveItem = (e) => {
                 balanceDue,
                 stateOfSupply: place.stateOfSupply,
                 stateCode: place.stateCode,
-                taxType,
+                // The screen shows what the server derives -- the form must
+                // not send one thing and store another. (No commas in this
+                // comment: formObjectKeys in the test splits this literal on
+                // them and would lose the key behind one.)
+                taxType: effectiveTaxType,
                 gst,
                 totalAmount,
                 finalAmount,
@@ -1525,31 +1561,58 @@ const handleDispatchSave = () => {
                         </div>
                     </div>
 
-                    <div className='flex justify-between items-center'>
-                        <div className='flex items-center gap-2'>
-                            <label htmlFor='local' className='text-sm font-medium text-foreground'>Local</label>
-                            <input 
-                                type='radio' 
-                                id='local' 
-                                name='location' 
-                                value='local'
-                                className='field-check' 
-                                checked={taxType === 'local'} 
-                                onChange={handleTaxTypeChange} 
-                            />
+                    <div>
+                        <div className='flex justify-between items-center'>
+                            <div className='flex items-center gap-2'>
+                                <label htmlFor='local' className='text-sm font-medium text-foreground'>Local</label>
+                                <input 
+                                    type='radio' 
+                                    id='local' 
+                                    name='location' 
+                                    value='local'
+                                    className='field-check' 
+                                    checked={effectiveTaxType === 'local'} 
+                                    /* Settled by the two states whenever both
+                                       are known: the server derives the same
+                                       answer and stores that, so offering a
+                                       choice here would be offering one the
+                                       save would overrule. */
+                                    disabled={Boolean(derivedTaxType)}
+                                    onChange={handleTaxTypeChange} 
+                                />
+                            </div>
+                            <div className='flex items-center gap-2'>
+                                <label htmlFor='central' className='text-sm font-medium text-foreground'>Central</label>
+                                <input 
+                                    type='radio' 
+                                    id='central' 
+                                    name='location' 
+                                    value='central'
+                                    className='field-check' 
+                                    checked={effectiveTaxType === 'central'} 
+                                    disabled={Boolean(derivedTaxType)}
+                                    onChange={handleTaxTypeChange} 
+                                />
+                            </div>
                         </div>
-                        <div className='flex items-center gap-2'>
-                            <label htmlFor='central' className='text-sm font-medium text-foreground'>Central</label>
-                            <input 
-                                type='radio' 
-                                id='central' 
-                                name='location' 
-                                value='central'
-                                className='field-check' 
-                                checked={taxType === 'central'} 
-                                onChange={handleTaxTypeChange} 
-                            />
-                        </div>
+
+                        {/* Why it says what it says. A disabled pair of radios
+                            with no explanation is the kind of thing that gets
+                            reported as a bug. */}
+                        {derivedTaxType && (
+                            <p className='field-hint mt-1'>
+                                {derivedTaxType === 'local'
+                                    ? `Both in ${place.stateOfSupply || 'the same state'}, so CGST + SGST.`
+                                    : `${company?.state || `State ${company?.stateCode}`} to ${place.stateOfSupply || `state ${place.stateCode}`}, so IGST.`}
+                            </p>
+                        )}
+                        {!derivedTaxType && selectedCustomer?.name && (
+                            <p className='field-hint mt-1'>
+                                {company?.stateCode
+                                    ? 'This party has no state on their master, so pick the tax type yourself.'
+                                    : 'Your firm has no state code in Company setup, so pick the tax type yourself.'}
+                            </p>
+                        )}
                     </div>
 
                     {/* Item search. Was a <select> listing the whole master in

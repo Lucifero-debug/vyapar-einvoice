@@ -91,6 +91,10 @@ function SalesReports() {
   const [view, setView] = useState(link.view ?? 'book');
   const [scope, setScope] = useState(link.scope ?? DEFAULT_SCOPE);
   const [grain, setGrain] = useState(link.grain ?? DEFAULT_GRAIN);
+  // The book's period rows, split one per party -- what puts a NAME on a
+  // month's figures. Only the period grains have anything to split, so the
+  // toggle hides on Bill Wise, which already names the party on every row.
+  const [byParty, setByParty] = useState(link.byparty ?? false);
   // Set only by clicking a month row, and cleared by every other control:
   // it is a position inside the book, not a filter the user set.
   // A month zoom only means anything on the book's date grain, which is how
@@ -110,9 +114,12 @@ function SalesReports() {
   /** The route's query for what is on screen -- the fetch and the downloads share it. */
   const reportQuery = useCallback(() => {
     const qs = new URLSearchParams({ view, side, from, to, scope, grain });
+    // Sent only where it applies, so a link off the item sheet does not
+    // carry a flag that sheet has no use for.
+    if (byParty && view === 'book' && grain !== 'document') qs.set('byparty', '1');
     if (zoomMonth) qs.set('month', zoomMonth);
     return qs;
-  }, [view, side, from, to, scope, grain, zoomMonth]);
+  }, [view, side, from, to, scope, grain, byParty, zoomMonth]);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -157,7 +164,10 @@ function SalesReports() {
 
   const title = reportName(view, side);
   const isPeriod = view === 'book' && grain !== 'document';
-  const csvView = isPeriod ? 'period' : view;
+  // The split, as it actually applies -- the state alone is not enough: the
+  // toggle stays set while Bill Wise is showing, which has no split.
+  const split = isPeriod && byParty;
+  const csvView = isPeriod ? (split ? 'periodParty' : 'period') : view;
 
   /** Any control other than a month row leaves the zoom. */
   const reset = (fn) => (value) => {
@@ -177,7 +187,7 @@ function SalesReports() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = csvFilename(view, side, from, to, isPeriod ? grain : '');
+    a.download = csvFilename(view, side, from, to, isPeriod ? grain : '', { byParty: split });
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -186,7 +196,7 @@ function SalesReports() {
     <div className="page-shell-wide doc-sheet report-sheet">
       <ReportUrlSync
         schema={REPORT_QUERIES.salesReport}
-        values={{ side, view, scope, grain, month: zoomMonth, from, to }}
+        values={{ side, view, scope, grain, byparty: byParty, month: zoomMonth, from, to }}
         restore={false}
       />
       <div className="doc-head">
@@ -197,6 +207,7 @@ function SalesReports() {
           {asDate(from)} to {asDate(to)}
           {covers && ` · ${covers}`}
           {isPeriod && ` · ${GRAIN_LABELS[grain]}`}
+          {split && ' · Party wise'}
         </p>
       </div>
 
@@ -257,6 +268,22 @@ function SalesReports() {
                 {GRAIN_LABELS[g]}
               </button>
             ))}
+            {/* Deliberately NOT wrapped in reset(): the split is a column on
+                the sheet, not a filter on it, so turning it on inside a
+                zoomed month should keep you in that month. */}
+            {grain !== 'document' && (
+              <>
+                <span className="mx-1 h-5 w-px bg-border" />
+                <button
+                  type="button"
+                  className={`btn btn-sm ${byParty ? 'btn-primary' : 'btn-ghost'}`}
+                  aria-pressed={byParty}
+                  onClick={() => setByParty((on) => !on)}
+                >
+                  Party wise
+                </button>
+              </>
+            )}
             {zoomMonth && (
               <button type="button" className="btn btn-sm btn-secondary" onClick={() => reset(setGrain)('month')}>
                 ← Back to months
@@ -318,13 +345,13 @@ function SalesReports() {
       )}
 
       <div className="table-wrap">
-        <table className="data-table report-table min-w-[760px]">
+        <table className={`data-table report-table ${split ? 'min-w-[920px]' : 'min-w-[760px]'}`}>
           {/* The period sheet's captions come off its download columns, so
               the printed sheet and the CSV cannot disagree about a name. */}
           {isPeriod && (
             <thead>
               <tr>
-                {sheetHeadings('period', grain === 'date' ? 'Date' : 'Month').map((h) => (
+                {sheetHeadings(split ? 'periodParty' : 'period', grain === 'date' ? 'Date' : 'Month').map((h) => (
                   <th key={h.key} className={h.numeric ? 'num' : undefined}>
                     {h.label}
                   </th>
@@ -405,12 +432,16 @@ function SalesReports() {
                   // Sigfa's zoom: a month row opens the dates inside it. On a
                   // date row there is nothing left to open.
                   className={grain === 'month' ? 'cursor-pointer' : undefined}
-                  onClick={grain === 'month' ? () => openMonth(r.key) : undefined}
+                  // `r.key` carries the party too when the sheet is split, so
+                  // the zoom takes the period off the row rather than the key.
+                  onClick={grain === 'month' ? () => openMonth(r.period || r.key) : undefined}
                 >
                   <td className="font-medium">
                     {r.label}
                     {grain === 'month' && <span className="field-hint ml-2 no-print">open</span>}
                   </td>
+                  {split && <td>{r.party || '—'}</td>}
+                  {split && <td className="text-xs">{r.gstin || '—'}</td>}
                   <td className="num">{r.documents}</td>
                   <td className="num">{r.returns || '—'}</td>
                   <td className="num">{money(r.taxable)}</td>
@@ -481,7 +512,15 @@ function SalesReports() {
             <tfoot>
               {isPeriod && (
                 <tr>
-                  <td>TOTAL&nbsp;&nbsp;:-</td>
+                  {split ? (
+                    <td colSpan={3}>
+                      TOTAL&nbsp;&nbsp;:- {totals.parties} part{totals.parties === 1 ? 'y' : 'ies'}
+                      {totals.periods > 1 &&
+                        ` over ${totals.periods} ${grain === 'date' ? 'days' : 'months'}`}
+                    </td>
+                  ) : (
+                    <td>TOTAL&nbsp;&nbsp;:-</td>
+                  )}
                   <td className="num font-medium">{totals.documents}</td>
                   <td className="num font-medium">{totals.returns || '—'}</td>
                   <td className="num font-medium">{money(totals.taxable)}</td>
@@ -535,6 +574,10 @@ function SalesReports() {
         at the value printed on it and taken off the totals. Use Covering to see one or the other
         on its own. Net Amount is the bill before the overheads; Others is the freight and the
         party taxes charged on top of it.
+        {isPeriod &&
+          ' Party wise splits each period into one row per party, biggest first; a bill saved' +
+            ' without a party is filed under (not named). Bill Wise names the party on every' +
+            ' row already.'}
       </p>
     </div>
   );

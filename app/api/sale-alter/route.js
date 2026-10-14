@@ -29,6 +29,8 @@ import {
   placeOfSupply,
 } from "@/lib/buyerSnapshot.mjs";
 import { stampItemLines } from "@/lib/uqc.mjs";
+import Company from "@/models/companyModel";
+import { taxTypeFor } from "@/lib/gst.mjs";
 import { LOCKED_STATUS, editBlockedReason } from "@/lib/einvoiceLock.mjs";
 import { reconcileOrderQty } from "@/lib/orderClaims.mjs";
 import { reconcileChallanQty } from "@/lib/challanClaims.mjs";
@@ -179,6 +181,24 @@ async function handlePOST(req, auth) {
         place = placeOfSupply(buyerBlock, states);
       }
 
+      /*
+        CGST+SGST or IGST, from the two state codes -- the same rule and the
+        same reasoning as save-invoice, where it is set out in full.
+
+        Derived on an EDIT too, and from the place resolved just above, so the
+        tax type cannot drift away from the place of supply written on the
+        same document. This route already re-derives the place rather than
+        trusting the form; a bill whose place said Haryana while its taxType
+        said local would post the wrong heads and file in the wrong table, and
+        an edit is a re-post -- lib/invoiceGl.mjs recomputes the GL from it.
+      */
+      const ourFirm = await Company.findById(
+        auth.companyId,
+        { stateCode: 1 },
+        { session }
+      ).lean();
+      const taxType = taxTypeFor(ourFirm?.stateCode, place.stateCode) ?? invoiceData.taxType;
+
       // The unit code and the goods/service flag come from the item master,
       // never from the page, and are COPIED onto each line -- an item whose
       // unit code is corrected next year must not change the unit on a bill
@@ -261,7 +281,7 @@ async function handlePOST(req, auth) {
           paymentType: invoiceData.paymentType,
           stateOfSupply: place.stateOfSupply,
           stateCode: place.stateCode,
-          taxType: invoiceData.taxType,
+          taxType,
           gst: invoiceData.gst,
           totalAmount: invoiceData.totalAmount,
           // finalAmount used to be left out entirely, so an edited invoice kept

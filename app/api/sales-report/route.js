@@ -38,6 +38,7 @@ export const dynamic = "force-dynamic";
  *         &from=&to=
  *         &scope=invoices|returns|both     (the book and the item sheet)
  *         &grain=month|date|document       (the book)
+ *         &byparty=1                       (the book's period grains)
  *         &month=YYYY-MM                   (the zoom: dates inside a month)
  *         &format=json|csv|xlsx            (the download: the SAME rows)
  *
@@ -64,6 +65,9 @@ async function handleGET(req, auth) {
     const scope = (params.get("scope") || DEFAULT_SCOPE).trim();
     const grain = (params.get("grain") || DEFAULT_GRAIN).trim();
     const month = (params.get("month") || "").trim();
+    // Splits the book's period rows one per party, so a month's figures
+    // carry a NAME. Not a fourth grain: it cuts whichever grain is chosen.
+    const byParty = params.get("byparty") === "1";
     // json | csv | xlsx. The SAME route and the same rows, so a download is
     // the report on screen and inherits this route's permission and tenant.
     const format = formatOf(params);
@@ -137,11 +141,18 @@ async function handleGET(req, auth) {
       ...(view === "item" ? { items: 1 } : {}),
     }).lean();
 
+    // Only the book's period grains have anything to split: the bill-wise
+    // register is already one row per bill and names the party on each, and
+    // the party and item sheets are groupings in their own right. Resolved
+    // once, here, so the rows, the columns and the filename cannot disagree
+    // about whether this sheet is split.
+    const splitByParty = byParty && view === "book" && grain !== "document";
+
     const title = reportName(view, side);
     // Sigfa's own name for the chosen scope, so the sheet can print what it
     // covers in the words the client already reads on their old screens.
     const covers = scopeName(scope, side);
-    const shell = { success: true, view, side, scope, covers, title };
+    const shell = { success: true, view, side, scope, covers, title, byParty: splitByParty };
 
     // One exit for every sheet: JSON for the screen, or the same rows and
     // totals as a CSV or workbook (lib/reportSheets.mjs lays them out).
@@ -156,6 +167,7 @@ async function handleGET(req, auth) {
           view,
           side,
           grain,
+          byParty: splitByParty,
           month: payload.month || "",
           rows: payload.rows,
           totals: payload.totals,
@@ -166,7 +178,7 @@ async function handleGET(req, auth) {
           companyAddressLine: companyAddress(company),
         }),
         filename: {
-          report: `${title}${view === "book" ? `-${grain}` : ""}`,
+          report: `${title}${view === "book" ? `-${grain}` : ""}${splitByParty ? "-party-wise" : ""}`,
           subject: payload.month || "",
           from,
           to,
@@ -198,7 +210,9 @@ async function handleGET(req, auth) {
     }
 
     const rows =
-      grain === "date" && month ? zoomInto(documents, month) : periodWise(documents, grain);
+      grain === "date" && month
+        ? zoomInto(documents, month, { byParty: splitByParty })
+        : periodWise(documents, grain, { byParty: splitByParty });
 
     return respond({ ...shell, grain, month: month || null, rows, totals: periodTotals(rows) });
   } catch (err) {

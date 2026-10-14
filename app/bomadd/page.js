@@ -2,6 +2,7 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LINE_KINDS, LINE_KIND_LABELS, bomCost, bomProblems } from '@/lib/bom.mjs';
+import ItemSearch from '@/components/billing/ItemSearch';
 
 /**
  * The formula form -- Sigfa's FrmBOM, under Masters > Misc > Bill of Material.
@@ -228,13 +229,19 @@ function BomForm() {
           </div>
 
           <div className="field">
-            <label className="field-label mb-1.5 block">Makes</label>
-            <input
-              className="field-input"
-              list="bom-items"
+            {/* The formula's output. A labelled field rather than a cell, so
+                the field shape -- but with no hint, since F2 belongs to the
+                billing screen. */}
+            <ItemSearch
+              items={items}
+              label="Makes"
               placeholder="Item produced"
               value={form.outputItem}
-              onChange={(e) => setForm({ ...form, outputItem: e.target.value })}
+              onQueryChange={(text) => setForm({ ...form, outputItem: text })}
+              onPick={(item) => setForm({ ...form, outputItem: item.name })}
+              priceOf={(item) => Number(item.cost) || 0}
+              hint=""
+              emptyHint=""
             />
           </div>
 
@@ -277,12 +284,6 @@ function BomForm() {
         </div>
       </div>
 
-      <datalist id="bom-items">
-        {items.map((i) => (
-          <option key={i._id || i.name} value={i.name} />
-        ))}
-      </datalist>
-
       <div className="panel mb-4">
         <div className="panel-head flex items-center justify-between">
           <div className="panel-title">Lines</div>
@@ -311,12 +312,23 @@ function BomForm() {
                 return (
                   <tr key={i}>
                     <td>
-                      <input
-                        className="field-input-sm"
-                        list="bom-items"
+                      {/* Was an `<input list>` over a `<datalist>`, which
+                          took any text at all -- a component misspelt here
+                          costs a formula that explodes to nothing. The
+                          cell variant portals its list, because this grid
+                          sits in an overflow container that would clip it. */}
+                      <ItemSearch
+                        variant="cell"
+                        items={items}
+                        label="Component"
                         placeholder="Component"
                         value={line.itemName}
-                        onChange={(e) => setLine(i, { itemName: e.target.value })}
+                        onQueryChange={(text) => setLine(i, { itemName: text })}
+                        onPick={(item) => setLine(i, { itemName: item.name })}
+                        priceOf={(item) => Number(item.cost) || 0}
+                        stockOf={(item) => Number(item.lastQuantity)}
+                        inputClassName="field-input-sm w-full"
+                        emptyHint=""
                       />
                     </td>
                     <td>

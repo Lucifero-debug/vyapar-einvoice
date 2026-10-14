@@ -3,6 +3,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'reac
 import { useRouter } from 'next/navigation';
 import ChallanSearchParams from '@/components/ChallanSearchParams';
 import PartyBalance from '@/components/PartyBalance';
+import ItemSearch from '@/components/billing/ItemSearch';
 import {
   CHALLAN_KINDS,
   CHALLAN_TYPES,
@@ -168,6 +169,12 @@ function ChallanForm() {
   const addLine = () => {
     setError('');
     if (!draft.name) return setError('Pick an item first.');
+    // The box is a search, so it will hold whatever was typed. A `<select>`
+    // could not offer a name that is not in the master and this has to say
+    // so itself, or goods go out on a challan for an item nobody stocks.
+    if (!items.some((i) => i.name === draft.name)) {
+      return setError(`There is no item called "${draft.name}". Pick one from the list.`);
+    }
     const mriLine = isPurchase && mri.on;
     const accepted = Number(draft.quantity);
     const received = draft.receivedQty === '' ? null : Number(draft.receivedQty);
@@ -368,15 +375,24 @@ function ChallanForm() {
         </div>
         <div className="panel-body grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
           <div className="field lg:col-span-2">
-            <label className="field-label">Item</label>
-            <select className="field-select" value={draft.name} onChange={(e) => pickItem(e.target.value)}>
-              <option value="">Select…</option>
-              {items.map((i) => (
-                <option key={i._id || i.name} value={i.name}>
-                  {i.name}
-                </option>
-              ))}
-            </select>
+            {/* The billing screen's own search, not a <select> of the whole
+                master. Controlled, because the name has to stay in the box
+                while the quantity and the rate are filled in. Typing and
+                picking both go through pickItem, as the <select>'s onChange
+                did, so the HSN and the rate follow the name. */}
+            <ItemSearch
+              items={items}
+              label="Item"
+              value={draft.name}
+              onQueryChange={pickItem}
+              onPick={(item) => pickItem(item.name)}
+              priceOf={(item) =>
+                Number(isPurchase ? item.purchasePrice ?? item.salePrice : item.salePrice) || 0
+              }
+              stockOf={(item) => Number(item.lastQuantity)}
+              hint="Click to see every item, or type a name, code or HSN."
+              emptyHint=""
+            />
           </div>
           {showMri && (
             <div className="field">

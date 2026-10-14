@@ -29,6 +29,8 @@ import {
   placeOfSupply,
 } from "@/lib/buyerSnapshot.mjs";
 import { stampItemLines } from "@/lib/uqc.mjs";
+import Company from "@/models/companyModel";
+import { taxTypeFor } from "@/lib/gst.mjs";
 import { claimOrderQty } from "@/lib/orderClaims.mjs";
 import { claimChallanQty } from "@/lib/challanClaims.mjs";
 import Challan from "@/models/challanModel";
@@ -173,6 +175,34 @@ async function handlePOST(req, auth) {
         place = placeOfSupply(buyer, states);
       }
 
+      /*
+        CGST+SGST or IGST -- decided by the two state codes, not by the form.
+
+        The place of supply above has always come from the master rather than
+        the request, for the reason written there. The TAX TYPE did not: it
+        arrived as `input.taxType` from two radio buttons on the billing
+        screen, so a Delhi firm billing a Haryana party and leaving the radio
+        on its "local" default posted CGST and SGST (lib/invoiceGl.mjs reads
+        taxType for the heads) and filed the bill in the wrong GSTR-1 table
+        (lib/gstReturns.mjs isInterState reads the same field). Nothing on the
+        screen or in the books said so afterwards.
+
+        So it is derived from OUR state and the place of supply, by the one
+        rule the form now shows as well -- lib/gst.mjs taxTypeFor.
+
+        What was submitted is used ONLY when taxTypeFor returns null, which it
+        does when either code is unknown: a firm whose profile predates the
+        state fields, or a party with no state on their master. Overriding
+        with a guess there would be a tax decision made by a default, which is
+        exactly what this is replacing.
+      */
+      const ourFirm = await Company.findById(
+        auth.companyId,
+        { stateCode: 1 },
+        { session }
+      ).lean();
+      const taxType = taxTypeFor(ourFirm?.stateCode, place.stateCode) ?? input.taxType;
+
       // The unit code and the goods/service flag come from the item master,
       // never from the page, and are COPIED onto each line -- an item whose
       // unit code is corrected next year must not change the unit on a bill
@@ -275,7 +305,7 @@ async function handlePOST(req, auth) {
             type: input.type,
             return: input.return,
             paymentType: input.paymentType,
-            taxType: input.taxType,
+            taxType,
             items: stampItemLines(input.items, itemMasters),
             partyTaxes: input.partyTaxes,
             hsnTotals: input.hsnTotals,

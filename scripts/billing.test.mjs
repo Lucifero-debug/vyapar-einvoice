@@ -26,6 +26,7 @@
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { taxTypeFor } from "../lib/gst.mjs";
 import {
   BILLING_KEYS,
   BILLING_TYPES,
@@ -850,6 +851,171 @@ test("the item search is a proper combobox", () => {
   assert.match(enter.slice(0, 120), /event\.preventDefault\(\);/);
 });
 
+test("it is a dropdown before it is a search", () => {
+  // The search-only box showed nothing at all until you typed, so there was
+  // no way to SEE what the master holds -- which is the one thing a dropdown
+  // is for, and the reason it was asked for back.
+  const src = code("../components/billing/ItemSearch.jsx");
+  // A chevron that opens it, kept out of the tab order and out of the
+  // accessibility tree, because the input it belongs to is already in both
+  // and it does nothing the keyboard cannot do.
+  assert.ok(/<button/.test(src), "no chevron to say there is a list");
+  assert.ok(/tabIndex=\{-1\}/.test(src));
+  assert.ok(/aria-hidden="true"/.test(src));
+  // Clicking or focusing the box opens it too, so it behaves like a select
+  // however you arrive at it.
+  assert.ok(/onFocus=\{browse\}/.test(src));
+  assert.ok(/if \(!open\) browse\(\)/.test(src));
+  // Opening SHOWS THE MASTER, not a filter of whatever is already in the
+  // box: one holding "Bracket 50x50" would otherwise offer that single row
+  // and leave no way to change your mind with the mouse.
+  assert.ok(/const \[browsing, setBrowsing\]/.test(src));
+  assert.ok(/searchItems\(items, '', BROWSE_LIMIT\)/.test(src));
+  // And typing turns it back into a search.
+  assert.ok(/setBrowsing\(false\);\s*setQuery\(e\.target\.value\)/.test(src));
+});
+
+test("browsing shows the master, typing shows a shortlist", () => {
+  const src = code("../components/billing/ItemSearch.jsx");
+  assert.ok(/export const TYPED_LIMIT = 12/.test(src));
+  assert.ok(/export const BROWSE_LIMIT = 300/.test(src));
+  // Twelve is already more than anybody reads before refining; a dropdown
+  // has to show the list it is a dropdown for.
+  assert.ok(/searchItems\(items, query, TYPED_LIMIT\)/.test(src));
+});
+
+test("a closed box opens on the first arrow key, as a select does", () => {
+  const src = code("../components/billing/ItemSearch.jsx");
+  const down = src.slice(src.indexOf("if (event.key === 'ArrowDown')"));
+  assert.match(down.slice(0, 220), /if \(!open\) \{\s*browse\(\);/);
+  const up = src.slice(src.indexOf("if (event.key === 'ArrowUp')"));
+  assert.match(up.slice(0, 220), /if \(!open\) \{\s*browse\(\);/);
+});
+
+test("the highlighted row is scrolled into view", () => {
+  // A browse list is the whole master: arrowing down walks out of the scroll
+  // box without this, and opening on the item already chosen is pointless if
+  // it sits three hundred rows above the fold.
+  const src = code("../components/billing/ItemSearch.jsx");
+  assert.ok(/scrollIntoView\(\{ block: 'nearest' \}\)/.test(src));
+});
+
+test("the no-match message is for typing, not for browsing", () => {
+  // Opening the list on a firm with no items yet must not accuse the reader
+  // of mistyping a name they never typed.
+  const src = code("../components/billing/ItemSearch.jsx");
+  assert.ok(/open && !browsing && query && matches\.length === 0/.test(src));
+});
+
+test("one item picker, on every screen that picks an item", () => {
+  // The app had grown three ways to choose an item: this search, a <select>
+  // of the whole master, and an <input list> over a <datalist>. Three
+  // controls meant the job was learnt three times, and the datalist -- the
+  // one that silently accepts a name matching nothing -- was guarding the
+  // two screens that WRITE to masters.
+  const screens = [
+    "../components/billing/BillingScreen.jsx",
+    "../app/production/page.js",
+    "../app/orderadd/page.js",
+    "../app/challanadd/page.js",
+    "../app/bomadd/page.js",
+    "../components/PriceListMaster.jsx",
+  ];
+  for (const file of screens) {
+    const src = read(file);
+    assert.ok(
+      /from '@\/components\/billing\/ItemSearch'/.test(src),
+      `${file} does not use the shared item search`
+    );
+    // No second way to pick an ITEM left behind on the same screen. Scoped
+    // to datalists fed from `items`, because a datalist is a fine control
+    // for a short fixed list and production still uses two -- its slip
+    // series and its party -- neither of which is the item master.
+    assert.doesNotMatch(
+      src,
+      /<datalist[^>]*>\s*\{items\.map/,
+      `${file} still picks an item from a datalist`
+    );
+  }
+  // And the two ids the datalists were addressed by are gone with them, so a
+  // stray `list=` cannot point at a list that no longer exists.
+  for (const file of ["../app/bomadd/page.js", "../components/PriceListMaster.jsx"]) {
+    assert.doesNotMatch(read(file), /list="(bom|price-list)-items"/, file);
+  }
+});
+
+test("the two shapes differ only below the input", () => {
+  const src = code("../components/billing/ItemSearch.jsx");
+  // The field variant is the default, so the billing and production screens
+  // keep today's label and hint without passing anything.
+  assert.ok(/variant = 'field'/.test(src), "the default must be the field shape");
+  assert.ok(/const cell = variant === 'cell'/.test(src));
+  // A cell gets no label and no hint of its own -- it sits in a <td> under a
+  // column heading that already names it -- but it still has an accessible
+  // name, which the visible label was providing before.
+  assert.ok(/\{!cell && \(/.test(src), "the label is not conditional");
+  assert.ok(/aria-label=\{cell \? label : undefined\}/.test(src));
+});
+
+test("a cell's list is portalled, because the grids clip it", () => {
+  // A row grid is an overflow-auto box. An absolutely positioned dropdown
+  // inside one is cut off at the edge of the scroll box, which is why this
+  // is a portal and fixed coordinates rather than a nicety.
+  const src = code("../components/billing/ItemSearch.jsx");
+  assert.ok(/createPortal/.test(src), "the cell list must escape the scroll box");
+  assert.ok(/position: 'fixed'/.test(src));
+  // Re-measured on scroll with capture, since a grid's own scrolling does
+  // not bubble -- without it the list stays put while the rows move.
+  assert.ok(/addEventListener\('scroll', measure, true\)/.test(src));
+  assert.ok(/removeEventListener\('scroll', measure, true\)/.test(src));
+  // Never rendered into a document that does not exist yet.
+  assert.ok(/typeof document !== 'undefined'/.test(src));
+});
+
+test("the box clears on pick only when the caller does not own the text", () => {
+  // Billing picks and the line is added outright, so the box clears for the
+  // next item. Everywhere else the pick fills a DRAFT line or a grid cell
+  // that is read back on save, so the name has to stay visible.
+  const src = code("../components/billing/ItemSearch.jsx");
+  assert.ok(/const controlled = value !== undefined/.test(src));
+  assert.ok(/if \(!controlled\) setOwnQuery\(''\)/.test(src), "a controlled box must not self-clear");
+  // The four new callers all pass `value`; billing and production do not.
+  for (const file of [
+    "../app/orderadd/page.js",
+    "../app/challanadd/page.js",
+    "../app/bomadd/page.js",
+    "../components/PriceListMaster.jsx",
+  ]) {
+    const call = read(file).slice(read(file).indexOf("<ItemSearch"));
+    assert.match(call.slice(0, 700), /value=\{/, `${file} does not control the text`);
+  }
+});
+
+test("a typed name that matches no item cannot become a line", () => {
+  // The <select> could not offer a name that is not in the master; a search
+  // box holds whatever was typed, so the screens have to say so themselves.
+  // Both of these write stock movements, so a bogus name is not cosmetic.
+  for (const file of ["../app/orderadd/page.js", "../app/challanadd/page.js"]) {
+    const src = code(file);
+    assert.ok(
+      /items\.some\(\(i\) => i\.name === draft\.name\)/.test(src),
+      `${file} adds a line without checking the name is real`
+    );
+  }
+});
+
+test("the grids keep Enter walking down the column", () => {
+  // ItemSearch swallows Enter unconditionally (it must never submit), so the
+  // price-list grid cannot rely on the event reaching its own handler -- it
+  // takes the move through onEnter instead.
+  const src = code("../components/PriceListMaster.jsx");
+  assert.ok(/const moveDown = \(index, field\)/.test(src), "the move is not reusable");
+  assert.ok(/onEnter=\{\(\) => moveDown\(i, 'name'\)\}/.test(src));
+  // And the cell is still findable by the attribute moveDown searches on.
+  assert.ok(/inputProps=\{\{ 'data-cell': `\$\{i\}:name` \}\}/.test(src));
+  assert.ok(/querySelector\(`\[data-cell="\$\{index \+ 1\}:\$\{field\}"\]`\)/.test(src));
+});
+
 test("nothing uses a positive tabIndex", () => {
   // A positive tabIndex takes a control out of document order and breaks the
   // tab sequence for everything else on the page.
@@ -1183,6 +1349,97 @@ test("a list's Enter never submits the bill behind it", () => {
   const at = list.indexOf("event.key === 'Enter'");
   assert.ok(at > 0, "Enter is not handled");
   assert.match(list.slice(at, at + 260), /preventDefault\(\)/);
+});
+
+console.log("\n--- CGST+SGST or IGST, worked out rather than picked ---");
+
+test("the rule is the two state codes, and nothing else", () => {
+  // Our state against the place of supply. Same state is local (CGST+SGST),
+  // different is central (IGST), for every pair of states -- the rule is
+  // just whether the two codes match.
+  assert.equal(taxTypeFor("07", "07"), "local", "Delhi to Delhi");
+  assert.equal(taxTypeFor("07", "06"), "central", "Delhi to Haryana");
+  assert.equal(taxTypeFor("27", "29"), "central", "Maharashtra to Karnataka");
+  assert.equal(taxTypeFor("29", "29"), "local", "Karnataka to Karnataka");
+  // A code that lost its leading zero somewhere still compares correctly.
+  assert.equal(taxTypeFor("7", "07"), "local");
+  // Symmetric on purpose: a sale puts our code first and a purchase the
+  // supplier's, and no caller should have to get the order right.
+  assert.equal(taxTypeFor("07", "06"), taxTypeFor("06", "07"));
+});
+
+test("an unknown state is answered with null, never with a default", () => {
+  // `|| "local"` here would be a tax decision made by a fallback -- and
+  // local is the expensive way to be wrong, because it splits tax into two
+  // heads that an inter-state supply does not have.
+  assert.equal(taxTypeFor("", "07"), null, "our firm has no state code");
+  assert.equal(taxTypeFor("07", ""), null, "the party has no state");
+  assert.equal(taxTypeFor(null, undefined), null);
+  assert.equal(taxTypeFor("00", "07"), null, "00 is not a state");
+});
+
+test("the rule lives in lib/gst.mjs, with one implementation", () => {
+  // It was written inside lib/invoiceImport.mjs, which is why the billing
+  // form -- where every typed bill gets its tax type -- never used it and
+  // set the field from two radio buttons instead.
+  assert.ok(/export function taxTypeFor/.test(read("../lib/gst.mjs")));
+  // Re-exported from its old home so the import callers keep working, but
+  // NOT reimplemented there: two copies of a tax rule is the whole problem.
+  const imp = code("../lib/invoiceImport.mjs");
+  assert.ok(/export \{ taxTypeFor \}/.test(imp), "the old home must re-export it");
+  assert.doesNotMatch(imp, /seller === buyer \? "local"/, "a second copy of the rule");
+});
+
+test("the form works it out instead of offering a choice", () => {
+  const src = code("../components/billing/BillingScreen.jsx");
+  // Our state comes from the shared company profile, not a constant.
+  assert.ok(/useCompany\(\)/.test(src));
+  assert.ok(/from '@\/lib\/gst\.mjs'/.test(src), "the screen must use the shared rule");
+  assert.ok(/taxTypeFor\(company\?\.stateCode, place\.stateCode\)/.test(src));
+  // Derived from `place`, which already comes from the party's master -- so
+  // the tax type cannot disagree with the place of supply on the same bill.
+  assert.ok(/const effectiveTaxType = derivedTaxType \?\? taxType/.test(src));
+  // The radios SHOW it rather than letting it be overruled on save.
+  assert.ok(/checked=\{effectiveTaxType === 'local'\}/.test(src));
+  assert.ok(/checked=\{effectiveTaxType === 'central'\}/.test(src));
+  assert.ok(/disabled=\{Boolean\(derivedTaxType\)\}/.test(src));
+  // And what is SENT is what is shown: the old code sent the radio's own
+  // state, which the server now derives again and would overrule.
+  assert.ok(/taxType: effectiveTaxType/.test(src));
+  assert.doesNotMatch(src, /^\s*taxType,$/m, "the raw radio state is still being sent");
+});
+
+test("the form says why, and stays usable when it cannot tell", () => {
+  const src = read("../components/billing/BillingScreen.jsx");
+  // A disabled pair of radios with no explanation reads as a bug.
+  assert.ok(/so CGST \+ SGST/.test(src));
+  assert.ok(/so IGST/.test(src));
+  // Both halves of "I cannot tell" are named, because the fix is in a
+  // different place for each: the party's master, or Company setup.
+  assert.ok(/no state on their master/.test(src));
+  assert.ok(/no state code in Company setup/.test(src));
+  // Null means the radios are the person's again, not stuck disabled.
+  assert.ok(/!derivedTaxType && selectedCustomer\?\.name/.test(code("../components/billing/BillingScreen.jsx")));
+});
+
+test("the server derives it too, and prefers its own answer", () => {
+  // The screen is a convenience; the stored field is what lib/invoiceGl.mjs
+  // posts from and what lib/gstReturns.mjs files from, so the authority has
+  // to be the route. Both write paths, or an edit undoes the fix.
+  for (const route of ["../app/api/save-invoice/route.js", "../app/api/sale-alter/route.js"]) {
+    const src = code(route);
+    assert.ok(/from "@\/lib\/gst\.mjs"/.test(src), `${route} does not use the shared rule`);
+    assert.ok(/taxTypeFor\(ourFirm\?\.stateCode, place\.stateCode\)/.test(src), route);
+    // Derived from the place the route itself resolved from the master, not
+    // from a state the request supplied.
+    assert.ok(/Company\.findById\(/.test(src), `${route} never reads its own firm`);
+    // The submitted value survives ONLY as the ?? fallback, for the case
+    // taxTypeFor answers null.
+    assert.ok(/\?\? (input|invoiceData)\.taxType/.test(src), route);
+    // And the write uses the derived binding, not the request field.
+    assert.doesNotMatch(src, /taxType: (input|invoiceData)\.taxType/, `${route} still stores the form's value`);
+    assert.ok(/^\s*taxType,$/m.test(src), `${route} does not write the derived value`);
+  }
 });
 
 console.log(`\n  ${passed} checks passed\n`);
