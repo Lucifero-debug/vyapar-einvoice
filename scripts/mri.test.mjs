@@ -511,16 +511,43 @@ test("the challan route keeps it only on an M.R.I., and the model declares it", 
   assert.match(read("../models/challanModel.js"), /challanQty: \{ type: Number \}/);
 });
 
-test("the screen shows it and does not let it be typed", () => {
-  // It is the SUPPLIER'S figure. A receipt whose promise can be edited to
-  // match what arrived proves nothing at all.
+test("the bill copies it from a recorded challan, and takes it typed on a keyed-in line", () => {
+  // Copied from a challan we recorded, it is the SUPPLIER'S figure: a
+  // receipt whose promise can be edited to match what arrived proves
+  // nothing, so that line shows it and has no box.
   const screen = read("../components/billing/BillingScreen.jsx");
   assert.match(screen, /<th className='text-right'>Challan Qty<\/th>/);
-  assert.match(screen, /\{items\.challanQty \?\? '—'\}/);
+  assert.match(screen, /\{items\.challanNo \? \([\s\S]{0,400}items\.challanQty \?\? '—'\s*\) : \(/);
   assert.match(screen, /shortQty\(items\) > 0/, "a short delivery is not flagged");
-  // Not an input anywhere on that row.
-  const cell = screen.slice(screen.indexOf("items.challanQty"), screen.indexOf("items.challanQty") + 500);
-  assert.doesNotMatch(cell, /<input/, "the challan quantity is editable");
+  // A line keyed in directly has the supplier's paper in hand, as on the
+  // purchase challan screen: there it is typed.
+  assert.match(screen, /onChange=\{\(e\) => handleChallanQtyChange\(index, e\.target\.value\)\}/);
+  // Switching the M.R.I. off drops a typed one, which the route would refuse.
+  assert.match(screen, /<MriPanel mri=\{mri\} onChange=\{changeMri\}/);
+  // And the handler refuses to touch a copied one.
+  assert.match(screen, /if \(idx !== index \|\| item\.challanNo\) return item;/);
+});
+
+test("the bill route keeps a typed challan quantity only on an M.R.I.", () => {
+  // Keyed in directly, on an M.R.I.: kept, and short and rejected read apart.
+  const typed = { ...PURCHASE, items: [{ ...PURCHASE.items[0], receivedQty: 90, challanQty: 100 }] };
+  const r = prepareInvoiceInput(typed, { now: NOW });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.invoice.items[0].challanQty, 100);
+  assert.equal(shortQty(r.invoice.items[0]), 10, "10 never turned up");
+  assert.equal(rejectedQty(r.invoice.items[0]), 10, "and 10 was turned away");
+
+  // Off an M.R.I. it is refused rather than stored where nothing reads it.
+  const off = prepareInvoiceInput(
+    { ...PURCHASE, mri: undefined, items: [{ name: "MS Angle", quantity: 80, challanQty: 100, cost: 50, gstRate: 18 }] },
+    { now: NOW }
+  );
+  assert.match(off.error || "", /only kept on an M\.R\.I\./);
+
+  // Blank stays absent: no paper is not a promise of nothing.
+  const bare = prepareInvoiceInput(PURCHASE, { now: NOW });
+  assert.equal(bare.invoice.items[0].challanQty, undefined);
+  assert.equal(shortQty(bare.invoice.items[0]), 0);
 });
 
 console.log(`\n  ${passed} checks passed\n`);

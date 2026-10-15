@@ -739,8 +739,9 @@ test("Enter in a row advances and never submits", () => {
 test("the row shortcuts act on the focused line, not the last one", () => {
   const src = read("../components/billing/BillingScreen.jsx");
   // Quantity, rate and discount -- and, on a purchase M.R.I., the received
-  // box, which is on the same line and so acts on the same row.
-  assert.equal((src.match(/onFocus=\{\(\) => setActiveRow\(index\)\}/g) || []).length, 4);
+  // and the typed challan-quantity boxes, which are on the same line and so
+  // act on the same row.
+  assert.equal((src.match(/onFocus=\{\(\) => setActiveRow\(index\)\}/g) || []).length, 5);
   assert.ok(/activeRow === null \|\| !selectedItem\[activeRow\]/.test(src), "deleteRow guesses");
 });
 

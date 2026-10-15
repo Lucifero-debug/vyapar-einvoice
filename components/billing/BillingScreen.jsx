@@ -1109,6 +1109,8 @@ const saveItem = (e) => {
                 // said, true of the line whether or not anybody inspected it,
                 // and the route keeps it only on a line that names a challan
                 // (lib/invoiceInput.mjs).
+                // (A TYPED challan quantity is an M.R.I. figure too; it is
+                // dropped when the M.R.I. is switched off -- changeMri.)
                 items: takesMri && mri.on
                     ? selectedItem
                     : selectedItem.map(({ receivedQty: _received, ...line }) => line),
@@ -1235,6 +1237,42 @@ const handleDispatchSave = () => {
 
     // The received quantity on an MRI line. Blank stays blank -- "received
     // what was accepted" -- rather than turning into a zero.
+    // The supplier's challan quantity on a line keyed in directly -- their
+    // paper is in front of you, as on the purchase challan screen. A line
+    // drawn from a recorded challan keeps the figure it was copied with and
+    // has no box (see the grid). Blank stays blank: no paper is not a
+    // promise of nothing.
+    const handleChallanQtyChange = (index, rawValue) => {
+        setSelectedItem(prev =>
+            prev.map((item, idx) => {
+                if (idx !== index || item.challanNo) return item;
+                if (rawValue === '' || rawValue === null) {
+                    const { challanQty: _typed, ...rest } = item;
+                    return rest;
+                }
+                const n = parseFloat(rawValue);
+                return { ...item, challanQty: Number.isFinite(n) && n >= 0 ? n : 0 };
+            })
+        );
+    };
+
+    // Switching the M.R.I. off drops every TYPED challan quantity with it:
+    // the column goes, and the route refuses one off an M.R.I. A figure
+    // copied from a recorded challan stays -- it is true of the line whether
+    // or not anybody inspected it.
+    const changeMri = (next) => {
+        if (mri.on && !next.on) {
+            setSelectedItem(prev =>
+                prev.map((item) => {
+                    if (item.challanNo || item.challanQty === undefined) return item;
+                    const { challanQty: _typed, ...rest } = item;
+                    return rest;
+                })
+            );
+        }
+        setMri(next);
+    };
+
     const handleReceivedChange = (index, rawValue) => {
         setSelectedItem(prev =>
             prev.map((item, idx) => {
@@ -1604,7 +1642,7 @@ const handleDispatchSave = () => {
                 )}
 
                 {takesMri && (
-                    <MriPanel mri={mri} onChange={setMri} mriNo={mriNo} party={selectedCustomer?.name || ''} />
+                    <MriPanel mri={mri} onChange={changeMri} mriNo={mriNo} party={selectedCustomer?.name || ''} />
                 )}
 
                 {(billsFromOrder || billsFromChallan) && (
@@ -1928,7 +1966,23 @@ const handleDispatchSave = () => {
                                                         nought would read as a promise of
                                                         none. `shortQty` claims nothing here
                                                         either. */}
-                                                    {items.challanQty ?? '—'}
+                                                    {items.challanNo ? (
+                                                        // Copied from the recorded challan: the
+                                                        // supplier's figure, not ours to edit.
+                                                        items.challanQty ?? '—'
+                                                    ) : (
+                                                        <input
+                                                            type='number'
+                                                            min='0'
+                                                            step='any'
+                                                            className='field-input field-input-sm num w-20'
+                                                            value={items.challanQty ?? ''}
+                                                            placeholder='—'
+                                                            onChange={(e) => handleChallanQtyChange(index, e.target.value)}
+                                                            onFocus={() => setActiveRow(index)}
+                                                            title="The quantity on the supplier's challan. Blank if none came."
+                                                        />
+                                                    )}
                                                     {shortQty(items) > 0 && (
                                                         <span
                                                             className='chip ml-2'
