@@ -84,6 +84,45 @@ const invoiceSchema = new mongoose.Schema(
     // Declared, or Mongoose strict mode drops it -- and a dropped series is a
     // bill that comes back with an empty Series box on every edit.
     series: { type: String, trim: true, default: "" },
+
+    // === The number as the series writes it: Sigfa's `VOUCHER Text(16)` ===
+    //
+    // "A0007" -- the series initial plus `invoiceNo` padded to the series'
+    // Fill Left Space With Zero. What PRINTS; `invoiceNo` above is still the
+    // numeric sequence and still what every index, report and join uses.
+    //
+    // FROZEN HERE rather than composed at print time. lib/invoicePrefs.mjs
+    // names "no invoice-number prefix" among the things that must never be a
+    // live setting: a bill prints from this row plus the firm's current
+    // profile, so a series edited next year would otherwise renumber a bill
+    // the customer already holds.
+    voucherNo: { type: String, trim: true, default: "" },
+
+    // === The rest of the series, as it stood when this bill was saved ===
+    //
+    // The same snapshot decision as the buyer block below and `uqc` on a
+    // line, for the same reason: a printed bill has to keep saying what it
+    // said. `lib/series.mjs` builds it (`seriesSnapshot`) and owns the field
+    // list; declared in full here because Mongoose strict mode drops what is
+    // not, and a dropped heading is a bill that silently reprints wrong.
+    //
+    // `effectInStock` is kept even though the stock rows were already written
+    // (or not) at save: a rebuild has to be able to reproduce what happened
+    // without asking the master what it says today.
+    seriesSnapshot: {
+      topHeading: { type: String, trim: true, default: "" },
+      topSubHeading: { type: String, trim: true, default: "" },
+      invoiceNoCaption: { type: String, trim: true, default: "" },
+      declarationCaption: { type: String, trim: true, default: "" },
+      declaration: { type: String, trim: true, default: "" },
+      bookNo: { type: String, trim: true, default: "" },
+      store: { type: String, trim: true, default: "" },
+      printCompName: { type: Boolean, default: true },
+      compressPrinting: { type: Boolean, default: false },
+      rollStationary: { type: Boolean, default: false },
+      effectInStock: { type: Boolean, default: true },
+    },
+
     againstInvoiceNo: { type: Number },
     date: { type: Date, required: true },
     

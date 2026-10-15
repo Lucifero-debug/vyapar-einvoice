@@ -31,6 +31,20 @@ const InvoiceDocument = forwardRef(({ invoice, isRollStationary }, ref) => {
   const notes = footerLines(prefs);
   const paper = pageRuleFor(prefs);
 
+  // === What the SERIES said when this bill was saved (Sigfa's Series Master) ===
+  //
+  // Read off the invoice row, never from the master. lib/series.mjs and
+  // lib/invoicePrefs.mjs both give the reason: a bill prints from its own row
+  // plus the firm's current profile, so a series edited next year must not
+  // re-caption or renumber a bill the customer already holds.
+  //
+  // Absent on every bill written before series existed, and on every bill
+  // raised under no series -- which is why each line below falls back to what
+  // the document printed before any of this.
+  const seriesSnap = invoice?.seriesSnapshot || {};
+  // Sigfa's VOUCHER: "A0007". Falls back to the plain number.
+  const shownNo = invoice?.voucherNo || invoice?.invoiceNo;
+
   const items = invoice?.items || [];
   const partyTaxes = invoice?.partyTaxes || [];
 
@@ -138,6 +152,23 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
         <style>{`@page { size: ${paper.size}; margin: 8mm; }`}</style>
       ) : null}
 
+        {/* The series' own headings, above everything. Sigfa's Top Heading and
+            Top Sub Heading: a firm printing "ORIGINAL FOR RECIPIENT" or a
+            branch name over one series and not another. Nothing is drawn when
+            the series set none, so an ordinary bill is unchanged. */}
+        {(seriesSnap.topHeading || seriesSnap.topSubHeading) && (
+          <div className="mb-4 text-center">
+            {seriesSnap.topHeading && (
+              <p className="text-sm font-semibold uppercase tracking-wide text-gray-800">
+                {seriesSnap.topHeading}
+              </p>
+            )}
+            {seriesSnap.topSubHeading && (
+              <p className="text-xs text-gray-600">{seriesSnap.topSubHeading}</p>
+            )}
+          </div>
+        )}
+
         {/* Header */}
         <header className="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3 sm:gap-4">
@@ -158,8 +189,12 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
               sm and up: the original stacked block on the right. */}
           <div className="flex items-end justify-between gap-4 border-t border-gray-200 pt-3 sm:block sm:border-0 sm:pt-0 sm:text-right">
             <div>
-              <p className="text-xs text-gray-500 sm:text-sm">Invoice No:</p>
-              <p className="text-base font-semibold sm:text-lg">{invoice.invoiceNo}</p>
+              {/* The series may rename this box -- Sigfa's Invoice No.
+                  Caption -- and composes the number itself. */}
+              <p className="text-xs text-gray-500 sm:text-sm">
+                {seriesSnap.invoiceNoCaption || 'Invoice No:'}
+              </p>
+              <p className="text-base font-semibold sm:text-lg">{shownNo}</p>
             </div>
             <div className="text-right sm:mt-2">
               <p className="text-xs text-gray-500 sm:text-sm">Date:</p>
@@ -443,6 +478,20 @@ const headCell = 'text-[11px] font-semibold uppercase tracking-wide text-gray-70
             so the switch is off by default and the page is unchanged for
             anyone who does not ask for them. */}
         <CompanyBank company={company} prefs={prefs} className="mt-6 border-t border-gray-200 pt-4" />
+
+        {/* The series' declaration, above the footer. Sigfa keeps both the
+            caption and the text on the series, so one book can carry a
+            certificate another does not. */}
+        {seriesSnap.declaration && (
+          <div className="mt-6 border-t border-gray-200 pt-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-700">
+              {seriesSnap.declarationCaption || 'Declaration'}
+            </p>
+            <p className="mt-1 whitespace-pre-line text-xs text-gray-600">
+              {seriesSnap.declaration}
+            </p>
+          </div>
+        )}
 
         {/* Footer. The two sentences that used to be typed here are now the
             DEFAULT of the firm's footer note, so a firm that never opens the

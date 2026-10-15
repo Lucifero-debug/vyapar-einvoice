@@ -24,8 +24,14 @@ import {
   SERIES_FIELDS,
   appliesTo,
   defaultSeries,
+  SERIES_SNAPSHOT_FIELDS,
+  docTypeForBill,
   docTypeForBilling,
   docTypeForChallan,
+  effectsStock,
+  isSeriesLocked,
+  seriesSnapshot,
+  voucherNoFor,
   docTypeForOrder,
   docTypeForStockKind,
   docTypeLabel,
@@ -715,6 +721,144 @@ test("the dialog fits the window, which this one has to say out loud", () => {
   // plain 1fr refuses to shrink below its content and the cap does nothing.
   assert.match(src, /grid-rows-\[auto_minmax\(0,1fr\)_auto\]/);
   assert.match(src, /min-h-0/);
+});
+
+console.log("\n--- what picking a series does to the bill ---");
+
+test("a saved bill knows its own document type from type and return", () => {
+  // The screens know their key ('salereturn'); a saved row has `type` and
+  // `return`, and a route assembling the key itself is how a return gets
+  // filed under the invoice series.
+  assert.equal(docTypeForBill({ type: "Sale", isReturn: false }), "SALE_INVOICE");
+  assert.equal(docTypeForBill({ type: "Sale", isReturn: true }), "SALE_RETURN");
+  assert.equal(docTypeForBill({ type: "Purchase", isReturn: false }), "PURCHASE_INVOICE");
+  assert.equal(docTypeForBill({ type: "Purchase", isReturn: true }), "PURCHASE_RETURN");
+  assert.equal(docTypeForBill({ type: "sale" }), "SALE_INVOICE", "case is not relied on");
+  assert.equal(docTypeForBill({ type: "nonsense" }), "");
+  assert.equal(docTypeForBill({}), "");
+  assert.equal(docTypeForBill(), "");
+});
+
+test("the snapshot carries what a bill must keep saying", () => {
+  const snap = seriesSnapshot(
+    row("A", {
+      docType: "SALE_INVOICE",
+      topHeading: "ORIGINAL FOR RECIPIENT",
+      declaration: "E & O.E.",
+      effectInStock: false,
+    })
+  );
+  assert.equal(snap.topHeading, "ORIGINAL FOR RECIPIENT");
+  assert.equal(snap.declaration, "E & O.E.");
+  assert.equal(snap.effectInStock, false);
+  // The CODE is not in the snapshot -- the bill has its own `series` column,
+  // and two places holding it is two places to disagree.
+  assert.ok(!SERIES_SNAPSHOT_FIELDS.includes("code"));
+  // Nor is the lock: that one is read live, so unticking it frees the bills.
+  assert.ok(!SERIES_SNAPSHOT_FIELDS.includes("lockVoucher"));
+  // No series at all is a snapshot of defaults, not undefined fields in a
+  // document Mongoose would then fill unpredictably.
+  const blank = seriesSnapshot(null);
+  assert.deepEqual(Object.keys(blank).sort(), [...SERIES_SNAPSHOT_FIELDS].sort());
+  assert.equal(blank.topHeading, "");
+  assert.equal(blank.effectInStock, true, "a bill with no series still moves stock");
+  assert.equal(blank.printCompName, true);
+});
+
+test("Effect In Stock is off ONLY when a series says so", () => {
+  // The whole safety property. Every bill this app has ever written moved
+  // stock; a firm with no series must go on behaving exactly that way.
+  assert.equal(effectsStock(null), true);
+  assert.equal(effectsStock(undefined), true);
+  assert.equal(effectsStock({}), true, "a row written before the field existed");
+  assert.equal(effectsStock(row("A", { effectInStock: true })), true);
+  assert.equal(effectsStock(row("A", { effectInStock: false })), false);
+  // And the string "false" is off, not on.
+  assert.equal(effectsStock(row("A", { effectInStock: "false" })), false);
+});
+
+test("Lock Voucher is read from the series, and off by default", () => {
+  assert.equal(isSeriesLocked(null), false);
+  assert.equal(isSeriesLocked({}), false);
+  assert.equal(isSeriesLocked(row("A", { lockVoucher: true })), true);
+  assert.equal(isSeriesLocked(row("A", { lockVoucher: "false" })), false);
+});
+
+test("the printed number is the series' composition, or nothing", () => {
+  assert.equal(voucherNoFor(7, row("A", { fillLeftSpaceWithZero: 4 })), "A0007");
+  assert.equal(voucherNoFor(7, row("A")), "A7");
+  // No series means no composed number, and the bill shows its plain one.
+  assert.equal(voucherNoFor(7, null), "");
+  assert.equal(voucherNoFor(7, undefined), "");
+});
+
+test("the bill stores the composed number and the snapshot", () => {
+  const model = read("../models/invoiceModel.js");
+  assert.match(model, /voucherNo: \{ type: String/, "strict mode would drop it");
+  // Every snapshot field is declared, or it is discarded on save and the
+  // bill reprints without the heading somebody set.
+  const block = model.slice(model.indexOf("seriesSnapshot:"), model.indexOf("againstInvoiceNo"));
+  for (const field of SERIES_SNAPSHOT_FIELDS) {
+    assert.match(block, new RegExp(`\\b${field}:\\s*\\{`), `${field} is not declared`);
+  }
+});
+
+test("both save paths freeze the series onto the bill", () => {
+  for (const path of ["../app/api/save-invoice/route.js", "../app/api/sale-alter/route.js"]) {
+    const src = code(path);
+    assert.match(src, /docTypeForBill\(/, `${path} does not resolve the document type`);
+    assert.match(src, /Series\.findOne\(/, `${path} does not read the master`);
+    assert.match(src, /voucherNo: voucherNoFor\(/, `${path} does not freeze the number`);
+    assert.match(src, /seriesSnapshot: seriesProfile/, `${path} does not freeze the profile`);
+    // The stock gate, on both, and passing an EMPTY LIST rather than skipping
+    // the call -- the helper clears the invoice's existing rows first, so a
+    // skipped call would leave movements behind when the effect is turned off.
+    assert.match(src, /movesStock \? invoiceStockLines\(/, `${path} does not gate stock`);
+  }
+});
+
+test("the composed number is recomposed when an edit renumbers the bill", () => {
+  // sale-alter may change invoiceNo. Freezing the number from the OLD one
+  // would leave the printed number and the numeric one disagreeing.
+  assert.match(code("../app/api/sale-alter/route.js"), /voucherNoFor\(nextNo,/);
+});
+
+test("a locked series refuses an alter, by the bill's OWN series", () => {
+  const src = code("../app/api/sale-alter/route.js");
+  assert.match(src, /isSeriesLocked\(/);
+  // `previousInvoice.series`, not the one being saved -- or an edit could
+  // escape a locked series by moving the bill out of it.
+  assert.match(src, /previousInvoice\.series/);
+  assert.match(src, /LOCKED_STATUS/, "it must answer like the other lock");
+  assert.match(src, /Untick Lock Voucher/, "and name the way out");
+});
+
+test("the print uses what the bill kept, and falls back to what it printed before", () => {
+  const src = read("../components/InvoiceDocument.jsx");
+  // The number: the series' composition, else the plain one.
+  assert.match(src, /invoice\?\.voucherNo \|\| invoice\?\.invoiceNo/);
+  // The caption, the headings and the declaration, each with the old
+  // behaviour behind it -- a bill with no series must print exactly as it did.
+  assert.match(src, /seriesSnap\.invoiceNoCaption \|\| 'Invoice No:'/);
+  assert.match(src, /seriesSnap\.topHeading/);
+  assert.match(src, /seriesSnap\.topSubHeading/);
+  assert.match(src, /seriesSnap\.declaration/);
+  assert.match(src, /invoice\?\.seriesSnapshot \|\| \{\}/, "an old bill has none");
+  // Off the ROW, never the master: a series edited next year must not
+  // re-caption a bill the customer already holds.
+  assert.doesNotMatch(src, /get-series/);
+});
+
+test("the Series box is on every bill, whether or not a series exists yet", () => {
+  // The bug this fixes: it rendered only when the master already held one for
+  // the document, so a firm that had defined none had no box -- and no way
+  // in, since Alt+A acts on the field you are standing in.
+  const src = read("../components/billing/BillingScreen.jsx");
+  assert.doesNotMatch(src, /seriesChoices\.length > 0 &&/, "the box is hidden again");
+  assert.match(src, /data-master-field='series'/);
+  // And it says what the number will print as, which is the whole point of
+  // picking one.
+  assert.match(src, /Prints as \$\{printsAs\}/);
 });
 
 console.log(`\n  ${passed} checks passed\n`);

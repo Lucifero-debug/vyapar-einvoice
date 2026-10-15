@@ -15,6 +15,14 @@ import {
   invoicePostingDeltas,
 } from "@/lib/invoicePosting.mjs";
 import { writeItemLedgerRows } from "@/lib/itemLedger.mjs";
+import Series from "@/models/seriesModel";
+import {
+  docTypeForBill,
+  effectsStock,
+  isSeriesLocked,
+  seriesSnapshot,
+  voucherNoFor,
+} from "@/lib/series.mjs";
 import {
   recomputeItemBalances,
   recomputeLedgerBalances,
@@ -107,6 +115,45 @@ async function handlePOST(req, auth) {
           LOCKED_STATUS
         );
       }
+
+      // === The series, and whether it lets this bill be altered at all ===
+      //
+      // Sigfa's "Lock Voucher". Read LIVE from the master rather than from
+      // the snapshot on the row, because a lock has to be removable:
+      // unticking it must free the bills it was holding.
+      //
+      // The bill's OWN series decides, not the one being saved -- otherwise
+      // an edit could escape a locked series by moving the bill out of it.
+      const seriesDocType = docTypeForBill({
+        type: invoiceData.type,
+        isReturn: invoiceData.return,
+      });
+      const lockedBy = previousInvoice.series
+        ? await Series.findOne({ code: previousInvoice.series, docType: seriesDocType })
+            .session(session)
+            .lean()
+        : null;
+      if (isSeriesLocked(lockedBy)) {
+        throw new AbortTransaction(
+          {
+            success: false,
+            error: `Series ${previousInvoice.series} is locked, so this bill cannot be altered. Untick Lock Voucher on the series to allow it.`,
+          },
+          LOCKED_STATUS
+        );
+      }
+
+      // The series as it is being SAVED, for the number and the headings
+      // frozen onto the row below. Null when the master does not hold it, and
+      // the bill then behaves exactly as it did before series existed.
+      const seriesRow =
+        invoiceData.series && seriesDocType
+          ? await Series.findOne({ code: invoiceData.series, docType: seriesDocType })
+              .session(session)
+              .lean()
+          : null;
+      const seriesProfile = seriesSnapshot(seriesRow);
+      const movesStock = effectsStock(seriesRow);
 
       // Renumbering onto an invoice that already exists would destroy it.
       if (nextNo !== lookupNo) {
@@ -280,6 +327,11 @@ async function handlePOST(req, auth) {
           // edit screen DOES reload the series, so leaving it out would blank
           // the label every time a bill was corrected.
           series: invoiceData.series,
+          // Recomposed against the number this edit settles on, because the
+          // bill may be renumbered here -- and the printed number has to go
+          // on matching the numeric one beside it.
+          voucherNo: voucherNoFor(nextNo, seriesRow),
+          seriesSnapshot: seriesProfile,
           date: invoiceData.date,
           customer: buyerBlock,
           paymentType: invoiceData.paymentType,
@@ -487,8 +539,11 @@ async function handlePOST(req, auth) {
         date: updatedInvoice.date || new Date(),
         type: invoiceData.type,
         isReturn: invoiceData.return,
-        // Not the lines whose challan already moved the stock.
-        items: invoiceStockLines(invoiceData.items),
+        // Not the lines whose challan already moved the stock -- and none at
+        // all when the series has Effect In Stock off. An empty list rather
+        // than a skipped call, so an edit that turns the effect off takes the
+        // rows this bill already wrote back out.
+        items: movesStock ? invoiceStockLines(invoiceData.items) : [],
         partyName: invoiceData.customer.name,
       });
 

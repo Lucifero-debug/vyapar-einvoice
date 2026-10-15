@@ -15,6 +15,13 @@ import {
 import { glDeltas } from "@/lib/invoiceGl.mjs";
 import { resolveGlAccounts } from "@/lib/glAccounts.mjs";
 import { writeItemLedgerRows } from "@/lib/itemLedger.mjs";
+import Series from "@/models/seriesModel";
+import {
+  docTypeForBill,
+  effectsStock,
+  seriesSnapshot,
+  voucherNoFor,
+} from "@/lib/series.mjs";
 import {
   recomputeItemBalances,
   recomputeLedgerBalances,
@@ -271,6 +278,30 @@ async function handlePOST(req, auth) {
       // === A purchase M.R.I.? Its number, and any Ag. MRI No. (lib/mriSave.mjs) ===
       const mriData = await mriFields({ session, mri: input.mri, party: customer.name, items: input.items });
 
+      // === The series this bill is raised under (Sigfa's Series Master) ===
+      //
+      // Read ONCE, here, and then everything it decides is frozen onto the
+      // row below: the printed number, the headings and the declaration.
+      // lib/series.mjs states why none of it may be read back live -- a
+      // series edited next year must not renumber a bill already issued.
+      //
+      // A series the master does not hold resolves to null and the bill then
+      // behaves exactly as every bill does today: plain number, no headings,
+      // stock moves. That covers a series deleted after the bill was raised,
+      // and a code that reached the body some other way.
+      const seriesDocType = docTypeForBill({ type: input.type, isReturn: input.return });
+      const seriesRow =
+        input.series && seriesDocType
+          ? await Series.findOne({ code: input.series, docType: seriesDocType })
+              .session(session)
+              .lean()
+          : null;
+      const seriesProfile = seriesSnapshot(seriesRow);
+      // Sigfa's "Effect In Stock". No series, or a series that does not say
+      // otherwise, moves stock -- which is every bill this app has written so
+      // far, so nothing changes until somebody turns it off deliberately.
+      const movesStock = effectsStock(seriesRow);
+
       // Posting the net `balanceDue` is what made a fully-paid sale vanish:
       // the delta came out as zero and the money received was never booked.
       const deltas = invoicePostingDeltas({
@@ -304,6 +335,10 @@ async function handlePOST(req, auth) {
             // The series is a label on the bill. It does not take part in
             // choosing `invoiceNo` above -- see lib/series.mjs.
             series: input.series,
+            // What PRINTS: the initial and the zero-fill off the series,
+            // settled now and never recomputed.
+            voucherNo: voucherNoFor(invoiceNo, seriesRow),
+            seriesSnapshot: seriesProfile,
             date: input.date,
             type: input.type,
             return: input.return,
@@ -413,13 +448,18 @@ async function handlePOST(req, auth) {
       // ITEM LEDGER LOGIC (always runs). Lines billing a challan that
       // already moved the goods write no stock row of their own -- SIGFA's
       // Dsale -- or the stock would go out twice.
+      //
+      // And a series with Effect In Stock off writes none at all. Passed as
+      // an EMPTY LIST rather than skipped, because the helper clears this
+      // invoice's existing rows first -- so turning the effect off and
+      // re-saving takes the old movements back out instead of leaving them.
       await writeItemLedgerRows({
         session,
         invoiceNo,
         date: invoice.date || new Date(),
         type: input.type,
         isReturn: input.return,
-        items: invoiceStockLines(input.items),
+        items: movesStock ? invoiceStockLines(input.items) : [],
         partyName: customer.name,
       });
 

@@ -35,6 +35,7 @@ import { billingType, canBillFromOrder } from '@/lib/billingTypes.mjs';
 import {
     defaultSeries,
     docTypeForBilling,
+    formatDocNo,
     normalizeSeriesCode,
     seriesFor,
 } from '@/lib/series.mjs';
@@ -822,6 +823,12 @@ const addPartyTax = () => {
         chosenSeries && !offeredSeries.some((s) => normalizeSeriesCode(s.code) === chosenSeries)
             ? [...offeredSeries, { code: chosenSeries, name: '' }]
             : offeredSeries;
+    // The chosen series' own row, for what the number will print as. Sigfa
+    // composes its VOUCHER from the series initial and Fill Left Space With
+    // Zero, and this is the same composition the server freezes onto the bill
+    // when it is saved (lib/series.mjs).
+    const seriesRow = offeredSeries.find((s) => normalizeSeriesCode(s.code) === chosenSeries);
+    const printsAs = seriesRow ? formatDocNo(invoiceNo, seriesRow) : '';
 
     // The default, on a BLANK bill only. Never over one being edited -- that
     // would relabel a document already in the book -- and never over a choice
@@ -1560,27 +1567,34 @@ const handleDispatchSave = () => {
 
                 {/* Series, Invoice & Date -- Sigfa's own order, series first. */}
                 <div className='panel panel-body flex flex-wrap gap-5'>
-                    {/* Hidden until a series exists for this document: a box
-                        whose only entry is "None" is a question with no answer.
-                        Alt+A creates one from here once it is shown. */}
-                    {seriesChoices.length > 0 && (
-                        <div className='field w-40'>
-                            <label className='field-label mb-1'>Series</label>
-                            <select
-                                className='field-select'
-                                data-master-field='series'
-                                value={chosenSeries}
-                                onChange={(e) => setSeries(e.target.value)}
-                            >
-                                <option value=''>None</option>
-                                {seriesChoices.map((option) => (
-                                    <option key={option._id || option.code} value={option.code}>
-                                        {option.name ? `${option.code} — ${option.name}` : option.code}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    )}
+                    {/* ALWAYS SHOWN, even with no series defined. It used to
+                        render only when the master held one for this document,
+                        which meant a firm that had defined none had no Series
+                        box at all -- and so no way in, since Alt+A acts on the
+                        field you are standing in. */}
+                    <div className='field w-44'>
+                        <label className='field-label mb-1'>Series</label>
+                        <select
+                            className='field-select'
+                            data-master-field='series'
+                            value={chosenSeries}
+                            onChange={(e) => setSeries(e.target.value)}
+                        >
+                            <option value=''>None</option>
+                            {seriesChoices.map((option) => (
+                                <option key={option._id || option.code} value={option.code}>
+                                    {option.name ? `${option.code} — ${option.name}` : option.code}
+                                </option>
+                            ))}
+                        </select>
+                        <p className='field-hint mt-1'>
+                            {printsAs
+                                ? `Prints as ${printsAs}`
+                                : seriesChoices.length === 0
+                                  ? 'Alt+A adds one'
+                                  : ''}
+                        </p>
+                    </div>
                     <div className='field w-40'>
                         <label className='field-label mb-1'>Invoice No</label>
                         <input 
