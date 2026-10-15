@@ -205,4 +205,51 @@ test("both invoice routes stamp their lines", () => {
   }
 });
 
+console.log("\n--- where the free-text unit comes from ---");
+
+/** The item master's HSN dropdown, from its handler to the option list. */
+const hsnPickBlock = () => {
+  const src = read("app/itemadd/page.js");
+  const from = src.indexOf("const selectedHsn = hsnList.find");
+  const to = src.indexOf('<option value="">Select HSN</option>');
+  assert.ok(from > 0 && to > from, "the item master's HSN dropdown moved");
+  return src.slice(from, to);
+};
+
+test("the HSN master carries a unit, and both of its forms show it", () => {
+  // The field has been on the model all along; what is new is that an item
+  // reads it. A form that stopped collecting it would leave every new HSN
+  // unable to fill the box below.
+  assert.match(read("models/hsnModel.js"), /gstunit:\s*\{/);
+  assert.match(read("components/HsnMaster.jsx"), /gstunit: e\.target\.value/);
+  assert.match(read("lib/masterActions.mjs"), /gstunit: record\.gstunit/);
+});
+
+test("picking an HSN fills the item's unit, and only when that HSN has one", () => {
+  // The rate already came down from the HSN; the unit now comes with it, so
+  // two items on one HSN cannot end up as "pcs" and "Pcs".
+  const block = hsnPickBlock();
+  assert.match(block, /selectedHsn\?\.gstunit/);
+  assert.match(block, /if \(fromHsn\) setUnit\(fromHsn\)/);
+});
+
+test("picking an HSN never touches the UQC", () => {
+  // THE RULE THIS FILE EXISTS FOR. `gstunit` is free text a shopkeeper typed
+  // -- "bori", "pcs" -- and the IRP takes only a code from UQC_CODES. Filling
+  // the code from that text is the silent guess the header forbids: a wrong
+  // UQC is a rejected filing, so it stays on the item, picked by hand.
+  assert.doesNotMatch(hsnPickBlock(), /setUqc\(/);
+});
+
+test("the unit box starts empty, not at zero", () => {
+  // It was `useState(0)`, so every item saved without a typed unit went in
+  // with unit "0" -- and the price list master copied those zeros onward.
+  // scripts/clear-zero-units.mjs cleans the rows that already exist; this is
+  // the form that must stop making new ones.
+  const src = read("app/itemadd/page.js");
+  assert.match(src, /const \[unit, setUnit\] = useState\(''\)/);
+  assert.match(src, /setUnit\(data\.unit \|\| ''\)/);
+  assert.doesNotMatch(src, /setUnit\(data\.unit \|\| 0\)/);
+});
+
 console.log(`\n${passed} checks passed.\n`);

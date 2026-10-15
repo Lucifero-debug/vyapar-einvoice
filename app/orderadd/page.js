@@ -299,9 +299,11 @@ function OrderForm() {
             worked out when it is billed.
           </p>
         </div>
-        {!editingNo && (
-          <div className="flex gap-2">
-            {ORDER_TYPES.map((t) => (
+        <div className="flex flex-wrap items-center gap-2">
+          {/* The side, while this is still a new order. Once it is an edit the
+              side is the saved order's and cannot be switched. */}
+          {!editingNo &&
+            ORDER_TYPES.map((t) => (
               <button
                 key={t}
                 type="button"
@@ -311,8 +313,18 @@ function OrderForm() {
                 {t}
               </button>
             ))}
-          </div>
-        )}
+          {/* The order sheets for the side on screen -- the same button the
+              register carries, so whichever order screen you are on reaches
+              them without going back to the home page. It follows the toggle
+              above: switch to Purchase and this opens the purchase sheets. */}
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => router.push(`/order-report?type=${encodeURIComponent(type)}`)}
+          >
+            Reports
+          </button>
+        </div>
       </div>
 
       {error && (

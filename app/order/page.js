@@ -65,8 +65,14 @@ function OrderRegister() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // What the caller came to do, when it said so. Only the line under the
+  // heading changes: Edit and Delete sit on every row either way, because an
+  // order that cannot be deleted must say so when it is tried, not be hidden.
+  const [mode, setMode] = useState('');
+
   const readParams = useCallback((q) => {
     if (ORDER_TYPES.includes(q.type)) setType(q.type);
+    setMode(q.mode === 'alter' || q.mode === 'delete' ? q.mode : '');
   }, []);
 
   const load = useCallback(() => {
@@ -158,7 +164,11 @@ function OrderRegister() {
             {type === 'Purchase' ? 'Purchase Orders' : 'Sales Orders'}
           </h1>
           <p className="page-subtitle">
-            Orders carry no tax — the GST is worked out when they are billed.
+            {mode === 'alter'
+              ? 'Pick the order to alter, then Edit on its row.'
+              : mode === 'delete'
+                ? 'Pick the order to delete, then Delete on its row. A billed order cannot be deleted — cancel the unbilled part instead.'
+                : 'Orders carry no tax — the GST is worked out when they are billed.'}
           </p>
         </div>
         <div className="flex gap-2">

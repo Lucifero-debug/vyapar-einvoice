@@ -115,15 +115,23 @@ const HsnMaster = ({ open, onClose, selected }) => {
               }
             />
           </div>
+          {/* Named "Unit" to match the quick form (lib/masterActions.mjs) and
+              the box it fills: picking this HSN on an item puts this into the
+              item's Unit. Free text, like that one -- it is what the shop
+              calls the unit, not the IRP's code, which lives on the item as
+              its own field. See lib/uqc.mjs. */}
           <div className="field">
-            <label className="field-label mb-1.5 block">GST Unit</label>
+            <label className="field-label mb-1.5 block">Unit</label>
             <Input
-              placeholder="Enter Gst Unit"
+              placeholder="pcs, mtr, bori…"
               value={hsnForm.gstunit}
               onChange={(e) =>
                 setHsnForm({ ...hsnForm, gstunit: e.target.value })
               }
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Items on this HSN take this as their unit.
+            </p>
           </div>
         </div>
 

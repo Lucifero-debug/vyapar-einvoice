@@ -1714,4 +1714,86 @@ test("no route reaches above the repo root", () => {
   assert.deepEqual(offenders, []);
 });
 
+console.log("\n--- where the order lives on the home screen ---");
+
+test("the one order row sits in the Sales panel, not under Reports", () => {
+  // It was one combined tile under Reports -- a document people RAISE, filed
+  // among the things they only read. It is still ONE row covering both books;
+  // what changed is only where it sits.
+  const home = read("../app/page.js");
+  assert.match(home, /const label = 'Sale \/ Purchase Orders';/);
+
+  // Rendered once. Two calls would be the split this replaced.
+  const calls = home.match(/\{renderOrderRow\(\)\}/g) || [];
+  assert.equal(calls.length, 1, `the order row is rendered ${calls.length} times, not once`);
+
+  // In Sales: after that panel's heading and before the next one's.
+  const sales = home.indexOf('panel-title">Sales<');
+  const purchases = home.indexOf('panel-title">Purchases<');
+  const row = home.indexOf("{renderOrderRow()}");
+  assert.ok(sales > 0 && purchases > sales, "the Sales and Purchases headings moved");
+  assert.ok(row > sales && row < purchases, "the order row is not inside the Sales panel");
+
+  // And the old tile is gone, rather than the row being a second way in.
+  assert.doesNotMatch(home, /className="nav-tile" onClick=\{\(\) => router\.push\('\/order'\)\}/);
+});
+
+test("Alter and Delete are separate items, each naming what it came for", () => {
+  // Separate, as on every master row above. Both land on the register --
+  // that is where an order is picked -- so each sends which column it came
+  // for, or they would be two menu entries doing exactly the same thing,
+  // which is what the one combined item was avoiding.
+  const home = read("../app/page.js");
+  assert.match(home, /router\.push\('\/orderadd'\)/);
+  assert.match(home, /router\.push\('\/order\?mode=alter'\)/);
+  assert.match(home, /router\.push\('\/order\?mode=delete'\)/);
+  // No combined item left behind as a third way in. (The challan row still
+  // has one; this looks only for a bare push at the register.)
+  assert.doesNotMatch(home, /router\.push\('\/order'\)/);
+
+  // The register reads the mode, and the reader hands it up.
+  assert.match(read("../components/OrderSearchParams.jsx"), /searchParams\.get\('mode'\)/);
+  assert.match(read("../app/order/page.js"), /q\.mode === 'alter' \|\| q\.mode === 'delete'/);
+
+  // But it changes NOTHING else. Edit and Delete stay on every row either
+  // way: an order that cannot be deleted has to say so when it is tried,
+  // not be quietly missing from a screen opened in "delete mode".
+  assert.match(read("../app/order/page.js"), /Billed orders cannot be deleted/);
+
+  // Still typeless, exactly as the tile was: the register and the form each
+  // have their own Sale / Purchase switch, so a type here would only choose
+  // which tab opened -- and one row covering both books has no side to send.
+  assert.doesNotMatch(home, /\/orderadd\?type=/);
+  assert.doesNotMatch(home, /\/order\?type=/);
+  assert.match(read("../components/OrderSearchParams.jsx"), /searchParams\.get\('type'\)/);
+  assert.match(read("../app/orderadd/page.js"), /ORDER_TYPES\.includes\(q\.type\)/);
+});
+
+test("the order reports are reached from both order screens, not from this menu", () => {
+  // The form and the register each carry a Reports button, and each knows
+  // which side is on screen -- so it opens the sheet for THAT book. A menu
+  // item on a row covering both books could only open the screen
+  // unqualified, which is why there isn't one: two doors, one of them
+  // vaguer, is worse than one.
+  assert.doesNotMatch(read("../app/page.js"), /order-report/);
+  const typed = /\/order-report\?type=\$\{encodeURIComponent\(type\)\}/;
+  assert.match(read("../app/order/page.js"), typed);
+  assert.match(read("../app/orderadd/page.js"), typed);
+});
+
+test("the count is both books together, from the rule that already said so", () => {
+  // `order-pending` is what the billing screen's "from order" picker asks,
+  // so the count beside the row and the list behind that button cannot
+  // disagree about which orders are still open.
+  const home = read("../app/page.js");
+  assert.match(home, /\/api\/order-pending\?type=\$\{type\}/);
+  assert.match(home, /setPendingOrders/);
+  assert.match(home, /pending\} pending to bill/);
+
+  // One row for both books means one number for both -- and nothing shown
+  // until both sides have answered, or half a count reads as the whole.
+  assert.match(home, /pendingOrders\.Sale \+ pendingOrders\.Purchase/);
+  assert.match(home, /typeof pendingOrders\.Sale === 'number'/);
+});
+
 console.log(`\n${passed} checks passed.`);

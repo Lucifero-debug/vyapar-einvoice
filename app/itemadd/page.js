@@ -43,7 +43,10 @@ const PageContent = () => {
   // Read-only: what is on the shelf now. Shown when editing an item.
   const [currentStock, setCurrentStock] = useState('')
   const [cost, setCost] = useState('')
-  const [unit, setUnit] = useState(0)
+  // Free text ("pcs", "mtr", "bori"), and empty until something fills it --
+  // normally the HSN. It was `0`, which put a literal zero in a text box and
+  // saved "0" as the unit of every item nobody retyped.
+  const [unit, setUnit] = useState('')
   // The code the IRP accepts, which is NOT the free-text unit above and is
   // deliberately not guessed from it. lib/uqc.mjs.
   const [uqc, setUqc] = useState(UQC_DEFAULT)
@@ -95,7 +98,7 @@ const PageContent = () => {
           setMaxBal(data.maxLevel ?? '')
           setLastBal(data.lastQuantity ?? '')
           setCost(data.cost ?? '')
-          setUnit(data.unit || 0)
+          setUnit(data.unit || '')
           setUqc(normalizeUqc(data.uqc) || UQC_DEFAULT)
           setIsService(Boolean(data.isService))
           setSalePrice(data.salePrice ?? '')
@@ -200,6 +203,16 @@ const PageContent = () => {
     }
   };
 
+  // What the chosen HSN says the unit is. The HSN master carries a GST Unit
+  // beside the rate, so an item's unit is filled from there rather than
+  // retyped per item -- which is how two items on one HSN ended up as "pcs"
+  // and "Pcs" and printed differently on the same bill.
+  //
+  // Only a HINT here, not a lock. The rate is read-only because the rate
+  // legally follows the HSN; a unit does not. One HSN can be sold loose and
+  // by the box, so the box stays typable and keeps whatever is in it.
+  const unitFromHsn = (hsnList.find((h) => h.hsncode === hsn)?.gstunit || '').trim()
+
   return (
     <div className="page-shell">
       {/* Sigfa's Create [Alt+A] / Alter [Alt+M] / Delete [Alt+D], acting on
@@ -269,6 +282,12 @@ const PageContent = () => {
                         const selectedHsn = hsnList.find(h => h.hsncode === e.target.value);
                         setHsn(selectedHsn?.hsncode || '');
                         setGst(selectedHsn?.gst || 0);
+                        // The unit comes down with the rate -- but only when
+                        // that HSN actually carries one. An HSN saved before
+                        // GST Unit was filled in would otherwise wipe a unit
+                        // the item already had.
+                        const fromHsn = (selectedHsn?.gstunit || '').trim();
+                        if (fromHsn) setUnit(fromHsn);
                       }}
                     >
                       <option value="">Select HSN</option>
@@ -278,7 +297,16 @@ const PageContent = () => {
                     </select>
                   </div>
 
-                  <InputField label="Unit" value={unit} onChange={setUnit} />
+                  <InputField
+                    label="Unit"
+                    value={unit}
+                    onChange={setUnit}
+                    hint={
+                      unitFromHsn
+                        ? `From HSN ${hsn} — change it here if this item is sold differently`
+                        : 'Fill GST Unit on the HSN to have this filled in'
+                    }
+                  />
 
                   {/* The unit the IRP accepts. Separate from "Unit" above,
                       which is whatever the shop calls it. */}
@@ -386,7 +414,7 @@ const PageContent = () => {
 };
 
 // 🔧 Reusable input field component
-const InputField = ({ label, value, onChange, type = "text", readOnly = false, masterField }) => (
+const InputField = ({ label, value, onChange, type = "text", readOnly = false, masterField, hint }) => (
   <div className="space-y-1">
     <Label>{label}</Label>
     <Input
@@ -402,6 +430,7 @@ const InputField = ({ label, value, onChange, type = "text", readOnly = false, m
          The figures are converted once, on save. */
       onChange={e => onChange(e.target.value)}
     />
+    {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
   </div>
 );
 

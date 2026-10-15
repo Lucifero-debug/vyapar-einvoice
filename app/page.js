@@ -93,6 +93,9 @@ const Page = () => {
   // Challans still to bill, per side -- the count on the Sales Challan and
   // Purchase Challan rows. null until loaded.
   const [pendingChallans, setPendingChallans] = useState({ Sale: null, Purchase: null });
+  // Orders still to bill, per side -- the count on the Sale Order and
+  // Purchase Order rows. null until loaded, like the challans above.
+  const [pendingOrders, setPendingOrders] = useState({ Sale: null, Purchase: null });
   // Purchase MRIs with rejected material and no Re-MRI yet (lib/mri.mjs).
   const [pendingMriCount, setPendingMriCount] = useState(null);
   const [purchaseReturns, setPurchaseReturns] = useState([]);
@@ -302,8 +305,8 @@ const Page = () => {
     fetchData();
   }, []);
 
-  // Pending challans for the two rows. Best effort: a failure leaves the
-  // count blank rather than holding up the page.
+  // Pending challans and orders for the four rows. Best effort: a failure
+  // leaves the count blank rather than holding up the page.
   useEffect(() => {
     let live = true;
     for (const type of ['Sale', 'Purchase']) {
@@ -312,6 +315,17 @@ const Page = () => {
         .then((d) => {
           if (live && d?.success) {
             setPendingChallans((p) => ({ ...p, [type]: (d.challans || []).length }));
+          }
+        })
+        .catch(() => {});
+      // The orders a bill could still be raised against -- open and partial,
+      // held ones left out, which is what `order-pending` already answers for
+      // the billing screen's "from order" picker.
+      fetch(`/api/order-pending?type=${type}`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (live && d?.success) {
+            setPendingOrders((p) => ({ ...p, [type]: (d.orders || []).length }));
           }
         })
         .catch(() => {});
@@ -794,6 +808,83 @@ const Page = () => {
     );
   };
 
+  // The order row, in the Sales panel. ONE row for both books, as the tile
+  // under Reports was: the form and the register each have their own Sale /
+  // Purchase switch, so splitting it in two would only choose which tab
+  // opened -- and no type is sent, so each screen opens on its own default
+  // exactly as it did before this moved.
+  //
+  // What changed is only WHERE it sits: an order is a document people RAISE,
+  // so it belongs beside the invoice, the return and the challan rather than
+  // among the things they only read.
+  //
+  // Create opens the form. Alter and Delete are separate items, as they are
+  // on every master row above, and both land on the register because that is
+  // where an order is picked -- but each says which column it came for, and
+  // the register puts that line under its heading. Without it they would be
+  // two menu items doing the same thing, which is why they were one.
+  //
+  // The register is also where both are PROTECTED: a billed line cannot be
+  // removed, so Delete here opens a screen that may refuse, rather than
+  // deleting anything itself.
+  //
+  // No report item here. The form and the register each have their own
+  // Reports button, and those know which side is on screen -- so they open
+  // the sheet for THAT book, which a menu item on a row covering both
+  // cannot do. Two doors to the same screen, one of them vaguer, is worse
+  // than one.
+  const renderOrderRow = () => {
+    const label = 'Sale / Purchase Orders';
+    // Both books together, since the row is both. null until both have
+    // answered, so a half-loaded count is never shown as the whole.
+    const pending =
+      typeof pendingOrders.Sale === 'number' && typeof pendingOrders.Purchase === 'number'
+        ? pendingOrders.Sale + pendingOrders.Purchase
+        : null;
+    return (
+      <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 transition-colors hover:border-primary/30">
+        <span className="nav-tile-icon h-8 w-8">
+          <ClipboardList className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-foreground">{label}</p>
+          {typeof pending === 'number' && (
+            <p className="text-xs text-muted-foreground">
+              {pending} pending to bill
+            </p>
+          )}
+        </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="shrink-0">
+              Manage
+              <ChevronsUpDown className="opacity-50" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuLabel>{label}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem onClick={() => router.push('/orderadd')}>
+                <Plus className="h-4 w-4" /> Create
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => router.push('/order?mode=alter')}>
+                <Pencil className="h-4 w-4" /> Alter
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={() => router.push('/order?mode=delete')}
+              >
+                <Trash2 className="h-4 w-4" /> Delete
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    );
+  };
+
   // Purchase M.R.I. (SIGFA's material receipt note) in the Purchases panel.
   // An MRI is a purchase bill or a purchase challan with received, accepted
   // and rejected quantities, so Create offers both; the registers are one
@@ -972,6 +1063,7 @@ const Page = () => {
               onCreate: () => router.push('/salereturn'),
             })}
             {renderChallanRow({ type: 'Sale', label: 'Sales Challan' })}
+            {renderOrderRow()}
           </div>
         </section>
 
@@ -1281,24 +1373,19 @@ const Page = () => {
               </span>
             </button>
 
-            {/* ONE tile for both books. The register itself has a Sale /
-                Purchase switch, so a second tile only chose which tab opened
-                first -- and it did that by sending ?type=Purchase, which the
-                page then lets the user change anyway. No type is passed now:
-                the register opens on its own default and the switch does the
-                rest. */}
-            <button type="button" className="nav-tile" onClick={() => router.push('/order')}>
-              <span className="nav-tile-icon">
-                <ClipboardList className="h-[18px] w-[18px]" />
-              </span>
-              <span className="flex-1">
-                Sale / Purchase Orders
-                <span className="block text-xs font-normal text-muted-foreground">
-                  What has been ordered either way, and the pending reports
-                </span>
-              </span>
-            </button>
+            {/* The order register was one combined tile here. It has moved,
+                still as ONE row: an order is a document people RAISE, not one
+                they only read, so it now sits in the Sales panel beside the
+                invoice, the return and the challan.
 
+                Deliberately typeless, as the tile was: the register and the
+                form each have their own Sale / Purchase switch, so sending a
+                type only chose which tab opened and the user changed it
+                anyway.
+
+                The order REPORTS are reached from the Reports button in the
+                register's own header -- which carries the side on screen --
+                and from All Reports above. */}
             <button type="button" className="nav-tile" onClick={() => router.push('/bom')}>
               <span className="nav-tile-icon">
                 <Package className="h-[18px] w-[18px]" />
