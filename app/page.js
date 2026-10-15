@@ -584,7 +584,14 @@ const Page = () => {
     sectionName === 'State' ||
     sectionName === 'PriceList' ||
     sectionName === 'Bank' ||
-    sectionName === 'Cash';
+    sectionName === 'Cash' ||
+    // Journal and Contra are vouchers too, listed by name and opened by id
+    // like Bank and Cash. Left out, they fell through to the BILL branch,
+    // which names and opens by `invoiceNo` -- a field no voucher has -- so
+    // every journal (an Expense With GST one included) showed as a blank row
+    // that opened nothing.
+    sectionName === 'Journal' ||
+    sectionName === 'Contra';
 
   /**
    * How a bill is named in the Alter / Delete pickers: the number printed on

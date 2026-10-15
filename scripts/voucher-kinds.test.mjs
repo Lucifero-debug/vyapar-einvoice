@@ -588,4 +588,15 @@ test("the Sigfa claim is a quotation, and the rest is marked as ours", () => {
   assert.ok(/NOT SIGFA'S/.test(src), "the invented names are not marked as ours");
 });
 
+test("the dashboard lists and opens a journal or contra by name and id, not as a bill", () => {
+  // They used to fall through to the bill branch, which names and opens by
+  // `invoiceNo` -- a field no voucher has -- so the Alter list showed a
+  // blank row that opened nothing (found on an Expense With GST journal).
+  const src = read("../app/page.js");
+  const named = src.slice(src.indexOf("const isNamed"), src.indexOf("const billLabel"));
+  for (const section of ["Bank", "Cash", "Journal", "Contra"]) {
+    assert.match(named, new RegExp(`sectionName === '${section}'`), `${section} is not a named section`);
+  }
+});
+
 console.log(`\n  ${passed} checks passed\n`);
