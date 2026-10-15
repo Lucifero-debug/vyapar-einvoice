@@ -494,7 +494,7 @@ function SalesReports() {
               rows.map((r, i) => (
                 <tr key={`${r.invoiceNo}-${i}`}>
                   <td>{asDate(r.date)}</td>
-                  <td className="num">{r.invoiceNo}</td>
+                  <td className="num">{r.voucherNo || r.invoiceNo}</td>
                   <td>
                     {r.party || '—'}
                     {/* A return is marked, not shown as a negative: a credit

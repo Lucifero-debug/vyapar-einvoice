@@ -196,10 +196,10 @@ const Page = () => {
                           className="field-check"
                           checked={picked.has(inv._id)}
                           onChange={() => toggle(inv._id)}
-                          aria-label={`Print invoice ${inv.invoiceNo}`}
+                          aria-label={`Print invoice ${inv.voucherNo || inv.invoiceNo}`}
                         />
                       </td>
-                      <td className="num font-medium">{inv.invoiceNo}</td>
+                      <td className="num font-medium">{inv.voucherNo || inv.invoiceNo}</td>
                       <td>{inv.date ? new Date(inv.date).toLocaleDateString('en-IN') : '—'}</td>
                       <td className="truncate">{inv.customer?.name || '—'}</td>
                       <td>{typeLabel(inv)}</td>

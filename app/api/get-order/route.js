@@ -56,7 +56,7 @@ async function handleGET(req, auth) {
     // items.orderNo in models/invoiceModel.js.
     const billing = await Invoice.find(
       { "items.orderNo": orderNo, "items.orderType": type },
-      { invoiceNo: 1, date: 1, type: 1, return: 1, "items.name": 1, "items.quantity": 1, "items.orderNo": 1, "items.orderType": 1, "items.orderLineId": 1 }
+      { invoiceNo: 1, voucherNo: 1, date: 1, type: 1, return: 1, "items.name": 1, "items.quantity": 1, "items.orderNo": 1, "items.orderType": 1, "items.orderLineId": 1 }
     )
       .sort({ invoiceNo: 1 })
       .lean();

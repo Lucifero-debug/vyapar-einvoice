@@ -35,7 +35,7 @@ async function handleGET(req, auth) {
         type: { $in: ORDER_TYPES },
         return: { $ne: true },
       },
-      { invoiceNo: 1, type: 1, orderNo: 1, orderDate: 1, finalAmount: 1, "customer.name": 1 }
+      { invoiceNo: 1, voucherNo: 1, type: 1, orderNo: 1, orderDate: 1, finalAmount: 1, "customer.name": 1 }
     )
       .sort({ invoiceNo: -1 })
       // One more than the popup lists, so "and N more" can be worked out

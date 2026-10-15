@@ -97,7 +97,7 @@ export default function TodaysOrders() {
                     {o.party}
                   </span>
                   <span className='field-hint'>
-                    {o.type} {o.invoiceNo}
+                    {o.type} {o.voucherNo || o.invoiceNo}
                     {o.orderNo ? ` · order ${o.orderNo}` : ''}
                   </span>
                 </span>

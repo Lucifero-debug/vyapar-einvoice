@@ -18,6 +18,7 @@ import { writeItemLedgerRows } from "@/lib/itemLedger.mjs";
 import Series from "@/models/seriesModel";
 import { getNextSeriesNo } from "@/lib/getNextInvoiceNo";
 import {
+  alterNumberProblem,
   docTypeForBill,
   effectsStock,
   isSeriesLocked,
@@ -158,16 +159,32 @@ async function handlePOST(req, auth) {
       const seriesProfile = seriesSnapshot(seriesRow);
       const movesStock = effectsStock(seriesRow);
 
+      // Sigfa's rule, from its sale screen: once saved, a bill keeps its
+      // series ("Can't Change Series !") and its financial year (one data
+      // file per year). Moving it used to renumber it in the other book --
+      // where the number on the bill and the one in the lists drifted apart.
+      // lib/series.mjs, alterNumberProblem.
+      const numberProblem = alterNumberProblem({
+        before: previousInvoice,
+        after: { series: invoiceData.series, date: invoiceData.date },
+        beforeRow: lockedBy,
+        afterRow: seriesRow,
+      });
+      if (numberProblem) {
+        throw new AbortTransaction({ success: false, error: numberProblem }, 409);
+      }
+
       // === The customer's number, across an edit ===
       //
       // KEPT while the bill stays in the same book. An edit must not renumber
       // a bill the customer is already holding -- which is the whole reason
       // this number is frozen on the row rather than composed at print time.
       //
-      // A bill MOVED to another series, or dated into another financial year,
-      // is in a different book and takes a number in that one. The number it
-      // leaves behind is not handed to anything else: a gap is visible and
-      // explainable to an officer, two bills sharing a number is not.
+      // Moving a bill to another series or financial year is refused above
+      // (alterNumberProblem), so `sameBook` holds for every series bill that
+      // reaches here. The fresh number below is only for a bill that carries
+      // a series but was saved before series numbers existed, and so has no
+      // seriesNo to keep.
       const finYear = fyStartYear(invoiceData.date);
       const sameBook =
         normalizeSeriesCode(previousInvoice.series) ===

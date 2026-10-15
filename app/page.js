@@ -277,23 +277,34 @@ const Page = () => {
 
         // Categorize invoices. `customer` is optional on the invoice schema, so
         // a bill saved without one must not take the whole dashboard down.
+        //
+        // A bill raised under a series carries TWO numbers (lib/series.mjs):
+        // `invoiceNo`, the firm-wide number the app finds it by, and
+        // `voucherNo`, the series number ("26-27/1") printed on it and shown
+        // in the bill's own Invoice No box. The pickers below LIST it by the
+        // voucher number, so the number chosen is the one seen inside the
+        // bill, and still OPEN it by `invoiceNo`.
         const named = (inv) => inv.customer?.name || '—';
 
         const saleInv = invoices.filter(inv => inv.type === 'Sale' && !inv.return).map(inv => ({
           invoiceNo: inv.invoiceNo || inv.id,
+          voucherNo: inv.voucherNo || '',
           totalAmount: inv.totalAmount || 0,
           customer: named(inv)
         }));
         const purchaseInv = invoices.filter(inv => inv.type === 'Purchase' && !inv.return).map(inv => ({
           invoiceNo: inv.invoiceNo || inv.id,
+          voucherNo: inv.voucherNo || '',
           customer: named(inv)
         }));
         const saleRet = invoices.filter(inv => inv.type === 'Sale' && inv.return).map(inv => ({
           invoiceNo: inv.invoiceNo || inv.id,
+          voucherNo: inv.voucherNo || '',
           customer: named(inv)
         }));
         const purchaseRet = invoices.filter(inv => inv.type === 'Purchase' && inv.return).map(inv => ({
           invoiceNo: inv.invoiceNo || inv.id,
+          voucherNo: inv.voucherNo || '',
           customer: named(inv)
         }));
         const totalSales = saleInv.reduce((sum, inv) => sum + (parseFloat(inv.totalAmount) || 0), 0);
@@ -575,6 +586,15 @@ const Page = () => {
     sectionName === 'Bank' ||
     sectionName === 'Cash';
 
+  /**
+   * How a bill is named in the Alter / Delete pickers: the number printed on
+   * it. A series bill prints its voucher number ("26-27/1"), and that is what
+   * its own Invoice No box shows when opened, so listing it by the firm-wide
+   * `invoiceNo` instead made the picker and the bill disagree. A bill with no
+   * series has only the one number.
+   */
+  const billLabel = (bill) => bill?.voucherNo || bill?.invoiceNo;
+
   const renderAlterDeleteSection = (sectionName) => {
     const isAlter = alter && alterState === sectionName;
     const isDelete = del && deleteState === sectionName;
@@ -599,7 +619,7 @@ const Page = () => {
       if (sectionName === 'HSN') return selected.hsncode;
       if (sectionName === 'Series') return selected.code;
       if (isNamed(sectionName)) return selected.name;
-      return selected.invoiceNo;
+      return billLabel(selected);
     };
 
     return (
@@ -648,7 +668,9 @@ const Page = () => {
                       alterValue = entity.id;
                       deleteValue = entity.id;
                     } else {
-                      label = entity.invoiceNo;
+                      // Shown by the number printed on the bill; opened by
+                      // the firm-wide one. See billLabel.
+                      label = billLabel(entity);
                       alterValue = entity.invoiceNo;
                       deleteValue = entity.invoiceNo;
                     }
@@ -656,7 +678,9 @@ const Page = () => {
                     return (
                       <CommandItem
                         key={deleteValue}
-                        value={String(label)}
+                        // Both numbers, so typing either finds the bill, and
+                        // unique even when two series print the same "/1".
+                        value={entity.voucherNo ? `${label} ${entity.invoiceNo}` : String(label)}
                         onSelect={() => {
                           setValue(isAlter ? alterValue : deleteValue);
                           setOpen(false);

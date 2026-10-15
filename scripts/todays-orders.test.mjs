@@ -170,6 +170,8 @@ test("an empty or missing list is not an error", () => {
 test("a line carries what the popup prints, and nothing else", () => {
   assert.deepEqual(orderLine(invoice()), {
     invoiceNo: 42,
+    // Blank on a bill with no series: the popup then prints invoiceNo.
+    voucherNo: "",
     type: "Sale",
     party: "Sharma Traders",
     orderNo: "PO-7",
@@ -276,6 +278,16 @@ test("every storage call in the popup is wrapped", () => {
     const fnAt = Math.max(before.lastIndexOf("const dismiss"), before.lastIndexOf("shouldShow({"));
     assert.ok(tryAt > -1 && tryAt > fnAt - 400, "a localStorage call looks unguarded");
   }
+});
+
+test("a series bill is named by the number printed on it", () => {
+  // Sigfa lists and opens a bill by its Voucher (series initial + number);
+  // this app's internal invoiceNo stays the link, the voucher is what shows.
+  const line = orderLine(invoice({ voucherNo: "26-27/3" }));
+  assert.equal(line.voucherNo, "26-27/3");
+  assert.equal(line.invoiceNo, 42, "still linked by the firm-wide number");
+  const src = read("components/TodaysOrders.jsx");
+  assert.match(src, /o\.voucherNo \|\| o\.invoiceNo/, "the popup prints the voucher number first");
 });
 
 console.log(`\n${passed} checks passed.\n`);

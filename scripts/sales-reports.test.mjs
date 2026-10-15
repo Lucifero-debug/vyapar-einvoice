@@ -1448,4 +1448,20 @@ test("the module stays pure", () => {
   assert.doesNotMatch(src, /from\s+["'][^"']*models\//);
 });
 
+test("the book lists a series bill by the number printed on it", () => {
+  // Sigfa's book shows each bill's Voucher; a series bill here prints
+  // "26-27/1" while its invoiceNo is the firm-wide running number.
+  const [series, plain] = documentsFor({
+    invoices: [invoice({ invoiceNo: 9, voucherNo: "26-27/1" }), invoice({ invoiceNo: 10, date: "2026-06-16" })],
+    side: "Sale",
+  });
+  assert.equal(series.voucherNo, "26-27/1");
+  assert.equal(series.invoiceNo, 9, "the span and the sort still use invoiceNo");
+  const col = CSV_COLUMNS.book.find((c) => c.key === "invoiceNo");
+  assert.equal(col.value(series), "26-27/1");
+  assert.equal(col.value(plain), 10, "a bill with no series keeps its plain number");
+  const src = read("../app/sales-report/page.js");
+  assert.match(src, /r\.voucherNo \|\| r\.invoiceNo/, "the screen shows the voucher number first");
+});
+
 console.log(`\n  ${passed} checks passed\n`);

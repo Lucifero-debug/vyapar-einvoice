@@ -1156,4 +1156,10 @@ test("nothing was dropped when the header row was trimmed", () => {
   assert.ok(/short by \{trim\(r\.shortBy\)\}/.test(src), "the shortfall is still shown");
 });
 
+test("a billing invoice carries the number printed on it", () => {
+  const [row] = billingInvoices([bill({ voucherNo: "26-27/5" })], { orderNo: 7, type: "Sale" });
+  assert.equal(row.voucherNo, "26-27/5");
+  assert.equal(row.invoiceNo, 101);
+});
+
 console.log(`\n${passed} checks passed.`);

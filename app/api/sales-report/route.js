@@ -126,6 +126,7 @@ async function handleGET(req, auth) {
 
     const invoices = await Invoice.find(filter, {
       invoiceNo: 1,
+      voucherNo: 1,
       type: 1,
       return: 1,
       date: 1,

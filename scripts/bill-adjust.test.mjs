@@ -824,4 +824,16 @@ test("the picker does its own checking from the same module", () => {
   assert.ok(/billTypeFor/.test(src), "and does not decide the direction itself");
 });
 
+test("an open bill carries the number printed on it", () => {
+  const [bill] = openBills({
+    invoices: [invoice({ invoiceNo: 4, voucherNo: "26-27/2" })],
+    type: "Sale",
+    now: NOW,
+  });
+  assert.equal(bill.voucherNo, "26-27/2");
+  assert.equal(billKey(bill), "Sale#4", "allocations still name the bill by invoiceNo");
+  const src = read("../components/BillAdjust.jsx");
+  assert.match(src, /bill\.voucherNo \|\| bill\.invoiceNo/, "the picker shows the voucher number first");
+});
+
 console.log(`\n${passed} checks passed`);

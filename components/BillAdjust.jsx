@@ -182,7 +182,7 @@ export default function BillAdjust({ open, line, voucherId, onClose, onApply }) 
                     const key = billKey(bill);
                     return (
                       <tr key={key}>
-                        <td className="font-medium">{bill.invoiceNo}</td>
+                        <td className="font-medium">{bill.voucherNo || bill.invoiceNo}</td>
                         <td>{asDate(bill.date)}</td>
                         <td className="num">{bill.ageDays} d</td>
                         <td className="num">{fmt(bill.balanceDue)}</td>

@@ -15,6 +15,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
+  alterNumberProblem,
   SERIES_CODE_MAX,
   SERIES_CODE_PATTERN,
   SERIES_DEFAULTS,
@@ -891,13 +892,16 @@ test("both save paths freeze the series onto the bill", () => {
   }
 });
 
-test("an edit keeps the number it was issued with, unless it changes book", () => {
+test("an edit keeps the number it was issued with, and may not change book", () => {
   const src = code("../app/api/sale-alter/route.js");
   // The customer is holding this number, so an edit must not move it.
   assert.match(src, /sameBook/);
   assert.match(src, /previousInvoice\.seriesNo/);
-  // But a bill moved to another series -- or dated into another financial
-  // year -- is in a different book and takes a number in that one.
+  // Sigfa refuses a change of series or year in Alter; so does the route,
+  // before anything is written.
+  assert.match(src, /alterNumberProblem\(\{/);
+  assert.match(src, /if \(numberProblem\) \{\s*throw new AbortTransaction/);
+  // A series bill saved before series numbers existed still gets one.
   assert.match(src, /getNextSeriesNo\(/);
   assert.match(src, /fyStartYear\(invoiceData\.date\)/);
   // Cleared to null, not left undefined: Mongoose drops an undefined from an
@@ -961,6 +965,44 @@ test("picking a series asks again what the number will be", () => {
   // that freezes it onto the bill. Comment-stripped, because the comment
   // where the old composition stood names it to say it has gone.
   assert.doesNotMatch(code("../components/billing/BillingScreen.jsx"), /formatDocNo/);
+});
+
+test("Sigfa's alter rule: a saved bill keeps its series and its year", () => {
+  const TAX = { code: "TAX", effectInStock: true };
+  const SAMPLE = { code: "SAMPLE", effectInStock: false };
+  const RETAIL = { code: "RETAIL", effectInStock: true };
+  const bill = { series: "TAX", finYear: 2026, seriesNo: 3 };
+
+  // Unchanged: fine, including a date moved inside the same year.
+  assert.equal(alterNumberProblem({ before: bill, after: { series: "tax", date: "2027-03-31" }, beforeRow: TAX, afterRow: TAX }), "");
+  // Another series that also moves stock: "Can't Change Series !"
+  assert.match(
+    alterNumberProblem({ before: bill, after: { series: "RETAIL", date: "2026-10-15" }, beforeRow: TAX, afterRow: RETAIL }),
+    /cannot be changed/
+  );
+  // One that differs on stock: Sigfa's other message.
+  assert.match(
+    alterNumberProblem({ before: bill, after: { series: "SAMPLE", date: "2026-10-15" }, beforeRow: TAX, afterRow: SAMPLE }),
+    /disturb Effect In Stock/
+  );
+  // Taking the series off, or putting one on a bill that had none.
+  assert.match(alterNumberProblem({ before: bill, after: { series: "", date: "2026-10-15" }, beforeRow: TAX }), /cannot be changed/);
+  assert.match(
+    alterNumberProblem({ before: { series: "", finYear: null }, after: { series: "TAX", date: "2026-10-15" }, afterRow: TAX }),
+    /cannot be changed/
+  );
+  // Re-dated into another financial year: refused, with both years named.
+  assert.match(
+    alterNumberProblem({ before: bill, after: { series: "TAX", date: "2027-04-01" }, beforeRow: TAX, afterRow: TAX }),
+    /26-27.*27-28/
+  );
+  // A bill with no series has no book to leave.
+  assert.equal(alterNumberProblem({ before: { series: "" }, after: { series: "", date: "2030-01-01" } }), "");
+});
+
+test("the bill screen locks the Series box on a saved bill", () => {
+  const src = read("../components/billing/BillingScreen.jsx");
+  assert.match(src, /data-master-field='series'[\s\S]{0,200}disabled=\{Boolean\(value\)\}/);
 });
 
 console.log(`\n  ${passed} checks passed\n`);

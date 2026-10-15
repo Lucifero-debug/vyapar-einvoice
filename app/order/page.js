@@ -432,7 +432,7 @@ function OrderRegister() {
                                             router.push(`/invoice?invoiceNo=${inv.invoiceNo}`)
                                           }
                                         >
-                                          {inv.isReturn ? 'Return' : 'Invoice'} {inv.invoiceNo}
+                                          {inv.isReturn ? 'Return' : 'Invoice'} {inv.voucherNo || inv.invoiceNo}
                                         </button>
                                         <span className="text-muted-foreground">
                                           {' '}· {asDate(inv.date)} · {trim(inv.quantity)} off this order

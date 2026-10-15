@@ -1631,11 +1631,18 @@ const handleDispatchSave = () => {
                         field you are standing in. */}
                     <div className='field w-44'>
                         <label className='field-label mb-1'>Series</label>
+                        {/* Fixed once the bill is saved, as in Sigfa ("Can't
+                            Change Series !"): the number belongs to the
+                            series, so moving the bill would renumber it.
+                            sale-alter refuses it too -- lib/series.mjs,
+                            alterNumberProblem. */}
                         <select
                             className='field-select'
                             data-master-field='series'
                             value={chosenSeries}
                             onChange={(e) => setSeries(e.target.value)}
+                            disabled={Boolean(value)}
+                            title={value ? "A saved bill keeps its series" : undefined}
                         >
                             <option value=''>None</option>
                             {seriesChoices.map((option) => (
@@ -1645,7 +1652,7 @@ const handleDispatchSave = () => {
                             ))}
                         </select>
                         <p className='field-hint mt-1'>
-                            {seriesChoices.length === 0 ? 'Alt+A adds one' : ''}
+                            {value ? 'Fixed on a saved bill' : seriesChoices.length === 0 ? 'Alt+A adds one' : ''}
                         </p>
                     </div>
                     <div className='field w-44'>
