@@ -14,6 +14,16 @@ import {
   voucherProblems,
   voucherTitle,
 } from "@/lib/voucherKinds.mjs";
+import {
+  EXPENSE_DEFAULTS,
+  JOURNAL_TYPES,
+  JOURNAL_TYPE_CODES,
+  expenseProblems,
+  expenseTax,
+  isExpenseJournal,
+  journalTypeOf,
+  normalizeExpense,
+} from "@/lib/journalTypes.mjs";
 import { istToday } from "@/lib/istDate.mjs";
 import { Notice, useNotice } from "@/components/ui/notice";
 import { NETWORK_ERROR, readResponse } from "@/lib/apiResponse.mjs";
@@ -69,6 +79,19 @@ const AddVoucher = () => {
 
   const [customers, setCustomers] = useState([]);
 
+  /*
+    Sigfa's `Type` box at the top of the Journal screen. Only a journal has
+    one -- the other three kinds move money and are not expenses.
+
+    `Expense With GST` replaces the lines grid with ONE expense, because
+    Sigfa prints "Only One Entry Per Voucher" under that grid and because the
+    legs are not the operator's to type: the tax has to split by place of
+    supply and land on the Input heads by name. lib/journalTypes.mjs.
+  */
+  const [journalType, setJournalType] = useState("GENERAL");
+  const [expense, setExpense] = useState(EXPENSE_DEFAULTS);
+  const isExpense = kind === "JOURNAL" && isExpenseJournal(journalType);
+
   // Which line's bill picker is open, by index. Sigfa's "Against Bill" is a
   // per-line thing: one voucher can settle two parties' bills at once.
   const [adjusting, setAdjusting] = useState(null);
@@ -85,6 +108,30 @@ const AddVoucher = () => {
     entries.map((e) => ({ debit: parseFloat(e.debit) || 0, credit: parseFloat(e.credit) || 0 }))
   );
   const outBy = Math.round((totals.debit - totals.credit) * 100) / 100;
+
+  /**
+   * What an expense will post, as far as THIS SCREEN can know it.
+   *
+   * The total is rate-based and is known either way. The SPLIT is not:
+   * deciding it needs our own state as well as the supplier's, and this
+   * screen holds neither reliably -- the server does, and decides on save
+   * (lib/expenseVoucher.mjs). So the halves are shown only when the place of
+   * supply has been stated here. A preview that guessed the split would be
+   * worse than one that says it does not know.
+   */
+  const expensePreview = (() => {
+    const draft = normalizeExpense(expense);
+    const stated =
+      expense.taxType === "local" || expense.taxType === "central" ? expense.taxType : null;
+    // "central" only to get the rate-based TOTAL, which is the same figure
+    // whichever way the tax splits. Its igst is never read unless `stated`.
+    const tax = expenseTax({ ...draft, taxType: stated ?? "central" });
+    return {
+      known: Boolean(stated) && draft.gstRate > 0,
+      tax,
+      total: Math.round((draft.taxable + tax.total) * 100) / 100,
+    };
+  })();
 
   /**
    * Changing the kind moves the figures rather than dropping them.
@@ -177,6 +224,16 @@ const AddVoucher = () => {
           // the one read off its figures. Nothing is rewritten: the reading
           // only decides what the form shows and what the next save stores.
           setKind(kindOf(voucher).code);
+          // Its own type, or -- for a journal saved before the Type box
+          // existed -- the general journal it reads as.
+          setJournalType(journalTypeOf(voucher.journalType).code);
+          // What was CLAIMED, as it was claimed. Editing re-derives the legs
+          // from these, so an untouched edit re-posts the same figures.
+          setExpense(
+            voucher.expense
+              ? { ...normalizeExpense(voucher.expense), taxType: voucher.expense.taxType || "" }
+              : EXPENSE_DEFAULTS
+          );
           if (voucher.paymentType) setInstrument(voucher.paymentType);
 
           setForm({
@@ -334,11 +391,32 @@ const AddVoucher = () => {
 
       // The same rules the routes apply, run here first so a refusal is a
       // message beside the form rather than a round trip. The routes' copy
-      // is the one that counts -- lib/voucherKinds.mjs owns both.
-      const problems = voucherProblems({ kind, acName, paymentType, customers: lines });
-      if (problems.length) {
-        notify.error(problems[0]);
-        return;
+      // is the one that counts -- lib/voucherKinds.mjs and
+      // lib/journalTypes.mjs own both.
+      //
+      // An expense is checked by ITS rules, not the line rules: it has no
+      // lines yet. They are derived on the server, where the supplier's
+      // state and the Input heads can be read.
+      if (isExpense) {
+        // The place of supply is checked only when it was STATED here. Left
+        // blank, the server works it out from the two states and refuses
+        // with its own message if it cannot -- so refusing here would block
+        // the entries that are perfectly fine.
+        const stated =
+          expense.taxType === "local" || expense.taxType === "central"
+            ? expense.taxType
+            : "local";
+        const problems = expenseProblems(expense, { taxType: stated });
+        if (problems.length) {
+          notify.error(problems[0]);
+          return;
+        }
+      } else {
+        const problems = voucherProblems({ kind, acName, paymentType, customers: lines });
+        if (problems.length) {
+          notify.error(problems[0]);
+          return;
+        }
       }
 
       const res = await fetch(endpoint, {
@@ -352,7 +430,14 @@ const AddVoucher = () => {
           acType: form.acType,
           narration: form.narration, // 🔹 send main narration
           paymentType,
-          customers: lines,
+          // An expense posts no lines of its own: the server derives them.
+          // Sending the grid's leftovers would have them validated against
+          // an entry nobody made.
+          customers: isExpense ? [] : lines,
+          // Only a journal carries a type. Sending one on a receipt would
+          // store a field the kind has no meaning for.
+          ...(kind === "JOURNAL" ? { journalType } : {}),
+          ...(isExpense ? { expense } : {}),
           ...(voucherParams.value && { id: voucherParams.value }),
         }),
       });
@@ -424,6 +509,33 @@ const AddVoucher = () => {
           </div>
         </div>
 
+        {/* Sigfa's `Type` box, on the Journal screen only. The other three
+            kinds move money and are not expenses. */}
+        {kind === "JOURNAL" && (
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <label className="field-label" htmlFor="journalType">
+              Type
+            </label>
+            <select
+              id="journalType"
+              className="field-select w-56"
+              value={journalType}
+              onChange={(e) => setJournalType(e.target.value)}
+            >
+              {JOURNAL_TYPE_CODES.map((code) => (
+                <option key={code} value={code}>
+                  {JOURNAL_TYPES[code].label}
+                </option>
+              ))}
+            </select>
+            {isExpense && (
+              <span className="text-xs text-muted-foreground">
+                One entry per voucher. The legs are posted for you.
+              </span>
+            )}
+          </div>
+        )}
+
         {/* The four kinds. Receipt and Payment are the same screen read the
             other way round; Journal drops the cash leg entirely; Contra is
             one line between two of our own accounts. Cash-or-bank is a
@@ -468,11 +580,187 @@ const AddVoucher = () => {
 
         {/* --- VOUCHER FORM --- */}
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/* === ONE expense, instead of the lines grid ===
+
+              The legs are NOT typed here. The tax has to split by place of
+              supply and land on the Input heads by name, and a trial balance
+              still foots when it has gone to the wrong one -- so the figures
+              below are entered and the server derives what posts
+              (lib/expenseVoucher.mjs). What is shown underneath is the same
+              arithmetic, so there is no surprise on save. */}
+          {isExpense && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="field">
+                  <label className="field-label mb-1 block">Supplier</label>
+                  <select
+                    className="field-select"
+                    data-master-field="party"
+                    value={expense.party}
+                    onChange={(e) => setExpense({ ...expense, party: e.target.value })}
+                  >
+                    <option value="">Select…</option>
+                    {customers.map((c) => (
+                      <option key={c._id || c.name} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="field-hint mt-1">
+                    Their state decides CGST/SGST against IGST.
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">Expense account</label>
+                  <select
+                    className="field-select"
+                    value={expense.expenseAccount}
+                    onChange={(e) =>
+                      setExpense({ ...expense, expenseAccount: e.target.value })
+                    }
+                  >
+                    <option value="">Select…</option>
+                    {customers.map((c) => (
+                      <option key={`x-${c._id || c.name}`} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">Amount (before tax)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="field-input text-right"
+                    value={expense.taxable}
+                    onChange={(e) => setExpense({ ...expense, taxable: e.target.value })}
+                  />
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">GST %</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="field-input text-right"
+                    value={expense.gstRate}
+                    onChange={(e) => setExpense({ ...expense, gstRate: e.target.value })}
+                  />
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">Place of supply</label>
+                  <select
+                    className="field-select"
+                    value={expense.taxType || ""}
+                    onChange={(e) => setExpense({ ...expense, taxType: e.target.value })}
+                  >
+                    <option value="">From the two states</option>
+                    <option value="local">Local — CGST + SGST</option>
+                    <option value="central">Inter-State — IGST</option>
+                  </select>
+                  {/* Used ONLY when the two states cannot decide -- a firm
+                      whose profile predates the state fields, or a supplier
+                      with no state on their master. Stating it is not the
+                      same as defaulting to it. */}
+                  <p className="field-hint mt-1">
+                    Only used if the states do not say.
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">SAC / HSN</label>
+                  <input
+                    className="field-input"
+                    value={expense.sac}
+                    onChange={(e) => setExpense({ ...expense, sac: e.target.value })}
+                  />
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">Supplier GSTIN</label>
+                  <input
+                    className="field-input uppercase"
+                    value={expense.supplierGstin}
+                    onChange={(e) =>
+                      setExpense({ ...expense, supplierGstin: e.target.value })
+                    }
+                  />
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">Their bill no</label>
+                  <input
+                    className="field-input"
+                    value={expense.billNo}
+                    onChange={(e) => setExpense({ ...expense, billNo: e.target.value })}
+                  />
+                </div>
+
+                <div className="field">
+                  <label className="field-label mb-1 block">Their bill date</label>
+                  <input
+                    type="date"
+                    className="field-input"
+                    value={expense.billDate}
+                    onChange={(e) => setExpense({ ...expense, billDate: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="field">
+                <label className="field-label mb-1 block">Narration</label>
+                <input
+                  className="field-input"
+                  value={expense.narration}
+                  onChange={(e) => setExpense({ ...expense, narration: e.target.value })}
+                />
+              </div>
+
+              {/* What will post. Shown so the entry can be read before it is
+                  saved -- and the split is shown only when the place of
+                  supply is actually known, because a preview that guessed
+                  would be worse than one that says it does not know. */}
+              <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium">This will post</span>
+                  <span className="text-muted-foreground">
+                    Total payable {expensePreview.total.toFixed(2)}
+                  </span>
+                </div>
+                <ul className="mt-2 space-y-1 font-mono text-xs">
+                  <li>
+                    Dr {expense.expenseAccount || "—"} ·{" "}
+                    {Number(expense.taxable || 0).toFixed(2)}
+                  </li>
+                  {expensePreview.known ? (
+                    <>
+                      {expensePreview.tax.cgst ? <li>Dr Input CGST · {expensePreview.tax.cgst.toFixed(2)}</li> : null}
+                      {expensePreview.tax.sgst ? <li>Dr Input SGST · {expensePreview.tax.sgst.toFixed(2)}</li> : null}
+                      {expensePreview.tax.igst ? <li>Dr Input IGST · {expensePreview.tax.igst.toFixed(2)}</li> : null}
+                    </>
+                  ) : (
+                    <li className="text-muted-foreground">
+                      Dr Input tax · split decided on save, from the two states
+                    </li>
+                  )}
+                  <li>
+                    &nbsp;&nbsp;Cr {expense.party || "—"} ·{" "}
+                    {expensePreview.total.toFixed(2)}
+                  </li>
+                </ul>
+              </div>
+            </div>
+          )}
+
           {/* Sigfa's "Against Bill", and it sits HERE, immediately above the
               lines it governs. It used to live below the table with the
               account fields, so ticking it changed something off-screen above
               and read as having done nothing at all. */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className={`flex flex-wrap items-center justify-between gap-3 ${isExpense ? "hidden" : ""}`}>
             {/* Only a receipt or a payment has bills to settle. A journal
                 moves no money and a contra moves it between our own
                 accounts, so neither has an invoice to adjust against. */}
@@ -499,8 +787,9 @@ const AddVoucher = () => {
             )}
           </div>
 
-          {/* Table */}
-          <div className="table-wrap">
+          {/* Table. Hidden for an expense, which has one entry and derives
+              its own legs -- Sigfa's "Only One Entry Per Voucher". */}
+          <div className={`table-wrap ${isExpense ? "hidden" : ""}`}>
             <table className="data-table min-w-[760px]">
               <thead>
                 <tr>

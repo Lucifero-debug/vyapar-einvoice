@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { tenantPlugin } from "../lib/tenantPlugin.mjs";
 import { VOUCHER_KIND_CODES } from "../lib/voucherKinds.mjs";
+import { JOURNAL_TYPE_CODES } from "../lib/journalTypes.mjs";
 
 const voucherSchema = new mongoose.Schema({
   /*
@@ -70,6 +71,66 @@ customers: [
     ]
   }
 ],
+  /*
+    Sigfa's `Type` box at the top of the Journal screen: a general journal,
+    or `Expense With GST`. lib/journalTypes.mjs.
+
+    NO DEFAULT, and for the same reason `kind` above has none: an entry saved
+    before this field existed has none, `journalTypeOf` reads an absent one
+    as the general journal, and a default would stamp that reading onto an
+    old voucher the next time it was saved.
+  */
+  journalType: {
+    type: String,
+    enum: JOURNAL_TYPE_CODES,
+  },
+
+  /*
+    === The one expense an `Expense With GST` journal carries ===
+
+    Sigfa prints "Only One Entry Per Voucher" under that grid, so this is a
+    single block rather than an array. The LINES it expands into are written
+    to `customers` above like any other journal's, so the ledger, the trial
+    balance and the delete path need to know nothing about expenses.
+
+    WHY THE TAX IS STORED AND NOT RECOMPUTED. The figures here were claimed
+    as input credit against a supplier's document on a date. Recomputing them
+    at read time from the party's CURRENT state would re-decide the place of
+    supply of a credit already filed -- the same hazard lib/invoicePrefs.mjs
+    draws the line at for invoice numbering, and a sharper one, because this
+    is a figure on a return. So `taxType` and the three amounts are frozen
+    when the voucher is saved.
+
+    Every field is declared. Mongoose strict mode drops what is not, and a
+    dropped GSTIN is an input credit with nothing behind it.
+  */
+  expense: {
+    party: { type: String, trim: true, default: "" },
+    expenseAccount: { type: String, trim: true, default: "" },
+    taxable: { type: Number, default: 0 },
+    gstRate: { type: Number, default: 0 },
+    // "local" or "central", decided once, from lib/gst.mjs's taxTypeFor.
+    // Never defaulted: a voucher with tax and no tax type is refused before
+    // it is written, not saved with a guess.
+    taxType: { type: String, trim: true, default: "" },
+    cgst: { type: Number, default: 0 },
+    sgst: { type: Number, default: 0 },
+    igst: { type: Number, default: 0 },
+    // What the supplier is owed: the expense plus its tax.
+    total: { type: Number, default: 0 },
+    // What the credit is claimed AGAINST. Without these three there is
+    // nothing for the return to point at, which is why the rules refuse a
+    // taxed expense that is missing any of them.
+    supplierGstin: { type: String, trim: true, uppercase: true, default: "" },
+    billNo: { type: String, trim: true, default: "" },
+    // Kept as the "YYYY-MM-DD" string the date box holds, NOT a Date: a
+    // date-only value parsed as UTC midnight reads as the day before
+    // anywhere west of Greenwich, and this one dates a tax claim.
+    billDate: { type: String, trim: true, default: "" },
+    sac: { type: String, trim: true, default: "" },
+    _id: false,
+  },
+
    narration: { type: String },
    paymentType: { type: String },
 againstBill:{type:Boolean,default:false},
@@ -90,6 +151,15 @@ voucherSchema.index({ date: 1 });
 // picker opens and again when a voucher saves, so it must not be a scan.
 // Multikey over the nested allocations array.
 voucherSchema.index({ "customers.allocations.invoiceNo": 1, "customers.allocations.invoiceType": 1 });
+
+// The GST return asks for one period's expense vouchers and nothing else, so
+// it must not scan the whole voucher book to find them. Partial, on the type
+// being present at all: every voucher saved before this field existed has
+// none, and they are exactly the ones the return is not looking for.
+voucherSchema.index(
+  { companyId: 1, journalType: 1, date: 1 },
+  { partialFilterExpression: { journalType: { $type: "string" } } }
+);
 
 // Every row belongs to one firm. The plugin adds companyId, scopes every
 // query to it, and stamps it onto everything created -- see lib/tenantPlugin.mjs.

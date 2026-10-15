@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { connect } from "@/lib/mongodb";
 import Company from "@/models/companyModel";
 import Invoice from "@/models/invoiceModel";
+import Voucher from "@/models/voucherModel";
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 import { companyAddress, companyFrom } from "@/lib/company.mjs";
 import { formatOf, isReportFormat, reportResponse } from "@/lib/reportHttp.js";
@@ -133,6 +134,31 @@ async function handleGET(req, auth) {
       items: 1,
     }).lean();
 
+    /*
+      === Expenses with GST, for the input credit ===
+
+      Rent, freight, telephone and professional fees are inward supplies the
+      credit is claimable on, and in this app they are journal vouchers
+      (lib/journalTypes.mjs), not invoices. Without this read they were booked
+      to the Input heads in the trial balance and then left out of table 4
+      entirely -- the credit was in the books and never on the return.
+
+      Only the two returns that HAVE an ITC table ask for them. GSTR-1 is
+      outward supply only, so loading them for it would be a query per view
+      that nothing reads.
+
+      The same widened date window as the invoices above, for the same reason:
+      an IST day is stored on the previous UTC day at its edges, and the
+      module trims back to the exact days (expenseItc).
+    */
+    const vouchers =
+      view === "gstr3" || view === "gstr3b"
+        ? await Voucher.find(
+            { journalType: "EXPENSE_GST", date: filter.date },
+            { date: 1, journalType: 1, expense: 1 }
+          ).lean()
+        : [];
+
     const title = returnTitle(view);
 
     if (view === "gstr1-ereturn") {
@@ -159,9 +185,9 @@ async function handleGET(req, auth) {
 
     const sheet =
       view === "gstr3"
-        ? gstr3Sheet({ invoices, from, to })
+        ? gstr3Sheet({ invoices, vouchers, from, to })
         : view === "gstr3b"
-          ? gstr3bSheet({ invoices, from, to })
+          ? gstr3bSheet({ invoices, vouchers, from, to })
           : gstr1Sheet({ invoices, from, to });
 
     if (format === "json") {

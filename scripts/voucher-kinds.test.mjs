@@ -446,7 +446,15 @@ test("the kind reaches the posting from every path that writes", () => {
   for (const route of ["../app/api/voucher-add/route.js", "../app/api/voucher-alter/route.js"]) {
     const src = read(route);
     assert.ok(/buildVoucherLedgerRows\(\{\s*kind,/.test(src), `${route} posts without a kind`);
-    assert.ok(/buildVoucherBalanceDeltas\(\{ kind, acName, customers \}\)/.test(src), route);
+    // `posted` rather than `customers`: an `Expense With GST` journal derives
+    // its own lines (lib/journalTypes.mjs) and `posted` is whichever set is
+    // actually being written -- the derived legs, or the form's lines for
+    // every other voucher. Both must reach the balances, or an expense moves
+    // the ledger and leaves the party's balance behind.
+    assert.ok(
+      /buildVoucherBalanceDeltas\(\{\s*kind,\s*acName,\s*customers: posted,?\s*\}\)/.test(src),
+      route
+    );
   }
 });
 

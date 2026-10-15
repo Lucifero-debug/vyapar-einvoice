@@ -11,6 +11,8 @@ import {
 import { recomputeLedgerBalances } from '@/lib/runningBalances.mjs';
 import { validateAllocations } from '@/lib/openBillsFor.mjs';
 import { voucherProblems } from '@/lib/voucherKinds.mjs';
+import { isExpenseJournal } from '@/lib/journalTypes.mjs';
+import { resolveExpenseVoucher } from '@/lib/expenseVoucher.mjs';
 import { withTransaction, AbortTransaction } from '@/lib/withTransaction.mjs';
 import { tenantRoute } from "@/lib/tenantRoute.mjs";
 
@@ -25,12 +27,20 @@ async function handlePOST(req, auth) {
       return NextResponse.json({ error: 'Invalid voucher ID' }, { status: 400 });
     }
 
-    // The same validator voucher-add runs, so an edit cannot save a shape a
-    // new entry would have been refused -- which is how a journal comes to
-    // be out of balance only after somebody edited it.
-    const problems = voucherProblems({ kind, acName, paymentType, customers });
-    if (problems.length) {
-      return NextResponse.json({ error: problems[0], problems }, { status: 400 });
+    const journalType = data.journalType;
+
+    // An `Expense With GST` journal arrives as ONE expense, not as lines:
+    // they are derived inside the transaction, where the supplier's state
+    // and the Input heads can be read. So it is checked there, against what
+    // is actually about to be written.
+    if (!isExpenseJournal(journalType)) {
+      // The same validator voucher-add runs, so an edit cannot save a shape a
+      // new entry would have been refused -- which is how a journal comes to
+      // be out of balance only after somebody edited it.
+      const problems = voucherProblems({ kind, acName, paymentType, customers });
+      if (problems.length) {
+        return NextResponse.json({ error: problems[0], problems }, { status: 400 });
+      }
     }
 
     // Reversal, row replacement and re-application are one unit. Failing
@@ -71,8 +81,44 @@ async function handlePOST(req, auth) {
     // Without that exclusion, re-saving a voucher without touching its
     // adjustment refuses itself, for the same reason re-saving a customer
     // collided with its own name before findNameClash took an excludeId.
+    //
+    // The expense comes first, because what it derives is what gets checked.
+
+    // Re-derived from the edited expense, exactly as a new one is: an edit
+    // that moved the supplier to another state must re-split the tax, and one
+    // that changed the amount must re-figure it. This voucher's OWN previous
+    // figures were reversed above, so what is written now is the whole of
+    // what it claims.
+    const resolvedExpense = await resolveExpenseVoucher({
+      journalType,
+      expense: data.expense,
+      companyId: auth?.companyId,
+      session,
+    });
+
+    if (resolvedExpense?.problems?.length) {
+      throw new AbortTransaction(
+        { error: resolvedExpense.problems[0], problems: resolvedExpense.problems },
+        400
+      );
+    }
+
+    const posted = resolvedExpense ? resolvedExpense.lines : customers;
+
+    if (resolvedExpense) {
+      const lineProblems = voucherProblems({
+        kind,
+        acName,
+        paymentType,
+        customers: posted,
+      });
+      if (lineProblems.length) {
+        throw new AbortTransaction({ error: lineProblems[0], problems: lineProblems }, 400);
+      }
+    }
+
     const { customers: lines, problems } = await validateAllocations({
-      customers,
+      customers: posted,
       excludeVoucherId: id,
       session,
     });
@@ -84,7 +130,21 @@ async function handlePOST(req, auth) {
     // 3. Update the voucher document
     const updatedVoucher = await Voucher.findByIdAndUpdate(
       id,
-      { kind, acName, date, againstBill, acType, paymentType, narration, customers: lines },
+      {
+        kind,
+        acName,
+        date,
+        againstBill,
+        acType,
+        paymentType,
+        narration,
+        customers: lines,
+        journalType,
+        // Null rather than left out when this stops being an expense:
+        // Mongoose drops an undefined from an update, so the voucher would
+        // keep the claim of a journal it no longer is.
+        expense: resolvedExpense ? resolvedExpense.expense : null,
+      },
       { new: true, session }
     );
 
@@ -102,7 +162,7 @@ async function handlePOST(req, auth) {
         date,
         paymentType,
         narration,
-        customers,
+        customers: posted,
         voucherId: updatedVoucher._id,
       }),
       { session }
@@ -112,7 +172,11 @@ async function handlePOST(req, auth) {
     // This used to add `amount` regardless of whether the line was a debit or a
     // credit, so editing a receipt flipped it into a payment.
     const missing = [];
-    for (const { name, delta } of buildVoucherBalanceDeltas({ kind, acName, customers })) {
+    for (const { name, delta } of buildVoucherBalanceDeltas({
+      kind,
+      acName,
+      customers: posted,
+    })) {
       const updated = await Customer.findOneAndUpdate(
         { name },
         balancePipeline(delta),
@@ -136,7 +200,7 @@ async function handlePOST(req, auth) {
           existingVoucher.acName,
           acName,
           ...previousDeltas.map((d) => d.name),
-          ...customers.map((c) => c.name),
+          ...posted.map((c) => c.name),
         ].filter(Boolean),
         session
       );
