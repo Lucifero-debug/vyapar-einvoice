@@ -788,7 +788,16 @@ const AddVoucher = () => {
           </div>
 
           {/* Table. Hidden for an expense, which has one entry and derives
-              its own legs -- Sigfa's "Only One Entry Per Voucher". */}
+              its own legs -- Sigfa's "Only One Entry Per Voucher".
+
+              HIDDEN IS NOT ENOUGH: a hidden control is still validated, and
+              the browser refuses the submit without being able to show why.
+              Reopening an expense loads its posted legs in here -- Input CGST
+              at 45.90 -- and a number box with the default step of 1 calls
+              that invalid, so "Update Voucher" did nothing at all. So for an
+              expense the grid's controls are disabled (a disabled control is
+              not validated, and nothing in it is sent: the server derives
+              the legs), and the amounts take paise for every journal. */}
           <div className={`table-wrap ${isExpense ? "hidden" : ""}`}>
             <table className="data-table min-w-[760px]">
               <thead>
@@ -812,7 +821,8 @@ const AddVoucher = () => {
                         value={entry.name}
                         onChange={(e) => handleEntryChange(index, e)}
                         className="w-full bg-transparent text-sm outline-none focus:ring-0"
-                        required
+                        required={!isExpense}
+                        disabled={isExpense}
                       >
                         <option value="" disabled>
                           {spec.ownAccounts ? "Select Cash or Bank A/c" : "Select Customer"}
@@ -852,7 +862,8 @@ const AddVoucher = () => {
                         value={entry.debit}
                         onChange={(e) => handleEntryChange(index, e)}
                         onBlur={leaveLine(index)}
-                        disabled={spec.side === "credit"}
+                        step="0.01"
+                        disabled={isExpense || spec.side === "credit"}
                         title={spec.side === "credit" ? `A ${spec.label.toLowerCase()} is a credit` : undefined}
                         className="field-input field-input-sm num"
                       />
@@ -864,7 +875,8 @@ const AddVoucher = () => {
                         value={entry.credit}
                         onChange={(e) => handleEntryChange(index, e)}
                         onBlur={leaveLine(index)}
-                        disabled={spec.side === "debit"}
+                        step="0.01"
+                        disabled={isExpense || spec.side === "debit"}
                         title={spec.side === "debit" ? `A ${spec.label.toLowerCase()} is a debit` : undefined}
                         className="field-input field-input-sm num"
                       />

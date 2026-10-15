@@ -349,4 +349,23 @@ test("only the two returns with an ITC table pay for the query", () => {
   assert.match(route, /gstr3bSheet\(\{ invoices, vouchers, from, to \}\)/);
 });
 
+console.log("\n--- an expense can be reopened and saved ---");
+
+test("the hidden lines grid cannot block an expense's save", () => {
+  const src = code("../app/voucheradd/page.js");
+  // Reopening an expense loads its legs (Input CGST 45.90) into the hidden
+  // grid. A hidden control that fails validation stops the submit silently,
+  // so for an expense the grid is disabled and not required.
+  assert.match(src, /name="name"[\s\S]{0,300}required=\{!isExpense\}[\s\S]{0,40}disabled=\{isExpense\}/);
+  assert.match(src, /name="debit"[\s\S]{0,400}disabled=\{isExpense \|\| spec\.side === "credit"\}/);
+  assert.match(src, /name="credit"[\s\S]{0,400}disabled=\{isExpense \|\| spec\.side === "debit"\}/);
+});
+
+test("a journal line takes paise", () => {
+  const src = code("../app/voucheradd/page.js");
+  // The default step of 1 refuses 45.90, on any journal, not just an expense.
+  assert.match(src, /name="debit"[\s\S]{0,300}step="0\.01"/);
+  assert.match(src, /name="credit"[\s\S]{0,300}step="0\.01"/);
+});
+
 console.log(`\n  ${passed} checks passed\n`);
