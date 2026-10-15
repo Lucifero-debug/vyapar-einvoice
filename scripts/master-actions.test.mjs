@@ -463,6 +463,62 @@ test("a bill's three busiest boxes can reach their master", () => {
   );
 });
 
+test("a party's State and Group, and an item's HSN, are picked from their masters", () => {
+  // They were free text boxes on the quick form. Everything in this app
+  // joins BY NAME, so a State typed "Delhi" against a master holding
+  // "DELHI" is a party whose state matches nothing -- and `taxTypeFor` then
+  // reads no state code and refuses to decide the tax. None of it surfaces
+  // as an error; it surfaces as a figure being wrong somewhere else.
+  const src = read("../components/billing/QuickMaster.jsx");
+  for (const [field, kind] of [
+    ["state", "state"],
+    ["group", "group"],
+    ["hsn", "hsn"],
+  ]) {
+    const at = src.indexOf(`name: '${field}'`);
+    assert.ok(at > 0, `${field} is not on any quick form`);
+    const block = src.slice(at, at + 600);
+    assert.match(block, /fromMaster: \{/, `${field} is still a free text box`);
+    assert.match(block, new RegExp(`kind: '${kind}'`), `${field} points at the wrong master`);
+  }
+});
+
+test("what a picked record fills comes with it, and cannot drift", () => {
+  const src = read("../components/billing/QuickMaster.jsx");
+  // Picking a state fills its code; picking an HSN fills the rate and unit.
+  assert.match(src, /fills: \{ stateCode: 'code' \}/);
+  assert.match(src, /fills: \{ gst: 'gst', unit: 'gstunit' \}/);
+  // Those boxes are read-only while their source is chosen, so the two
+  // cannot disagree: a state name carrying another state's code is a bill
+  // taxed the wrong way with nothing on screen saying so.
+  assert.match(src, /derived: true/);
+  assert.match(src, /readOnly=\{Boolean\(/);
+  // And cleared together, or the party keeps the code of a state it no
+  // longer names.
+  assert.match(src, /next\[target\] = row \? String\(row\[source\] \?\? ''\) : ''/);
+});
+
+test("the pickers read the same endpoints the keys do", () => {
+  // Through masterSpec, not a second copy: an endpoint named again here is
+  // how this dialog and Alt+M come to point at different lists.
+  const src = read("../components/billing/QuickMaster.jsx");
+  assert.match(src, /masterSpec\(name\)/);
+  assert.match(src, /master\.listEndpoint/);
+  assert.match(src, /body\[master\.listKey\]/);
+  assert.doesNotMatch(src, /fetch\('\/api\/get-/, "a list endpoint is hardcoded here");
+});
+
+test("the unit box stays typed, because there is no unit master", () => {
+  // The one exemption, and it is the module's own statement rather than an
+  // oversight: units are typed straight onto an item in this app.
+  assert.ok(!masterSpec("unit").listEndpoint);
+  assert.ok(masterSpec("unit").unavailable);
+  const src = read("../components/billing/QuickMaster.jsx");
+  const at = src.indexOf("name: 'unit'");
+  assert.ok(at > 0);
+  assert.doesNotMatch(src.slice(at, at + 400), /fromMaster/);
+});
+
 test("the item and party masters tag the fields that have masters", () => {
   const item = read("../app/itemadd/page.js");
   // Its HSN box is the case the brief named: "item master has hsn so there it

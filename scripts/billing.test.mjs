@@ -799,7 +799,12 @@ test("an alter posts the whole record, not just the boxes on the form", () => {
   assert.match(dialog, /masterSpec\(kind\)\?\.alterEndpoint/);
   // A create still sends only what was filled in -- the add routes whitelist
   // their own fields and a blank box should not be stored as "".
-  assert.match(dialog, /: filledOnly\(values, spec\.fields\)/);
+  //
+  // `spec.fixed` sits UNDER those: a value this dialog always sends and
+  // never shows, which today is the item group's `mainGroup` (where a new
+  // group sits in the tree needs a picker this form has no room for). It is
+  // underneath so a filled box would win if one ever named the same key.
+  assert.match(dialog, /\{ \.\.\.\(spec\.fixed \|\| \{\}\), \.\.\.filledOnly\(values, spec\.fields\) \}/);
   // And an alter form shows the stored values rather than blanks.
   assert.match(dialog, /valuesFromRecord\(record, spec\.fields\)/);
 });

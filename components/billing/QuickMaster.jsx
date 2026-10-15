@@ -51,6 +51,30 @@ import { SERIES_DOC_TYPES } from '@/lib/series.mjs';
  * `openBal`. Renaming them here would mean the server silently storing
  * undefined, which is the Mongoose-strict-mode mistake this project has made
  * seven times.
+ *
+ *
+ * A FIELD THAT COMES FROM A MASTER IS A PICKER, NOT A BOX
+ * -------------------------------------------------------
+ * `fromMaster` names the master behind a field, and that field is then
+ * rendered as a dropdown of what the master actually holds. Four of them
+ * were plain text boxes: a party's State and Group, and an item's HSN.
+ *
+ * Everything in this app joins BY NAME. So a State typed "Delhi" against a
+ * master holding "DELHI" is a party whose state matches nothing, and the
+ * place-of-supply rule reads no state code and refuses to decide the tax
+ * (lib/gst.mjs). A Group typed "Retail " with a trailing space is a second
+ * group on every report that groups parties. Neither shows up as an error --
+ * they show up as a figure being slightly wrong somewhere else, months on.
+ *
+ *   kind    the master, as lib/masterActions.mjs knows it
+ *   value   the field on a record that the FIELD stores (a name, a code)
+ *   label   what the option reads as; defaults to `value`
+ *   fills   other fields on this form to set from the chosen record,
+ *           as { formField: recordField } -- picking a state fills its code
+ *
+ * `derived: true` marks a field that is filled that way: shown, read-only
+ * while its source is chosen, so it cannot drift from the record it came
+ * from.
  */
 export const MASTER_FORMS = {
   item: {
@@ -61,9 +85,30 @@ export const MASTER_FORMS = {
     fields: [
       { name: 'name', label: 'Item name', type: 'text', required: true, autoFocus: true },
       { name: 'short', label: 'Short code', type: 'text', hint: 'What F2 searches on' },
-      { name: 'hsn', label: 'HSN', type: 'text' },
-      { name: 'gst', label: 'GST %', type: 'number' },
-      { name: 'unit', label: 'Unit', type: 'text' },
+      {
+        name: 'hsn',
+        label: 'HSN',
+        type: 'text',
+        // The rate and the unit come down with it, exactly as they do on the
+        // item master screen: an HSN carries both, and retyping them here is
+        // how two items on one HSN end up taxed differently.
+        fromMaster: {
+          kind: 'hsn',
+          value: 'hsncode',
+          label: 'hsnname',
+          fills: { gst: 'gst', unit: 'gstunit' },
+        },
+      },
+      { name: 'gst', label: 'GST %', type: 'number', derived: true, hint: 'From the HSN' },
+      {
+        name: 'unit',
+        label: 'Unit',
+        type: 'text',
+        derived: true,
+        // Free text by design -- there is no unit master (see `unit` below).
+        // Filled from the HSN when it has one, and typable when it does not.
+        hint: 'From the HSN, or type one',
+      },
       { name: 'salePrice', label: 'Sale price', type: 'number' },
       { name: 'purchasePrice', label: 'Purchase price', type: 'number' },
     ],
@@ -75,14 +120,32 @@ export const MASTER_FORMS = {
       { name: 'name', label: 'Party name', type: 'text', required: true, autoFocus: true },
       { name: 'short', label: 'Short code', type: 'text' },
       { name: 'gstIn', label: 'GSTIN', type: 'text' },
-      { name: 'state', label: 'State', type: 'text' },
-      { name: 'stateCode', label: 'State code', type: 'text' },
+      {
+        name: 'state',
+        label: 'State',
+        type: 'text',
+        // The code comes with it. The two have to agree: `taxTypeFor` reads
+        // the CODE to decide CGST+SGST against IGST, and a party carrying a
+        // state name with the wrong code is a bill taxed the wrong way with
+        // nothing on screen saying so.
+        fromMaster: { kind: 'state', value: 'name', fills: { stateCode: 'code' } },
+      },
+      {
+        name: 'stateCode',
+        label: 'State code',
+        type: 'text',
+        derived: true,
+        hint: 'From the state',
+      },
       { name: 'phone', label: 'Phone', type: 'text' },
       { name: 'address', label: 'Address', type: 'text' },
       {
         name: 'group',
         label: 'Group',
         type: 'text',
+        // The PARTY groups -- Sundry Debtors, Cash, Bank. Not the item
+        // groups, which are their own master (lib/itemGroups.mjs).
+        fromMaster: { kind: 'group', value: 'name' },
         hint: 'Left blank it goes in ungrouped, as on the party screen',
       },
     ],
@@ -214,6 +277,12 @@ export default function QuickMaster({ kind, mode = 'create', record, prefill, on
   const [error, setError] = useState('');
   const first = useRef(null);
 
+  // The rows behind every `fromMaster` field on this form, keyed by master.
+  // Loaded when the dialog opens rather than held: a master changed on
+  // another screen has to be offered here straight away, and these are two
+  // small lists read once per dialog, not per keystroke.
+  const [options, setOptions] = useState({});
+
   useEffect(() => {
     if (!spec) return;
     setError('');
@@ -231,7 +300,75 @@ export default function QuickMaster({ kind, mode = 'create', record, prefill, on
     return () => clearTimeout(id);
   }, [kind, mode, record, prefill, spec, altering]);
 
+  // === What the pickers offer ===
+  //
+  // One request per master this form needs, through the SAME spec table the
+  // keys use (lib/masterActions.mjs): its endpoint and the key its answer is
+  // under. Reading the endpoint from there rather than naming it again is
+  // what stops this dialog and Alt+M pointing at different lists.
+  //
+  // A master that fails to load leaves its picker empty and says so, rather
+  // than silently falling back to a free text box -- which would put the
+  // mistyped value back exactly where this is meant to stop it.
+  useEffect(() => {
+    if (!spec) return;
+
+    const kinds = [
+      ...new Set(spec.fields.map((f) => f.fromMaster?.kind).filter(Boolean)),
+    ];
+    if (!kinds.length) return;
+
+    let cancelled = false;
+
+    Promise.all(
+      kinds.map(async (name) => {
+        const master = masterSpec(name);
+        if (!master?.listEndpoint) return [name, []];
+        try {
+          const res = await fetch(master.listEndpoint);
+          const body = await res.json();
+          return [name, Array.isArray(body?.[master.listKey]) ? body[master.listKey] : []];
+        } catch {
+          return [name, []];
+        }
+      })
+    ).then((pairs) => {
+      if (!cancelled) setOptions(Object.fromEntries(pairs));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, spec]);
+
   if (!spec) return null;
+
+  /**
+   * Choosing from a master sets the field AND whatever that record fills.
+   *
+   * Cleared together too: emptying the State must empty its code, or the
+   * party keeps a code belonging to a state it no longer names.
+   */
+  const chooseFromMaster = (field, value) => {
+    const rows = options[field.fromMaster.kind] || [];
+    const row = rows.find(
+      (r) => String(r?.[field.fromMaster.value] ?? '') === String(value)
+    );
+
+    setValues((prev) => {
+      const next = { ...prev, [field.name]: value };
+      for (const [target, source] of Object.entries(field.fromMaster.fills || {})) {
+        next[target] = row ? String(row[source] ?? '') : '';
+      }
+      return next;
+    });
+  };
+
+  /** Is this derived field currently being filled by a chosen record? */
+  const filledBy = (name) =>
+    spec.fields.find((f) =>
+      Object.prototype.hasOwnProperty.call(f.fromMaster?.fills || {}, name)
+    );
 
   const problems = missingRequired(values, spec.fields);
 
@@ -351,7 +488,32 @@ export default function QuickMaster({ kind, mode = 'create', record, prefill, on
                   </span>
                 )}
               </label>
-              {field.type === 'select' ? (
+              {field.fromMaster ? (
+                // A picker of what the master actually holds. Not a free text
+                // box with suggestions: everything joins by name, so a value
+                // the master does not have is a join that silently misses.
+                <select
+                  id={`qm-${field.name}`}
+                  ref={index === 0 ? first : undefined}
+                  className="field-select mt-1.5"
+                  value={values[field.name] ?? ''}
+                  required={field.required}
+                  onChange={(e) => chooseFromMaster(field, e.target.value)}
+                >
+                  <option value="">Choose…</option>
+                  {(options[field.fromMaster.kind] || []).map((row) => {
+                    const value = String(row?.[field.fromMaster.value] ?? '');
+                    const extra = field.fromMaster.label
+                      ? String(row?.[field.fromMaster.label] ?? '')
+                      : '';
+                    return (
+                      <option key={row._id || value} value={value}>
+                        {extra ? `${value} — ${extra}` : value}
+                      </option>
+                    );
+                  })}
+                </select>
+              ) : field.type === 'select' ? (
                 <select
                   id={`qm-${field.name}`}
                   ref={index === 0 ? first : undefined}
@@ -379,12 +541,28 @@ export default function QuickMaster({ kind, mode = 'create', record, prefill, on
                   value={values[field.name] ?? ''}
                   required={field.required}
                   autoComplete="off"
+                  /* Read-only ONLY while the record filling it is chosen.
+                     With nothing chosen it is typable, so a party whose
+                     state is not in the master can still carry a code. */
+                  readOnly={Boolean(
+                    field.derived &&
+                      filledBy(field.name) &&
+                      String(values[filledBy(field.name).name] ?? '') !== ''
+                  )}
                   onChange={(e) =>
                     setValues((prev) => ({ ...prev, [field.name]: e.target.value }))
                   }
                 />
               )}
-              {field.hint && <p className="field-hint mt-1">{field.hint}</p>}
+              {/* An empty picker is said out loud. Silence would read as a
+                  master with nothing in it being a broken dialog. */}
+              {field.fromMaster && (options[field.fromMaster.kind] || []).length === 0 ? (
+                <p className="field-hint mt-1">
+                  Nothing in the {masterSpec(field.fromMaster.kind)?.label || 'master'} yet.
+                </p>
+              ) : (
+                field.hint && <p className="field-hint mt-1">{field.hint}</p>
+              )}
             </div>
           ))}
         </div>
