@@ -43,7 +43,7 @@ import { hsnKey } from '@/lib/hsnTotals.mjs';
 import ItemSearch from '@/components/billing/ItemSearch';
 import ChallanPicker from '@/components/billing/ChallanPicker';
 import MriPanel from '@/components/billing/MriPanel';
-import { isMriSide, rejectedQty } from '@/lib/mri.mjs';
+import { isMriSide, rejectedQty, shortQty } from '@/lib/mri.mjs';
 import { CHALLAN_KINDS } from '@/lib/challanStatus.mjs';
 import QuickMaster from '@/components/billing/QuickMaster';
 import ShortcutHelp from '@/components/billing/ShortcutHelp';
@@ -1104,6 +1104,11 @@ const saveItem = (e) => {
                 received,
                 // A received quantity belongs to an MRI only; switching the
                 // MRI off drops them rather than sending figures nobody sees.
+                //
+                // `challanQty` is NOT dropped with it: it is what the challan
+                // said, true of the line whether or not anybody inspected it,
+                // and the route keeps it only on a line that names a challan
+                // (lib/invoiceInput.mjs).
                 items: takesMri && mri.on
                     ? selectedItem
                     : selectedItem.map(({ receivedQty: _received, ...line }) => line),
@@ -1882,6 +1887,13 @@ const handleDispatchSave = () => {
                                 <thead>
                                     <tr>
                                         <th>Name</th>
+                                        {/* Three quantities on an M.R.I.: what the challan
+                                            said, what arrived, what passed. The first is the
+                                            SUPPLIER'S figure, copied from their challan when
+                                            the line was drawn from one -- a receipt whose
+                                            promise can be edited proves nothing, so it is
+                                            shown and not typed. lib/mri.mjs. */}
+                                        {mri.on && takesMri && <th className='text-right'>Challan Qty</th>}
                                         {mri.on && takesMri && <th className='text-right'>Received</th>}
                                         <th className='text-right'>{mri.on && takesMri ? 'Accepted' : 'Quantity'}</th>
                                         {mri.on && takesMri && <th className='text-right'>Rejected</th>}
@@ -1902,6 +1914,24 @@ const handleDispatchSave = () => {
                                                     ledger until it is saved. */}
                                                 <ItemStock name={items.name} stock={stock} />
                                             </td>
+                                            {mri.on && takesMri && (
+                                                <td className='num'>
+                                                    {/* Blank when this line was not drawn from
+                                                        a challan: nothing promised it, and a
+                                                        nought would read as a promise of
+                                                        none. `shortQty` claims nothing here
+                                                        either. */}
+                                                    {items.challanQty ?? '—'}
+                                                    {shortQty(items) > 0 && (
+                                                        <span
+                                                            className='chip ml-2'
+                                                            title='The challan said more than arrived'
+                                                        >
+                                                            {`${shortQty(items)} short`}
+                                                        </span>
+                                                    )}
+                                                </td>
+                                            )}
                                             {mri.on && takesMri && (
                                                 <td>
                                                     <input

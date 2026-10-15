@@ -195,7 +195,12 @@ test("month sheet: headings, numbers as numbers, the route's totals", () => {
   const wb = workbook(salesReportSheets({ view: "book", side: "Sale", grain: "month", rows, totals, from: FROM, to: TO, covers: "Invoices and returns", company: COMPANY }));
   assert.deepEqual(wb.names, ["Sales Book"]);
   const g = wb.sheet(0);
-  assert.deepEqual(headings(g), ["Month", "Bills", "Returns", "Taxable Amount", "GST", "Net Amount", "Others", "Bill Amount"]);
+  // "Bill No", not a count: a register is read to find a bill, so a month
+  // row names the span of numbers inside it. lib/salesReports.mjs.
+  assert.deepEqual(headings(g), ["Month", "Bill No", "Returns", "Taxable Amount", "GST", "Net Amount", "Others", "Bill Amount"]);
+  // And it is a SPAN, so it stays text -- the numeric columns below are
+  // checked for being numbers and this one must not join them.
+  assert.equal(cell(bodyRows(g)[0], "B").kind, "s", "a span is text, not a figure");
   const body = bodyRows(g);
   assert.equal(body.length, rows.length + 1, "one row per month plus the totals row");
   assert.deepEqual(body.slice(0, -1).map((r) => cell(r, "A").value), ["Apr 2026", "May 2026"]);
@@ -298,7 +303,7 @@ test("the CSV is the same sheet: same headings, same rows", () => {
   const rows = periodWise(docs, "month");
   const [sheet] = salesReportSheets({ view: "book", grain: "month", rows, totals: periodTotals(rows), from: FROM, to: TO });
   const csv = reportCsv({ columns: sheet.columns, rows: sheet.rows, meta: sheet.meta, totals: sheet.totals });
-  assert.ok(csv.includes("Month,Bills,Returns,Taxable Amount,GST,Net Amount,Others,Bill Amount"));
+  assert.ok(csv.includes("Month,Bill No,Returns,Taxable Amount,GST,Net Amount,Others,Bill Amount"));
   assert.ok(csv.includes("Apr 2026"));
 });
 

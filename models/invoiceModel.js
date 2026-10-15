@@ -61,7 +61,16 @@ const itemSchema = new mongoose.Schema({
   // `quantity` above is the ACCEPTED quantity -- billed, taxed and stocked as
   // always -- and this is what was received; the difference was rejected.
   // Set only on a bill that is an MRI (it has an `mriNo`).
-  receivedQty:{type:Number}
+  receivedQty:{type:Number},
+  // What the supplier's CHALLAN said it was sending, copied when the line
+  // was drawn from one (lib/challanStatus.mjs pickFromChallans). The third
+  // quantity: challan - received is SHORT, received - accepted is REJECTED,
+  // and the two are different arguments with a supplier.
+  //
+  // Absent on a bill not drawn from a challan, and absent is not nought:
+  // `shortQty` claims nothing without it. Declared, or Mongoose strict mode
+  // drops it and every receipt silently loses what was promised.
+  challanQty:{type:Number}
 });
 
 const partyTaxSchema = new mongoose.Schema({

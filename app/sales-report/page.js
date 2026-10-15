@@ -15,6 +15,7 @@ import {
   DOC_SCOPES,
   REPORT_SIDES,
   SALES_VIEWS,
+  billNoRange,
   canSplitByParty,
   csvFilename,
   reportName,
@@ -472,7 +473,12 @@ function SalesReports() {
                   </td>
                   {split && <td>{r.party || '—'}</td>}
                   {split && <td className="text-xs">{r.gstin || '—'}</td>}
-                  <td className="num">{r.documents}</td>
+                  {/* The numbers this period covers, not how many there
+                      were: a register is read to find a bill, and a gap
+                      between one month's last and the next month's first is
+                      what a register exists to show. Formatted by the module
+                      so the sheet and its download print one string. */}
+                  <td className="num">{billNoRange(r)}</td>
                   <td className="num">{r.returns || '—'}</td>
                   <td className="num">{money(r.taxable)}</td>
                   <td className="num">{money(r.gst)}</td>

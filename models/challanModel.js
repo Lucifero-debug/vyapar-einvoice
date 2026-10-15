@@ -35,6 +35,13 @@ const challanLineSchema = new mongoose.Schema({
   isService: { type: Boolean },
   // Purchase M.R.I.: received, beside `quantity` = accepted (lib/mri.mjs).
   receivedQty: { type: Number },
+  // And what the SUPPLIER'S own challan said it was sending. The third
+  // quantity: challan - received is SHORT, received - accepted is REJECTED.
+  //
+  // Absent when no paper came with the delivery, and absent is not nought:
+  // `shortQty` claims nothing without it. Declared, or Mongoose strict mode
+  // drops it and the receipt silently loses what was promised.
+  challanQty: { type: Number },
 });
 
 const challanSchema = new mongoose.Schema(

@@ -28,6 +28,7 @@ import {
   DEFAULT_SCOPE,
   DOC_SCOPES,
   NO_PARTY,
+  billNoRange,
   REPORT_SIDES,
   SALES_VIEWS,
   bookRow,
@@ -641,7 +642,7 @@ test("the zoom keeps the split", () => {
 test("the split's captions are the period's with a party in them", () => {
   assert.deepEqual(
     CSV_COLUMNS.periodParty.map((c) => c.label),
-    ["Month", "Party", "GSTIN", "Bills", "Returns", "Taxable Amount", "GST", "Net Amount", "Others", "Bill Amount"]
+    ["Month", "Party", "GSTIN", "Bill No", "Returns", "Taxable Amount", "GST", "Net Amount", "Others", "Bill Amount"]
   );
   // Take the two new columns out and what is left IS the period sheet, in
   // the period sheet's order -- so the two cannot drift apart.
@@ -692,14 +693,117 @@ test("the period footer totals the column above it", () => {
   });
 });
 
+/**
+ * Two months of bills, out of numeric order inside the first.
+ *
+ * Out of order on purpose: a span taken from the first and last ROW rather
+ * than from the lowest and highest NUMBER would pass on sorted data and be
+ * wrong the day a bill is entered late.
+ */
+const SPANNED = [
+  invoice({ invoiceNo: 3, date: "2026-06-20" }),
+  invoice({ invoiceNo: 1, date: "2026-06-02" }),
+  invoice({ invoiceNo: 2, date: "2026-06-11", customer: { name: "Bose & Co", gstin: "" } }),
+  invoice({ invoiceNo: 9, date: "2026-07-04" }),
+];
+
+test("a period row carries the span of bill numbers in it", () => {
+  // A register is read to FIND a bill. A count says how many there were and
+  // leaves you opening months one by one; the span says which month to open.
+  const rows = documentsFor({ invoices: SPANNED, side: "Sale", scope: "all" });
+  const months = periodWise(rows, "month");
+  assert.deepEqual(
+    months.map((m) => billNoRange(m)),
+    ["1 – 3", "9"],
+    "June spans its three, July has one"
+  );
+  assert.ok(months.length > 0, "nothing to span");
+
+  for (const month of months) {
+    const inside = rows.filter((r) => r.month === month.period).map((r) => r.invoiceNo);
+    assert.equal(month.firstNo, Math.min(...inside), month.label);
+    assert.equal(month.lastNo, Math.max(...inside), month.label);
+    // The count is still there: the footer totals it and the meta line
+    // prints it. Only the column it used to fill has changed.
+    assert.equal(month.documents, inside.length, month.label);
+  }
+});
+
+test("a return is inside the span, because it is a document in the book", () => {
+  // Leaving credit notes out would show a gap in the numbering where there
+  // is none -- and a gap is the one thing this column exists to reveal.
+  const rows = documentsFor({
+    invoices: [invoice({ invoiceNo: 1 }), RETURN, invoice({ invoiceNo: 3 })],
+    side: "Sale",
+    scope: "all",
+  });
+  const month = periodWise(rows, "month")[0];
+  // RETURN is number 2, between the two invoices. Dropping it would print
+  // "1 - 3" over a book that does hold a 2.
+  assert.equal(billNoRange(month), "1 – 3");
+  assert.equal(month.returns, 1, "it is still counted as a return");
+});
+
+test("the span is printed once, by the module, for the sheet and the download", () => {
+  assert.equal(billNoRange({ firstNo: 1, lastNo: 7 }), "1 – 7");
+  // One bill is a number, not a span of itself.
+  assert.equal(billNoRange({ firstNo: 4, lastNo: 4 }), "4");
+  // An en dash, not a hyphen: these are numbers either side of it and a
+  // hyphen between two numbers reads as a minus.
+  assert.ok(!billNoRange({ firstNo: 1, lastNo: 7 }).includes("-"));
+  // Nothing numbered at all says so rather than printing "0".
+  assert.equal(billNoRange({}), "—");
+  assert.equal(billNoRange({ firstNo: null, lastNo: null }), "—");
+  assert.equal(billNoRange(), "—");
+  // Half a span is the half there is.
+  assert.equal(billNoRange({ firstNo: 9, lastNo: null }), "9");
+
+  // And the CSV column uses that same function rather than formatting its
+  // own, which is how a download and the page it came from come to differ.
+  const column = CSV_COLUMNS.period.find((c) => c.key === "billNo");
+  assert.equal(column.value, billNoRange);
+  assert.equal(CSV_COLUMNS.periodParty.find((c) => c.key === "billNo").value, billNoRange);
+});
+
+test("split by party, the span is that party's bills, not the month's", () => {
+  // Otherwise every row of a month would repeat the month's own span and
+  // say nothing about the party on it.
+  const rows = documentsFor({ invoices: SPANNED, side: "Sale", scope: "all" });
+  const split = periodWise(rows, "month", { byParty: true });
+  const bose = split.find((r) => r.party === "Bose & Co");
+  assert.ok(bose, "the split lost a party");
+  assert.equal(billNoRange(bose), "2", "Bose has one bill, not the month's three");
+  for (const row of split) {
+    const inside = rows
+      .filter((r) => r.month === row.period && (r.party || NO_PARTY) === row.party)
+      .map((r) => r.invoiceNo);
+    if (!inside.length) continue;
+    assert.equal(row.firstNo, Math.min(...inside), `${row.label} ${row.party}`);
+    assert.equal(row.lastNo, Math.max(...inside), `${row.label} ${row.party}`);
+  }
+});
+
 test("the book's captions are Sigfa's, in Sigfa's spelling", () => {
   // It builds them by concatenation from 'Month,Bill Amount' upwards. The
   // nine pre-GST heads it can also show have no field here -- GST stands
   // where that block stood, and the module header says so.
+  //
+  // "Bill No" and "Returns" are NOT among the captions read out of the
+  // binary: the quoted list is 'Month,Bill Amount' plus the thirteen behind
+  // SetupSB flags, and neither is in it. They are this app's own columns, so
+  // changing them departs from nothing Sigfa said -- which is why "Bill No"
+  // could replace the count this once held.
   assert.deepEqual(
     CSV_COLUMNS.period.map((c) => c.label),
-    ["Month", "Bills", "Returns", "Taxable Amount", "GST", "Net Amount", "Others", "Bill Amount"]
+    ["Month", "Bill No", "Returns", "Taxable Amount", "GST", "Net Amount", "Others", "Bill Amount"]
   );
+  // The quoted pair is still there, in Sigfa's own spelling.
+  for (const quoted of ["Month", "Bill Amount"]) {
+    assert.ok(
+      CSV_COLUMNS.period.some((c) => c.label === quoted),
+      `${quoted} is quoted from the binary and must not be renamed`
+    );
+  }
   // A month sheet and a bill sheet of one month must not land under one name.
   assert.notEqual(
     csvFilename("book", "Sale", "2026-06-01", "2026-06-30", "month"),

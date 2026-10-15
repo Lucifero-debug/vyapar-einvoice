@@ -19,7 +19,7 @@ import { trim } from '@/lib/orderStatus.mjs';
 import { istToday } from '@/lib/istDate.mjs';
 import { readResponse } from '@/lib/apiResponse.mjs';
 import MriPanel from '@/components/billing/MriPanel';
-import { rejectedQty } from '@/lib/mri.mjs';
+import { rejectedQty, shortQty } from '@/lib/mri.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,7 +36,7 @@ export const dynamic = 'force-dynamic';
 const asISO = (value) => (value ? new Date(value).toISOString().substring(0, 10) : '');
 const money = (n) => (Number(n) || 0).toFixed(2);
 
-const blankLine = () => ({ name: '', description: '', hsn: '', quantity: '', receivedQty: '', cost: '', discount: 0, gstRate: 0 });
+const blankLine = () => ({ name: '', description: '', hsn: '', quantity: '', challanQty: '', receivedQty: '', cost: '', discount: 0, gstRate: 0 });
 
 function ChallanForm() {
   const router = useRouter();
@@ -143,6 +143,9 @@ function ChallanForm() {
               l.receivedQty === undefined || l.receivedQty === null || Number(l.receivedQty) === Number(l.quantity)
                 ? ''
                 : l.receivedQty,
+            // Blank stays blank: a line with no challan figure had no paper
+            // against it, and showing a nought would invent a promise.
+            challanQty: l.challanQty === undefined || l.challanQty === null ? '' : l.challanQty,
             billedQty: l.billedQty || 0,
             cost: l.cost ?? '',
             discount: l.discount || 0,
@@ -178,16 +181,28 @@ function ChallanForm() {
     const mriLine = isPurchase && mri.on;
     const accepted = Number(draft.quantity);
     const received = draft.receivedQty === '' ? null : Number(draft.receivedQty);
+    // What their challan said. Optional: not every delivery comes with a
+    // paper, and a blank one claims nothing rather than reading as nought.
+    const promised = draft.challanQty === '' ? null : Number(draft.challanQty);
     if (mriLine) {
       if (draft.quantity === '' || !(accepted >= 0)) return setError('Enter the quantity accepted.');
       if (received !== null && received < accepted) return setError('Accepted Qty. Is More Than Received Qty.');
       if (!(accepted > 0) && !(received > 0)) return setError('Enter the quantity received.');
+      if (promised !== null && !(promised >= 0)) return setError('The challan quantity must be a number, not below zero.');
+      // Receiving MORE than the challan said is not refused -- a supplier
+      // sends a replacement in the same lot, and capping it would hide goods
+      // the firm is now holding. It shows as an excess, not an error.
     } else if (!(accepted > 0)) {
       return setError('A line needs a quantity.');
     }
     setLines((rows) => [
       ...rows,
-      { ...draft, quantity: roundQty(draft.quantity), receivedQty: mriLine && received !== null ? roundQty(received) : '' },
+      {
+        ...draft,
+        quantity: roundQty(draft.quantity),
+        receivedQty: mriLine && received !== null ? roundQty(received) : '',
+        challanQty: mriLine && promised !== null ? roundQty(promised) : '',
+      },
     ]);
     setDraft(blankLine());
   };
@@ -226,6 +241,12 @@ function ChallanForm() {
         quantity: l.quantity,
         ...(isPurchase && mri.on && l.receivedQty !== '' && l.receivedQty !== null && l.receivedQty !== undefined
           ? { receivedQty: l.receivedQty }
+          : {}),
+        // Sent only when it was actually entered. An empty box is "they sent
+        // no paper", not "they promised nothing", and `shortQty` reads the
+        // absence that way (lib/mri.mjs).
+        ...(isPurchase && mri.on && l.challanQty !== '' && l.challanQty !== null && l.challanQty !== undefined
+          ? { challanQty: l.challanQty }
           : {}),
         cost: l.cost,
         discount: l.discount,
@@ -394,6 +415,17 @@ function ChallanForm() {
               emptyHint=""
             />
           </div>
+          {/* What the SUPPLIER'S OWN challan said it was sending -- typed
+              from the paper in front of you. Three quantities, not two:
+              challan less received is SHORT, received less accepted is
+              REJECTED, and those are different arguments with a supplier.
+              lib/mri.mjs. Leave it blank and nothing is claimed. */}
+          {showMri && (
+            <div className="field">
+              <label className="field-label">Challan Qty</label>
+              <input type="number" step="0.001" className="field-input num" value={draft.challanQty} placeholder="Their challan" onChange={(e) => setDraft({ ...draft, challanQty: e.target.value })} />
+            </div>
+          )}
           {showMri && (
             <div className="field">
               <label className="field-label">Received</label>
@@ -434,8 +466,10 @@ function ChallanForm() {
             <tr>
               <th>Item</th>
               <th>HSN</th>
+              {showMri && <th className="num">Challan Qty</th>}
               {showMri && <th className="num">Received</th>}
               <th className="num">{showMri ? 'Accepted' : 'Qty'}</th>
+              {showMri && <th className="num">Short</th>}
               {showMri && <th className="num">Rejected</th>}
               <th className="num">Billed</th>
               <th className="num">Pending</th>
@@ -449,7 +483,7 @@ function ChallanForm() {
           <tbody>
             {lines.length === 0 && (
               <tr>
-                <td colSpan={showMri ? 12 : 10}>
+                <td colSpan={showMri ? 14 : 10}>
                   <div className="empty-state">No items on this challan yet.</div>
                 </td>
               </tr>
@@ -463,12 +497,25 @@ function ChallanForm() {
                 <td>{row.hsn}</td>
                 {showMri && (
                   <td className="num">
+                    <input type="number" step="0.001" className="field-input field-input-sm num w-24" value={row.challanQty ?? ''} placeholder="—" onChange={(e) => editLine(i, 'challanQty', e.target.value)} />
+                  </td>
+                )}
+                {showMri && (
+                  <td className="num">
                     <input type="number" step="0.001" className="field-input field-input-sm num w-24" value={row.receivedQty ?? ''} placeholder={String(row.quantity ?? '')} onChange={(e) => editLine(i, 'receivedQty', e.target.value)} />
                   </td>
                 )}
                 <td className="num">
                   <input type="number" step="0.001" className="field-input field-input-sm num w-24" value={row.quantity} onChange={(e) => editLine(i, 'quantity', e.target.value)} />
                 </td>
+                {/* Short is what never turned up; Rejected is what came and
+                    was turned away. Shown apart because they are settled
+                    differently with the supplier. */}
+                {showMri && (
+                  <td className="num">
+                    {shortQty(row) > 0 ? <span className="font-medium text-destructive">{trim(shortQty(row))}</span> : '—'}
+                  </td>
+                )}
                 {showMri && (
                   <td className="num">
                     {rejectedQty(row) > 0 ? <span className="font-medium text-destructive">{trim(rejectedQty(row))}</span> : '—'}

@@ -30,6 +30,9 @@ import {
   referencedReason,
   rejectedMaterial,
   rejectedQty,
+  challanOf,
+  excessQty,
+  shortQty,
   rejectedValue,
 } from "../lib/mri.mjs";
 import { prepareInvoiceInput } from "../lib/invoiceInput.mjs";
@@ -388,6 +391,136 @@ test("Purchase M.R.I. sits in the Purchases section, after Purchase Challan", ()
   for (const href of ["/purchaseadd?mri=1", "/challanadd?type=Purchase&mri=1", "/mri?view=pending", "/mri?view=rejected"]) {
     assert.ok(home.includes(href), href);
   }
+});
+
+console.log("\n--- the third quantity: what the challan said ---");
+
+test("short is what the challan promised and did not arrive", () => {
+  // Two figures can only say what FAILED. Three say what never turned up as
+  // well, and they are different arguments with a supplier: goods short on
+  // the lorry are not goods sent back after inspection.
+  assert.equal(shortQty({ challanQty: 100, receivedQty: 90, quantity: 80 }), 10);
+  assert.equal(rejectedQty({ challanQty: 100, receivedQty: 90, quantity: 80 }), 10, "and 10 rejected");
+  // All of it arrived.
+  assert.equal(shortQty({ challanQty: 100, receivedQty: 100, quantity: 100 }), 0);
+  assert.equal(shortQty({ challanQty: 0.5, receivedQty: 0.3, quantity: 0.3 }), 0.2, "decimals do not drift");
+});
+
+test("no challan figure claims nothing", () => {
+  // A bill not drawn from a challan has no promise to fall short of. Reading
+  // the absence as nought would make every ordinary purchase M.R.I. report
+  // its whole receipt as short.
+  assert.equal(challanOf({ quantity: 80 }), 0);
+  assert.equal(challanOf({ challanQty: null, quantity: 80 }), 0);
+  assert.equal(challanOf({ challanQty: "", quantity: 80 }), 0);
+  assert.equal(shortQty({ receivedQty: 90, quantity: 80 }), 0);
+  assert.equal(shortQty({ challanQty: 0, receivedQty: 90, quantity: 80 }), 0);
+  assert.equal(excessQty({ receivedQty: 90, quantity: 80 }), 0);
+});
+
+test("more than the challan said is reported, not refused", () => {
+  // It happens -- a replacement sent in the same lot. Capping the received
+  // figure at the challan's would hide goods the firm is now holding.
+  assert.equal(excessQty({ challanQty: 100, receivedQty: 110, quantity: 110 }), 10);
+  assert.equal(shortQty({ challanQty: 100, receivedQty: 110, quantity: 110 }), 0, "not short as well");
+  // And the received quantity is still accepted by the line check: the
+  // challan is not a limit on what arrived.
+  assert.deepEqual(
+    checkReceived({ receivedQty: 110 }, 110, { mriOn: true }),
+    { value: 110 }
+  );
+});
+
+test("short and rejected are counted apart, not rolled together", () => {
+  // 100 promised, 90 came, 80 passed. One line, two different problems.
+  const line = { challanQty: 100, receivedQty: 90, quantity: 80 };
+  assert.equal(shortQty(line), 10);
+  assert.equal(rejectedQty(line), 10);
+  assert.notEqual(shortQty(line) + rejectedQty(line), shortQty(line), "they are separate figures");
+  // The bill is still priced on the accepted quantity, which is what the
+  // module header says an M.R.I. must not change.
+  assert.equal(line.quantity, 80);
+});
+
+test("a line drawn from a challan carries what that challan said", () => {
+  // Without it the challan's own number is gone the moment the line is
+  // merged: pickFromChallans overwrites `quantity` with what is being billed.
+  const src = code(read("../lib/challanStatus.mjs"));
+  assert.match(src, /challanQty: roundQty\(line\.quantity\)/);
+});
+
+test("it is kept only on a line that names a challan, and is declared", () => {
+  // A figure standing alone would read as a shortfall against a promise
+  // nobody made.
+  const input = code(read("../lib/invoiceInput.mjs"));
+  const at = input.indexOf("line.challanQty");
+  assert.ok(at > 0, "the route drops the challan quantity");
+  assert.ok(
+    at > input.indexOf("if (anyChallan)"),
+    "it is set outside the block that requires a challan reference"
+  );
+  // Mongoose strict mode drops what is not declared, and a dropped promise
+  // is a receipt that silently loses what was sent.
+  assert.match(read("../models/invoiceModel.js"), /challanQty:\{type:Number\}/);
+});
+
+test("the purchase challan takes it, because that is where their paper is", () => {
+  // The receipt screen itself: the supplier's challan is in front of you, so
+  // the figure is TYPED here, unlike on a bill drawn from a challan we have
+  // already recorded, where it is copied.
+  const screen = read("../app/challanadd/page.js");
+  assert.match(screen, /<th className="num">Challan Qty<\/th>/);
+  assert.match(screen, /<th className="num">Short<\/th>/, "short is not shown apart from rejected");
+  assert.match(screen, /setDraft\(\{ \.\.\.draft, challanQty: e\.target\.value \}\)/);
+  assert.match(screen, /editLine\(i, 'challanQty', e\.target\.value\)/);
+  // A blank box is kept blank on the way out AND on the way back in.
+  assert.match(screen, /challanQty: mriLine && promised !== null \? roundQty\(promised\) : ''/);
+  assert.match(screen, /challanQty: l\.challanQty === undefined \|\| l\.challanQty === null \? '' : l\.challanQty/);
+  // And the empty-table colspan counts the two new columns, or the message
+  // sits under half the header.
+  assert.match(screen, /colSpan=\{showMri \? 14 : 10\}/);
+});
+
+test("the challan route keeps it only on an M.R.I., and the model declares it", () => {
+  // On an M.R.I. it is kept, and the short figure falls out of it.
+  const onMri = prepareChallanInput(
+    { ...CHALLAN, items: [{ name: "MS Angle", quantity: 80, receivedQty: 90, challanQty: 100, cost: 50 }] },
+    { now: NOW }
+  );
+  assert.equal(onMri.items[0].challanQty, 100);
+  assert.equal(shortQty(onMri.items[0]), 10, "10 never turned up");
+  assert.equal(rejectedQty(onMri.items[0]), 10, "and 10 was turned away");
+
+  // Off one it is refused rather than stored where nothing would read it.
+  assert.throws(
+    () =>
+      prepareChallanInput(
+        { ...CHALLAN, mri: undefined, items: [{ name: "MS Angle", quantity: 80, challanQty: 100, cost: 50 }] },
+        { now: NOW }
+      ),
+    /only kept on an M\.R\.I\./
+  );
+
+  // Blank stays absent: no paper came with it, which is not a promise of
+  // nothing. `shortQty` then claims nothing either.
+  const bare = prepareChallanInput(CHALLAN, { now: NOW });
+  assert.equal(bare.items[0].challanQty, undefined);
+  assert.equal(shortQty(bare.items[0]), 0);
+
+  // Mongoose strict mode drops what is not declared.
+  assert.match(read("../models/challanModel.js"), /challanQty: \{ type: Number \}/);
+});
+
+test("the screen shows it and does not let it be typed", () => {
+  // It is the SUPPLIER'S figure. A receipt whose promise can be edited to
+  // match what arrived proves nothing at all.
+  const screen = read("../components/billing/BillingScreen.jsx");
+  assert.match(screen, /<th className='text-right'>Challan Qty<\/th>/);
+  assert.match(screen, /\{items\.challanQty \?\? '—'\}/);
+  assert.match(screen, /shortQty\(items\) > 0/, "a short delivery is not flagged");
+  // Not an input anywhere on that row.
+  const cell = screen.slice(screen.indexOf("items.challanQty"), screen.indexOf("items.challanQty") + 500);
+  assert.doesNotMatch(cell, /<input/, "the challan quantity is editable");
 });
 
 console.log(`\n  ${passed} checks passed\n`);
