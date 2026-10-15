@@ -111,8 +111,14 @@ test("the same field name means the same master on every screen", () => {
   assert.equal(masterKindFor("state"), "state");
   assert.equal(masterKindFor("stateOfSupply"), "state");
   assert.equal(masterKindFor("stateCode"), "state");
+  // TWO group masters, as Sigfa's menu has them. `group` and
+  // `customerGroup` file PARTIES -- and carry the reserved Cash and Bank
+  // names an invoice settles into. `itemGroup` files GOODS and carries a
+  // tree. They were the same kind until lib/itemGroups.mjs existed, which is
+  // how "Sundry Debtors" came to be offered as a category of goods.
   assert.equal(masterKindFor("group"), "group");
-  assert.equal(masterKindFor("itemGroup"), "group");
+  assert.equal(masterKindFor("customerGroup"), "group");
+  assert.equal(masterKindFor("itemGroup"), "itemGroup");
   assert.equal(masterKindFor("unit"), "unit");
   // A field with nothing behind it answers no, rather than guessing.
   assert.equal(masterKindFor("freight"), null);
@@ -462,7 +468,9 @@ test("the item and party masters tag the fields that have masters", () => {
   // Its HSN box is the case the brief named: "item master has hsn so there it
   // should work for that too".
   assert.match(item, /data-master-field="hsncode"/);
-  assert.match(item, /masterField="itemGroup"/);
+  // A picker now, fed by the item group master, so it carries the attribute
+  // directly rather than through InputField's `masterField` prop.
+  assert.match(item, /data-master-field="itemGroup"/);
   const party = read("../app/customeradd/page.js");
   assert.match(party, /data-master-field="customerGroup"/);
   assert.match(party, /data-master-field="stateName"/);

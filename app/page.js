@@ -60,6 +60,7 @@ import {
 } from '../components/ui/popover';
 import HsnMaster from '@/components/HsnMaster';
 import CustomerGroupMaster from '@/components/CustomerGroupMaster';
+import ItemGroupMaster from '@/components/ItemGroupMaster';
 import StateMaster from '@/components/StateMaster';
 import SeriesMaster from '@/components/SeriesMaster';
 import PriceListMaster from '@/components/PriceListMaster';
@@ -117,6 +118,11 @@ const Page = () => {
   const [selectedHsn, setSelectedHsn] = useState(null);
   const [groups, setGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
+  // The ITEM groups -- Sigfa's Item Group, a separate master from the party
+  // groups above. lib/itemGroups.mjs records why they are two lists.
+  const [itemGroups, setItemGroups] = useState([]);
+  const [selectedItemGroup, setSelectedItemGroup] = useState(null);
+  const [showItemGroupMaster, setShowItemGroupMaster] = useState(false);
   const [states, setStates] = useState([]);
   // The series master -- Sigfa's SubKey, which it keeps under Setup.
   const [series, setSeries] = useState([]);
@@ -178,6 +184,7 @@ const Page = () => {
           vouchers,
           lists,
           groupList,
+          itemGroupList,
           stateList,
           seriesList,
         ] = await Promise.all([
@@ -188,6 +195,7 @@ const Page = () => {
             loadJson('/api/get-voucher', (d) => d.voucher),
             loadJson('/api/get-price-list', (d) => d.priceList),
             loadJson('/api/get-group', (d) => d.group),
+            loadJson('/api/get-item-group', (d) => d.itemGroup),
             loadJson('/api/get-state', (d) => d.state),
             loadJson('/api/get-series', (d) => d.series),
           ]);
@@ -209,6 +217,8 @@ const Page = () => {
         setHsn(hsnCodes.map(hs => ({ ...hs, id: hs._id })));
 
         setGroups(groupList.map(g => ({ ...g, id: g._id })));
+
+        setItemGroups(itemGroupList.map(g => ({ ...g, id: g._id })));
 
         setStates(stateList.map(s => ({ ...s, id: s._id })));
 
@@ -398,6 +408,14 @@ const Page = () => {
           }
           break;
         }
+        case 'ItemGroup': {
+          const selected = itemGroups.find(g => g.id === newValue);
+          if (selected) {
+            setSelectedItemGroup(selected);
+            setShowItemGroupMaster(true);
+          }
+          break;
+        }
         case 'PriceList': {
           const selected = priceLists.find(pl => pl.id === newValue);
           if (selected) {
@@ -447,6 +465,11 @@ const Page = () => {
         break;
       case 'CustomerGroup':
         endpoint = `/api/delete-group?id=${currentValue}`;
+        break;
+      // Refused while items are in it, or while another group sits under it:
+      // both hold the group by NAME, so deleting it would orphan them.
+      case 'ItemGroup':
+        endpoint = `/api/delete-item-group?id=${currentValue}`;
         break;
       case 'State':
         endpoint = `/api/delete-state?id=${currentValue}`;
@@ -526,6 +549,7 @@ const Page = () => {
       case 'Item': return item;
       case 'HSN': return hsn;
       case 'CustomerGroup': return groups;
+      case 'ItemGroup': return itemGroups;
       case 'State': return states;
       case 'Series': return series;
       case 'PriceList': return priceLists;
@@ -545,6 +569,7 @@ const Page = () => {
     sectionName === 'Customer' ||
     sectionName === 'Item' ||
     sectionName === 'CustomerGroup' ||
+    sectionName === 'ItemGroup' ||
     sectionName === 'State' ||
     sectionName === 'PriceList' ||
     sectionName === 'Bank' ||
@@ -1136,6 +1161,20 @@ const Page = () => {
                 setShowGroupMaster(true);
               },
             })}
+            {/* Sigfa's Item Group: the shelves goods sit on, as a tree. NOT
+                the customer groups above -- that list files parties and
+                carries the reserved Cash and Bank names an invoice settles
+                into. They were one list until this master existed. */}
+            {renderModuleRow({
+              section: "ItemGroup",
+              label: "Item Groups",
+              icon: Boxes,
+              count: itemGroups.length,
+              onCreate: () => {
+                setSelectedItemGroup(null);
+                setShowItemGroupMaster(true);
+              },
+            })}
             {renderModuleRow({
               section: "State",
               label: "States",
@@ -1509,6 +1548,18 @@ const Page = () => {
             if (saved === true) window.location.reload();
           }}
           selected={selectedGroup}
+        />
+      )}
+
+      {showItemGroupMaster && (
+        <ItemGroupMaster
+          open={showItemGroupMaster}
+          onClose={(saved) => {
+            setShowItemGroupMaster(false);
+            setSelectedItemGroup(null);
+            if (saved === true) window.location.reload();
+          }}
+          selected={selectedItemGroup}
         />
       )}
 

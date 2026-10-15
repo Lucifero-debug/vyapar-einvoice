@@ -35,7 +35,6 @@ import { billingType, canBillFromOrder } from '@/lib/billingTypes.mjs';
 import {
     defaultSeries,
     docTypeForBilling,
-    formatDocNo,
     normalizeSeriesCode,
     seriesFor,
 } from '@/lib/series.mjs';
@@ -153,6 +152,10 @@ const [noOfPack, setNoOfPack] = useState(0);
       const [showQuantityPack, setShowQuantityPack] = useState(false);
   const [descriptionText, setDescriptionText] = useState('');
     const [invoiceNo, setInvoiceNo] = useState(4)
+    // The number the CUSTOMER sees -- "26-27/1". Composed by the server from
+    // the series' own running count, never here: lib/series.mjs says why a
+    // bill carries two numbers and why only this one restarts per series.
+    const [voucherNo, setVoucherNo] = useState('')
     // Today in India: the UTC date is yesterday until 05:30 IST. lib/istDate.mjs.
     const [date, setDate] = useState(() => istToday())
     const [customer, setCustomer] = useState([])
@@ -229,6 +232,9 @@ useEffect(() => {
   return () => {
     cancelled = true;
   };
+  // The SERIES is not a dependency here, and this effect is not where the
+  // number follows it -- the one below is, placed after the series has been
+  // worked out. This one only fills the box before any series is known.
 }, [isValueReady, value]);
 
 
@@ -341,6 +347,9 @@ useEffect(() => {
                 // are. A bill saved before the master existed carries no
                 // series at all and simply comes back on "None".
                 setSeries(normalizeSeriesCode(data.series));
+                // What this bill was ISSUED as, not what the series would
+                // compose today -- the customer is holding this one.
+                setVoucherNo(data.voucherNo || '');
                 setMriNo(data.mriNo || null);
                 setMri({
                     on: Boolean(data.mriNo),
@@ -823,12 +832,55 @@ const addPartyTax = () => {
         chosenSeries && !offeredSeries.some((s) => normalizeSeriesCode(s.code) === chosenSeries)
             ? [...offeredSeries, { code: chosenSeries, name: '' }]
             : offeredSeries;
-    // The chosen series' own row, for what the number will print as. Sigfa
-    // composes its VOUCHER from the series initial and Fill Left Space With
-    // Zero, and this is the same composition the server freezes onto the bill
-    // when it is saved (lib/series.mjs).
-    const seriesRow = offeredSeries.find((s) => normalizeSeriesCode(s.code) === chosenSeries);
-    const printsAs = seriesRow ? formatDocNo(invoiceNo, seriesRow) : '';
+    // The composed number is NOT worked out here. It used to be -- the screen
+    // found the chosen series' row and ran `formatDocNo` over the number it
+    // happened to be holding -- which could only ever label the firm-wide
+    // number, never the series' own count. That count is in the counter
+    // collection, so it is asked for below and composed by the server, by the
+    // same code that freezes it onto the bill when it is saved.
+
+    /**
+     * The number this bill will take, asked again whenever the series or the
+     * date changes.
+     *
+     * THIS IS WHY PICKING A SERIES CHANGES THE NUMBER. Each series counts on
+     * its own and starts again each financial year, so TAX's next number is
+     * not RETAIL's and April's is not March's -- the screen cannot work any
+     * of that out from what it already has, because the count lives in the
+     * counter collection with every other till's bills in it.
+     *
+     * A PEEK, never a reservation: opening the form and walking away must not
+     * burn a number and leave a hole in a book GST requires to be
+     * consecutive. The number is really claimed in save-invoice, inside the
+     * transaction, which is also why what comes back here can be a moment out
+     * of date and that is fine.
+     *
+     * Not while EDITING (`value`): a bill already in the book keeps the
+     * number it was issued with, and that number is loaded with the rest of
+     * it below.
+     */
+    useEffect(() => {
+        if (value) return;
+
+        let cancelled = false;
+        const query = new URLSearchParams({ key: config.key, date });
+        if (chosenSeries) query.set('series', chosenSeries);
+
+        fetch(`/api/next-invoice-no?${query.toString()}`)
+            .then((response) => response.json())
+            .then((data) => {
+                if (cancelled) return;
+                if (data.invoiceNo) setInvoiceNo(data.invoiceNo);
+                // "" when there is no series, and the box then shows the
+                // plain number as it did before any of this existed.
+                setVoucherNo(data.voucherNo || '');
+            })
+            .catch((err) => console.error('Failed to fetch invoice number:', err));
+
+        return () => {
+            cancelled = true;
+        };
+    }, [value, chosenSeries, config.key, date]);
 
     // The default, on a BLANK bill only. Never over one being edited -- that
     // would relabel a document already in the book -- and never over a choice
@@ -1588,21 +1640,37 @@ const handleDispatchSave = () => {
                             ))}
                         </select>
                         <p className='field-hint mt-1'>
-                            {printsAs
-                                ? `Prints as ${printsAs}`
-                                : seriesChoices.length === 0
-                                  ? 'Alt+A adds one'
-                                  : ''}
+                            {seriesChoices.length === 0 ? 'Alt+A adds one' : ''}
                         </p>
                     </div>
-                    <div className='field w-40'>
+                    <div className='field w-44'>
                         <label className='field-label mb-1'>Invoice No</label>
-                        <input 
-                            type='number' 
-                            className='field-input' 
-                            value={invoiceNo} 
-                            onChange={(e) => setInvoiceNo(e.target.value)} 
-                        />
+                        {chosenSeries ? (
+                            // NOT a box to type in. Within a series the
+                            // numbering has to be consecutive, so the number
+                            // is the series' to give -- settled by the server
+                            // when the bill is saved, and shown here so it can
+                            // be read before that. Typing over it would only
+                            // be ignored, which is worse than not offering.
+                            <input
+                                type='text'
+                                className='field-input'
+                                value={voucherNo}
+                                readOnly
+                            />
+                        ) : (
+                            // No series, no book to be consecutive within:
+                            // the firm's own number, typable as it always was.
+                            <input
+                                type='number'
+                                className='field-input'
+                                value={invoiceNo}
+                                onChange={(e) => setInvoiceNo(e.target.value)}
+                            />
+                        )}
+                        <p className='field-hint mt-1'>
+                            {chosenSeries ? `Numbered by series ${chosenSeries}` : ''}
+                        </p>
                     </div>
                     <div className='field w-48'>
                         <label className='field-label mb-1'>Date</label>

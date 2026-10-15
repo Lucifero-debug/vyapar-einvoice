@@ -105,6 +105,28 @@ export const MASTER_FORMS = {
       { name: 'note', label: 'Note', type: 'text' },
     ],
   },
+  // Sigfa's Item Group, which is NOT the group above: that one files
+  // parties, this one files goods. lib/itemGroups.mjs says why they are two.
+  //
+  // Created as a MAIN group here, and that is why the box is not offered.
+  // Where a new group sits in the tree is a decision with a picker and a loop
+  // check behind it (components/ItemGroupMaster.jsx), and Alt+A exists to
+  // keep somebody in the item they are half way through typing. Moving it
+  // under another group is one visit to the master screen, later.
+  itemGroup: {
+    title: 'New item group',
+    endpoint: '/api/item-group-add',
+    fixed: { mainGroup: true },
+    fields: [
+      { name: 'name', label: 'Group name', type: 'text', required: true, autoFocus: true },
+      {
+        name: 'remark',
+        label: 'Remark',
+        type: 'text',
+        hint: 'Added as a main group — put it under another on the master screen',
+      },
+    ],
+  },
   state: {
     title: 'New state',
     endpoint: '/api/state-add',
@@ -226,9 +248,13 @@ export default function QuickMaster({ kind, mode = 'create', record, prefill, on
       // record with the edits over it. See the header -- a partial alter body
       // resets `uqc` and `isService`.
       const endpoint = altering ? masterSpec(kind)?.alterEndpoint : spec.endpoint;
+      // `fixed` is a value this dialog always sends and never shows -- the
+      // item group's `mainGroup`, which needs a tree picker this form has no
+      // room for. Under what is filled in, so a field could override it if
+      // one ever named the same key.
       const body = altering
         ? alterPayload(kind, record, filledOnly(values, spec.fields))
-        : filledOnly(values, spec.fields);
+        : { ...(spec.fixed || {}), ...filledOnly(values, spec.fields) };
 
       if (!endpoint || !body) {
         setError('That record cannot be altered from here.');

@@ -73,23 +73,51 @@ const partyTaxSchema = new mongoose.Schema({
 
 const invoiceSchema = new mongoose.Schema(
   {
+    // === The firm's own sequence: the KEY, never the customer's number ===
+    //
+    // Unbroken across every series and every year, unique per firm, and what
+    // every index, report, link and join in this app uses to find a bill --
+    // `/invoice?invoiceNo=`, delete-invoice, the ledger references, the
+    // against-invoice fields below. It is not shown on the bill.
+    //
+    // The customer's number is `voucherNo`, built from the three fields that
+    // follow. Keeping the two apart is what let the series start counting on
+    // its own without renumbering a bill already issued or breaking a link
+    // to one -- see NUMBERING in lib/series.mjs.
     invoiceNo: { type: Number, required: true },
+
     // === The series this bill was raised under (Sigfa's Series Master) ===
     //
-    // A LABEL, not part of the number. `invoiceNo` above is still this firm's
-    // own sequence with a unique index on it, and lib/series.mjs records why a
-    // series deliberately numbers nothing. Stored as the master's own
-    // upper-cased code so a bill and its series cannot differ by spelling.
+    // Stored as the master's own upper-cased code so a bill and its series
+    // cannot differ by spelling.
     //
     // Declared, or Mongoose strict mode drops it -- and a dropped series is a
     // bill that comes back with an empty Series box on every edit.
     series: { type: String, trim: true, default: "" },
 
+    // === The running number INSIDE that series, and the year it runs in ===
+    //
+    // Each series counts on its own, and starts again each financial year:
+    // TAX's first bill of 2026-27 and RETAIL's first bill of 2026-27 are both
+    // number 1. `finYear` is the calendar year the financial year STARTED in
+    // (2026 for 2026-27), taken from this bill's own date -- so a bill dated
+    // back into March is counted in the year it is dated, not today's.
+    //
+    // Together with `series` they are the counter's identity, and the unique
+    // index at the foot of this file is what stops two bills taking the same
+    // one: GST requires the numbering within a series to be consecutive.
+    //
+    // Both are absent on every bill raised before series numbering existed.
+    // Left undefined rather than defaulted to 0 or to this year: an invented
+    // number here would be a figure on a document that has already gone out.
+    seriesNo: { type: Number },
+    finYear: { type: Number },
+
     // === The number as the series writes it: Sigfa's `VOUCHER Text(16)` ===
     //
-    // "A0007" -- the series initial plus `invoiceNo` padded to the series'
-    // Fill Left Space With Zero. What PRINTS; `invoiceNo` above is still the
-    // numeric sequence and still what every index, report and join uses.
+    // "26-27/7" -- the financial year, a slash, and `seriesNo` padded to the
+    // series' Fill Left Space With Zero. What PRINTS, and what GST requires
+    // to be consecutive within its series.
     //
     // FROZEN HERE rather than composed at print time. lib/invoicePrefs.mjs
     // names "no invoice-number prefix" among the things that must never be a
@@ -335,6 +363,21 @@ invoiceSchema.index(
 // Unique per FIRM. Globally unique invoice numbers meant the second firm to
 // open could not write invoice 1.
 invoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });
+
+// The customer's number: one per series per financial year. This is the
+// index that holds GST's consecutive-numbering rule up -- two tills billing
+// on the same series at the same moment contend here and one of them loses,
+// rather than both printing 26-27/8.
+//
+// Partial, and on `seriesNo` being a number, for the reason the IRN index
+// below spells out: every bill raised before series numbering existed has no
+// seriesNo, and a plain unique index would read them all as null and collide
+// them with each other. The same applies to a bill raised on no series at
+// all, which is still allowed and still numbered by `invoiceNo` alone.
+invoiceSchema.index(
+  { companyId: 1, series: 1, finYear: 1, seriesNo: 1 },
+  { unique: true, partialFilterExpression: { seriesNo: { $type: "number" } } }
+);
 
 // One IRN can belong to exactly one invoice. A retry that reported the same
 // bill twice would otherwise leave two rows claiming the same government

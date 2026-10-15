@@ -1,5 +1,5 @@
 'use client'
-import React, { useEffect, useState, Suspense } from 'react'
+import React, { useCallback, useEffect, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { formatQuantity, stockOf } from '@/lib/itemStock.mjs'
 import { Button } from '../../components/ui/button'
@@ -24,6 +24,7 @@ import MasterShortcuts from '@/components/masters/MasterShortcuts'
 import { Notice, useNotice } from '@/components/ui/notice';
 import { NETWORK_ERROR, readResponse } from '@/lib/apiResponse.mjs';
 import { levelProblem } from '@/lib/inventory.mjs';
+import { itemGroupOptions } from '@/lib/itemGroups.mjs';
 
 const PageContent = () => {
   const searchParams = useSearchParams();
@@ -60,6 +61,10 @@ const PageContent = () => {
   const [discount, setDiscount] = useState('')
   const [id, setId] = useState('')
   const [hsnList, setHsnList] = useState([])
+  // Sigfa's Item Group master. Its OWN list -- /api/get-group is the accounts
+  // groups, which this box used to read, so "Sundry Debtors" was offered as
+  // a category of goods. lib/itemGroups.mjs records the split.
+  const [groupList, setGroupList] = useState([])
   const [notice, notify] = useNotice()
   const [saving, setSaving] = useState(false)
 
@@ -76,6 +81,22 @@ const PageContent = () => {
     }
     fetchHsn();
   }, []);
+
+  // 🔄 Fetch the ITEM groups -- /api/get-item-group, not /api/get-group,
+  // which is the accounts groups a party belongs to.
+  const fetchGroups = useCallback(async () => {
+    try {
+      const res = await fetch('/api/get-item-group');
+      const data = await res.json();
+      setGroupList(data.itemGroup || []);
+    } catch (error) {
+      console.error('Failed to fetch item groups:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchGroups();
+  }, [fetchGroups]);
 
   // ✏️ If editing existing item
   useEffect(() => {
@@ -203,6 +224,19 @@ const PageContent = () => {
     }
   };
 
+  // The groups this box may offer, as a tree: a child indented under its
+  // parent rather than wherever the alphabet puts it. lib/itemGroups.mjs owns
+  // that ordering, so the master screen's picker and this one agree.
+  const groupOptions = itemGroupOptions(groupList)
+  // An item filed under a group the master no longer holds would otherwise
+  // show a BLANK -- and because onChange never fires for an option that is
+  // not there, it would look cleared while still being saved that way. Kept
+  // as an option of its own instead, the same as the Series box on a bill.
+  const groupChoices =
+    group && !groupOptions.some((o) => o.name.toLowerCase() === group.trim().toLowerCase())
+      ? [...groupOptions, { code: group, name: group, depth: 0, path: group }]
+      : groupOptions
+
   // What the chosen HSN says the unit is. The HSN master carries a GST Unit
   // beside the rate, so an item's unit is filled from there rather than
   // retyped per item -- which is how two items on one HSN ended up as "pcs"
@@ -220,9 +254,9 @@ const PageContent = () => {
           Group box here. The HSN master is already in memory for the
           dropdown, so Alt+M on it costs no request. */}
       <MasterShortcuts
-        lists={{ hsn: hsnList }}
+        lists={{ hsn: hsnList, itemGroup: groupList }}
         onChanged={({ kind }) => {
-          // A created or renamed HSN has to appear in the dropdown, or the
+          // A created or renamed record has to appear in its dropdown, or the
           // form goes on offering the old list.
           if (kind === 'hsn') {
             fetch('/api/get-hsn')
@@ -230,6 +264,7 @@ const PageContent = () => {
               .then((d) => setHsnList(d.hsn || []))
               .catch(() => {});
           }
+          if (kind === 'itemGroup') fetchGroups();
         }}
       />
       <header className="page-header">
@@ -269,7 +304,31 @@ const PageContent = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   <InputField label="Name" value={name} onChange={setName} />
                   <InputField label="Short Name" value={short} onChange={setShort} />
-                  <InputField label="Group" value={group} onChange={setGroup} masterField="itemGroup" />
+                  <div className="space-y-1">
+                    <Label htmlFor="group">Group</Label>
+                    <select
+                      id="group"
+                      className="field-select"
+                      /* Sigfa's Alt+A / Alt+M / Alt+D act on whatever master
+                         is behind the focused field. lib/masterActions.mjs
+                         maps this name to the ITEM group master. */
+                      data-master-field="itemGroup"
+                      value={group}
+                      onChange={(e) => setGroup(e.target.value)}
+                    >
+                      <option value="">Ungrouped</option>
+                      {groupChoices.map((option) => (
+                        <option key={option.code} value={option.code}>
+                          {`${'  '.repeat(option.depth)}${option.name}`}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground">
+                      {groupChoices.length === 0
+                        ? 'Alt+A adds one'
+                        : 'Set up under Masters › Item Group'}
+                    </p>
+                  </div>
 
                   <div className="space-y-1">
                     <Label htmlFor="hsn">HSN Code</Label>

@@ -36,6 +36,8 @@ import {
   docTypeForStockKind,
   docTypeLabel,
   formatDocNo,
+  fyStartYear,
+  fyTag,
   isSeriesDocType,
   normalizeDocType,
   normalizeSeries,
@@ -393,17 +395,44 @@ test("nothing passed is an empty list, not a crash", () => {
   assert.deepEqual(seriesOptions(null, null, "PRODUCTION"), []);
 });
 
-test("the two number settings, on a real number", () => {
-  // Display only, and shown on the master screen so they mean something while
-  // they are entered. It must never choose or store a number.
-  assert.equal(formatDocNo(7, { code: "A", fillLeftSpaceWithZero: 4 }), "A0007");
-  assert.equal(formatDocNo(7, { code: "A", fillLeftSpaceWithZero: 0 }), "A7");
-  assert.equal(formatDocNo(7, { code: "", fillLeftSpaceWithZero: 3 }), "007");
-  assert.equal(formatDocNo(12345, { code: "A", fillLeftSpaceWithZero: 3 }), "A12345", "never truncated");
-  assert.equal(formatDocNo(7, {}), "7");
-  assert.equal(formatDocNo("", {}), "", "nothing to format");
-  assert.equal(formatDocNo(undefined, {}), "");
-  assert.equal(formatDocNo("abc", {}), "");
+test("the number is the financial year, a slash, and the running number", () => {
+  // Sigfa shows `Series: TAX` beside `Invoice No. 26-27/1`. The code is NOT
+  // in the number; `fillLeftSpaceWithZero` pads only the running part.
+  const d = "2026-10-15";
+  assert.equal(formatDocNo(1, { code: "TAX" }, d), "26-27/1");
+  assert.equal(formatDocNo(7, { code: "A", fillLeftSpaceWithZero: 4 }, d), "26-27/0007");
+  assert.equal(formatDocNo(7, { code: "A", fillLeftSpaceWithZero: 0 }, d), "26-27/7");
+  assert.equal(
+    formatDocNo(12345, { code: "A", fillLeftSpaceWithZero: 3 }, d),
+    "26-27/12345",
+    "never truncated"
+  );
+  // The code never reaches the number, whatever it is.
+  assert.doesNotMatch(formatDocNo(1, { code: "TAX" }, d), /TAX/);
+
+  // No date, no year to print -- the Series Master's preview, before any
+  // document exists to be dated.
+  assert.equal(formatDocNo(7, { code: "A", fillLeftSpaceWithZero: 4 }), "0007");
+
+  assert.equal(formatDocNo("", {}, d), "", "nothing to format");
+  assert.equal(formatDocNo(undefined, {}, d), "");
+  assert.equal(formatDocNo("abc", {}, d), "");
+});
+
+test("the year comes off the document's date, and April starts it", () => {
+  assert.equal(fyStartYear("2026-10-15"), 2026);
+  assert.equal(fyStartYear("2026-04-01"), 2026, "the first day of the year");
+  assert.equal(fyStartYear("2026-03-31"), 2025, "the last day of the one before");
+  assert.equal(fyStartYear("2027-01-05"), 2026, "January belongs to the April before it");
+  assert.equal(fyStartYear("nonsense"), null);
+  assert.equal(fyStartYear(""), null);
+  assert.equal(fyStartYear(null), null);
+  assert.equal(fyStartYear(undefined), null);
+
+  assert.equal(fyTag(2026), "26-27");
+  assert.equal(fyTag(1999), "99-00", "across the century");
+  assert.equal(fyTag(null), "");
+  assert.equal(fyTag("abc"), "");
 });
 
 test("how many documents carry a series, counted as they were written", () => {
@@ -415,7 +444,7 @@ test("how many documents carry a series, counted as they were written", () => {
   assert.equal(seriesInUse("A"), 0);
 });
 
-console.log("\n--- the module stays pure, and still numbers nothing ---");
+console.log("\n--- the module stays pure, and composes rather than issues ---");
 
 test("no imports at all, so nothing it describes can import it back", () => {
   const src = read("../lib/series.mjs");
@@ -434,17 +463,26 @@ test("it records what the screenshot shows, and does not invent the rest", () =>
   assert.match(src, /NO next-number or last-number box/);
 });
 
-test("the series does NOT take over numbering, and says why", () => {
+test("the series numbers its own book, and the firm's sequence still does not move", () => {
   const src = read("../lib/series.mjs");
+  // The constraint that governed the old decision governs this one too.
   assert.match(src, /consecutive/);
-  assert.doesNotMatch(code("../lib/series.mjs"), /Counter|counterFor|getNext/);
-  // And the numbering modules are untouched: still one counter per document.
-  for (const path of ["../lib/getNextProductionNo.js", "../lib/getNextInvoiceNo.js"]) {
-    assert.doesNotMatch(code(path), /\bseries\b/i, `${path} must not have grown a series`);
-  }
-  // No field on the record is a number to issue.
+
+  // This module COMPOSES the number and never issues one: a counter has to
+  // sit where a transaction can roll it back, which is lib/getNextInvoiceNo.js.
+  assert.doesNotMatch(code("../lib/series.mjs"), /Counter|counterFor/);
+
+  // The stock slips are untouched -- one counter per kind, as before.
+  assert.doesNotMatch(
+    code("../lib/getNextProductionNo.js"),
+    /\bseries\b/i,
+    "the slips did not grow a series"
+  );
+
+  // No field on the series record is a number to issue. The count lives in
+  // the counter collection, where two people billing at once contend for it.
   for (const field of ["nextNo", "lastNo", "currentNo", "startNo"]) {
-    assert.ok(!SERIES_FIELDS.includes(field), `${field} would make this a counter`);
+    assert.ok(!SERIES_FIELDS.includes(field), `${field} would make the master a counter`);
   }
 });
 
@@ -641,13 +679,45 @@ test("the bill stores it, and an edit does not blank it", () => {
   assert.match(code("../lib/invoiceInput.mjs"), /series: normalizeSeriesCode\(/);
 });
 
-test("the series does not become part of the invoice number", () => {
-  // The decision this whole feature turns on. `invoiceNo` is still one
-  // sequence per firm, reserved by the counter, with the series beside it.
+test("the series numbers its own book, and leaves the firm's sequence alone", () => {
+  // The decision this whole feature turns on. A bill takes TWO numbers: the
+  // firm's `invoiceNo`, unchanged and still the key, and `seriesNo`, the
+  // series' own count. Keeping them apart is what let the series start
+  // numbering without renumbering a bill already issued.
   const save = code("../app/api/save-invoice/route.js");
   assert.match(save, /invoiceNo,/);
-  assert.doesNotMatch(save, /series.*invoiceNo|invoiceNo.*\+.*series/);
-  assert.doesNotMatch(code("../lib/getNextInvoiceNo.js"), /series/i);
+  assert.match(save, /getNextSeriesNo\(/, "the series number is not reserved");
+  assert.match(save, /seriesNo,/);
+  // The series never becomes part of `invoiceNo` itself.
+  assert.doesNotMatch(save, /invoiceNo.*\+.*series/);
+
+  const counters = code("../lib/getNextInvoiceNo.js");
+  // Two counters, and the series' one is keyed by series AND year, or the
+  // number would not restart in April.
+  assert.match(counters, /name: 'invoiceNo'/, "the firm's own counter moved");
+  assert.match(counters, /seriesCounterName/);
+  assert.match(counters, /finYear/);
+  // Both reserve inside the caller's session, so a rolled-back save gives
+  // the number back instead of leaving a hole in the book.
+  assert.match(counters, /session = null/);
+});
+
+test("the bill carries the year it was numbered in, and the index holds it", () => {
+  const model = read("../models/invoiceModel.js");
+  assert.match(model, /seriesNo: \{ type: Number \}/, "strict mode would drop it");
+  assert.match(model, /finYear: \{ type: Number \}/);
+  // One number per series per year, enforced where two tills contend.
+  assert.match(
+    model,
+    /index\(\s*\{ companyId: 1, series: 1, finYear: 1, seriesNo: 1 \}/,
+    "nothing stops two bills taking the same series number"
+  );
+  // Partial: every bill raised before this existed has no seriesNo, and a
+  // plain unique index would read them all as null and collide them.
+  const block = model.slice(model.indexOf("companyId: 1, series: 1"));
+  assert.match(block.slice(0, 300), /partialFilterExpression: \{ seriesNo: \{ \$type: "number" \} \}/);
+  // And the firm's own sequence is still unique and still there.
+  assert.match(model, /index\(\{ companyId: 1, invoiceNo: 1 \}, \{ unique: true \}\)/);
 });
 
 console.log("\n--- the screens ---");
@@ -784,12 +854,16 @@ test("Lock Voucher is read from the series, and off by default", () => {
   assert.equal(isSeriesLocked(row("A", { lockVoucher: "false" })), false);
 });
 
-test("the printed number is the series' composition, or nothing", () => {
-  assert.equal(voucherNoFor(7, row("A", { fillLeftSpaceWithZero: 4 })), "A0007");
-  assert.equal(voucherNoFor(7, row("A")), "A7");
+test("the composed number needs a series, and carries the bill's own year", () => {
+  const d = "2026-10-15";
+  assert.equal(voucherNoFor(7, row("A", { fillLeftSpaceWithZero: 4 }), d), "26-27/0007");
+  assert.equal(voucherNoFor(1, row("TAX"), d), "26-27/1");
+  // A bill DATED into the year just gone is numbered into that year, not
+  // into the one it happens to be typed in.
+  assert.equal(voucherNoFor(1, row("TAX"), "2026-03-31"), "25-26/1");
   // No series means no composed number, and the bill shows its plain one.
-  assert.equal(voucherNoFor(7, null), "");
-  assert.equal(voucherNoFor(7, undefined), "");
+  assert.equal(voucherNoFor(7, null, d), "");
+  assert.equal(voucherNoFor(7, undefined, d), "");
 });
 
 test("the bill stores the composed number and the snapshot", () => {
@@ -817,10 +891,18 @@ test("both save paths freeze the series onto the bill", () => {
   }
 });
 
-test("the composed number is recomposed when an edit renumbers the bill", () => {
-  // sale-alter may change invoiceNo. Freezing the number from the OLD one
-  // would leave the printed number and the numeric one disagreeing.
-  assert.match(code("../app/api/sale-alter/route.js"), /voucherNoFor\(nextNo,/);
+test("an edit keeps the number it was issued with, unless it changes book", () => {
+  const src = code("../app/api/sale-alter/route.js");
+  // The customer is holding this number, so an edit must not move it.
+  assert.match(src, /sameBook/);
+  assert.match(src, /previousInvoice\.seriesNo/);
+  // But a bill moved to another series -- or dated into another financial
+  // year -- is in a different book and takes a number in that one.
+  assert.match(src, /getNextSeriesNo\(/);
+  assert.match(src, /fyStartYear\(invoiceData\.date\)/);
+  // Cleared to null, not left undefined: Mongoose drops an undefined from an
+  // update, so the bill would keep the number of a book it has left.
+  assert.match(src, /finYear: seriesNo === null \? null : finYear/);
 });
 
 test("a locked series refuses an alter, by the bill's OWN series", () => {
@@ -856,9 +938,29 @@ test("the Series box is on every bill, whether or not a series exists yet", () =
   const src = read("../components/billing/BillingScreen.jsx");
   assert.doesNotMatch(src, /seriesChoices\.length > 0 &&/, "the box is hidden again");
   assert.match(src, /data-master-field='series'/);
-  // And it says what the number will print as, which is the whole point of
-  // picking one.
-  assert.match(src, /Prints as \$\{printsAs\}/);
+});
+
+test("picking a series asks again what the number will be", () => {
+  // The bug: the number was fetched once when the form opened and the series
+  // only changed a grey hint under the box, so switching series appeared to
+  // do nothing at all. Each series counts on its own, and the screen cannot
+  // work that out -- the count is in the counter collection.
+  const src = read("../components/billing/BillingScreen.jsx");
+  assert.match(src, /\/api\/next-invoice-no\?\$\{query\.toString\(\)\}/);
+  assert.match(src, /query\.set\('series', chosenSeries\)/);
+  // The date goes too, because the number restarts each financial year.
+  assert.match(src, /new URLSearchParams\(\{ key: config\.key, date \}\)/);
+  // And both are dependencies, or the refetch never happens.
+  assert.match(src, /\}, \[value, chosenSeries, config\.key, date\]\)/);
+
+  // The box shows the composed number and does not invite typing over it:
+  // within a series the numbering has to be consecutive, so it is the
+  // series' to give.
+  assert.match(src, /value=\{voucherNo\}\s*\n\s*readOnly/);
+  // The screen no longer composes it -- the server does, with the same code
+  // that freezes it onto the bill. Comment-stripped, because the comment
+  // where the old composition stood names it to say it has gone.
+  assert.doesNotMatch(code("../components/billing/BillingScreen.jsx"), /formatDocNo/);
 });
 
 console.log(`\n  ${passed} checks passed\n`);

@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import Invoice from "@/models/invoiceModel";
-import { getNextInvoiceNo, raiseInvoiceCounter } from "@/lib/getNextInvoiceNo";
+import {
+  getNextInvoiceNo,
+  getNextSeriesNo,
+  raiseInvoiceCounter,
+} from "@/lib/getNextInvoiceNo";
 import Customer from "../../../models/custModel";
 import Item from "../../../models/itemModel";
 import State from "../../../models/stateModel";
@@ -19,6 +23,7 @@ import Series from "@/models/seriesModel";
 import {
   docTypeForBill,
   effectsStock,
+  fyStartYear,
   seriesSnapshot,
   voucherNoFor,
 } from "@/lib/series.mjs";
@@ -302,6 +307,27 @@ async function handlePOST(req, auth) {
       // far, so nothing changes until somebody turns it off deliberately.
       const movesStock = effectsStock(seriesRow);
 
+      // === The number the CUSTOMER sees ===
+      //
+      // Reserved from the series' own counter, inside the same transaction as
+      // everything else here, so a save that rolls back releases the number
+      // rather than leaving a hole in a book GST requires to be consecutive.
+      //
+      // Never taken from the form. `invoiceNo` above still honours a number
+      // typed by hand, because that sequence is the firm's own business; this
+      // one is not, so the billing screen shows it read-only and the figure
+      // comes from here. The year is the BILL'S, so one dated back into March
+      // is counted in the year it is dated.
+      //
+      // Allocated even when the master no longer holds the series, for the
+      // same reason the peek counts the bills rather than the master row: a
+      // series switched off mid-year must not start again at 1 if it is
+      // picked again.
+      const finYear = fyStartYear(input.date);
+      const seriesNo = input.series
+        ? await getNextSeriesNo({ series: input.series, finYear }, session)
+        : null;
+
       // Posting the net `balanceDue` is what made a fully-paid sale vanish:
       // the delta came out as zero and the money received was never booked.
       const deltas = invoicePostingDeltas({
@@ -332,12 +358,26 @@ async function handlePOST(req, auth) {
         [
           {
             invoiceNo,
-            // The series is a label on the bill. It does not take part in
-            // choosing `invoiceNo` above -- see lib/series.mjs.
             series: input.series,
-            // What PRINTS: the initial and the zero-fill off the series,
-            // settled now and never recomputed.
-            voucherNo: voucherNoFor(invoiceNo, seriesRow),
+            // The series' own running number and the year it runs in. Null on
+            // a bill with no series, which keeps it out of the partial unique
+            // index -- models/invoiceModel.js. Written as two plain fields
+            // rather than spread in: nothing is ever spread into this call,
+            // which is what stops a request field reaching the document.
+            seriesNo,
+            finYear: seriesNo === null ? null : finYear,
+            // What PRINTS: the financial year, a slash and `seriesNo` padded
+            // by the series. Settled now and never recomputed.
+            //
+            // A series the master no longer holds still prints its number,
+            // just without the padding -- that setting went with the row.
+            // Composing from nothing would leave a numbered bill printing a
+            // blank where its number goes.
+            voucherNo: voucherNoFor(
+              seriesNo,
+              input.series ? seriesRow || { code: input.series } : null,
+              input.date
+            ),
             seriesSnapshot: seriesProfile,
             date: input.date,
             type: input.type,

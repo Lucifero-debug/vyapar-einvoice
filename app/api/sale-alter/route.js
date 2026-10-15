@@ -16,10 +16,13 @@ import {
 } from "@/lib/invoicePosting.mjs";
 import { writeItemLedgerRows } from "@/lib/itemLedger.mjs";
 import Series from "@/models/seriesModel";
+import { getNextSeriesNo } from "@/lib/getNextInvoiceNo";
 import {
   docTypeForBill,
   effectsStock,
   isSeriesLocked,
+  fyStartYear,
+  normalizeSeriesCode,
   seriesSnapshot,
   voucherNoFor,
 } from "@/lib/series.mjs";
@@ -154,6 +157,29 @@ async function handlePOST(req, auth) {
           : null;
       const seriesProfile = seriesSnapshot(seriesRow);
       const movesStock = effectsStock(seriesRow);
+
+      // === The customer's number, across an edit ===
+      //
+      // KEPT while the bill stays in the same book. An edit must not renumber
+      // a bill the customer is already holding -- which is the whole reason
+      // this number is frozen on the row rather than composed at print time.
+      //
+      // A bill MOVED to another series, or dated into another financial year,
+      // is in a different book and takes a number in that one. The number it
+      // leaves behind is not handed to anything else: a gap is visible and
+      // explainable to an officer, two bills sharing a number is not.
+      const finYear = fyStartYear(invoiceData.date);
+      const sameBook =
+        normalizeSeriesCode(previousInvoice.series) ===
+          normalizeSeriesCode(invoiceData.series) &&
+        Number(previousInvoice.finYear) === finYear &&
+        Number.isFinite(Number(previousInvoice.seriesNo));
+
+      const seriesNo = !invoiceData.series
+        ? null
+        : sameBook
+          ? Number(previousInvoice.seriesNo)
+          : await getNextSeriesNo({ series: invoiceData.series, finYear }, session);
 
       // Renumbering onto an invoice that already exists would destroy it.
       if (nextNo !== lookupNo) {
@@ -327,10 +353,19 @@ async function handlePOST(req, auth) {
           // edit screen DOES reload the series, so leaving it out would blank
           // the label every time a bill was corrected.
           series: invoiceData.series,
-          // Recomposed against the number this edit settles on, because the
-          // bill may be renumbered here -- and the printed number has to go
-          // on matching the numeric one beside it.
-          voucherNo: voucherNoFor(nextNo, seriesRow),
+          // Null rather than left out when the series is cleared: Mongoose
+          // drops an undefined from an update, so the bill would keep the
+          // number of a book it is no longer in. Null is not a number, so it
+          // also falls out of the partial unique index.
+          seriesNo,
+          finYear: seriesNo === null ? null : finYear,
+          // Recomposed against the number this edit settles on -- the same
+          // one when the bill stayed put, a new one when it moved book.
+          voucherNo: voucherNoFor(
+            seriesNo,
+            invoiceData.series ? seriesRow || { code: invoiceData.series } : null,
+            invoiceData.date
+          ),
           seriesSnapshot: seriesProfile,
           date: invoiceData.date,
           customer: buyerBlock,
