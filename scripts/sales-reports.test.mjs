@@ -39,6 +39,7 @@ import {
   isSalesView,
   isBookGrain,
   isDocScope,
+  canSplitByParty,
   itemTotals,
   itemWise,
   netOf,
@@ -55,6 +56,8 @@ import {
   totalsOf,
   zoomInto,
 } from "../lib/salesReports.mjs";
+import { salesSheetKind } from "../lib/reportSheets.mjs";
+import { REPORT_QUERIES, parseReportQuery } from "../lib/reportQuery.mjs";
 import { istDayNumber } from "../lib/istDate.mjs";
 import { canAccessPath, permissionForPath } from "../lib/roles.mjs";
 
@@ -1014,7 +1017,11 @@ test("an empty period totals to zero rather than to nothing", () => {
   });
   assert.deepEqual(periodWise([], "month"), []);
   assert.deepEqual(partyTotals([]), { parties: 0, taxable: 0, gst: 0, total: 0, balanceDue: 0 });
-  assert.deepEqual(itemTotals([]), { items: 0, quantity: 0, taxable: 0, gst: 0, total: 0 });
+  // `parties` counts the names on a split sheet and is 0 on an unsplit one,
+  // so an empty sheet reads the same either way.
+  assert.deepEqual(itemTotals([]), {
+    items: 0, parties: 0, quantity: 0, taxable: 0, gst: 0, total: 0,
+  });
 });
 
 console.log("\n--- the sheets download what they show ---");
@@ -1115,9 +1122,12 @@ test("the page computes nothing and reaches the dashboard", () => {
 test("the party split reaches the rows, the columns and the filename", () => {
   const src = read("../app/api/sales-report/route.js");
   // Resolved ONCE in the route, so the rows, the columns and the filename
-  // cannot disagree about whether the sheet in hand is split.
+  // cannot disagree about whether the sheet in hand is split -- and from the
+  // SHARED rule, so the route and the screen that offers the toggle cannot
+  // disagree either. They did: the route named the book alone, and pressing
+  // the toggle on the item sheet set a parameter nothing acted on.
   assert.ok(
-    /const splitByParty = byParty && view === "book" && grain !== "document"/.test(src),
+    /const splitByParty = byParty && canSplitByParty\(view, grain\)/.test(src),
     "the route decides the split in more than one place"
   );
   assert.ok(/zoomInto\(documents, month, \{ byParty: splitByParty \}\)/.test(src));
@@ -1164,6 +1174,167 @@ test("the screen says what it does with returns", () => {
   assert.ok(/Returns are included and subtracted/i.test(page));
   // And what the two columns Sigfa splits into nine actually hold.
   assert.ok(/Net Amount is the bill before the overheads/i.test(page));
+});
+
+console.log("\n--- the party's name, on every sheet that can carry one ---");
+
+test("which sheets can be split, and which already name the party", () => {
+  // ONE answer, read by the screen that offers the toggle and the route that
+  // honours it. They used to decide separately and the route named the book
+  // alone, so pressing it on the item sheet set a parameter nothing acted on.
+  assert.equal(canSplitByParty("book", "month"), true);
+  assert.equal(canSplitByParty("book", "date"), true);
+  assert.equal(canSplitByParty("item", ""), true);
+  // Bill Wise is one row per document and already has a Party column.
+  assert.equal(canSplitByParty("book", "document"), false);
+  // Party Wise is one row per party. There is nothing to split.
+  assert.equal(canSplitByParty("party", ""), false);
+  assert.equal(canSplitByParty("nonsense", "month"), false);
+  assert.equal(canSplitByParty(), false);
+  // Every sheet either carries a party column of its own or can be split to
+  // get one -- which is the whole claim, so it is asserted rather than left
+  // to the reader to check against CSV_COLUMNS.
+  for (const [view, grain, sheet] of [
+    ["book", "document", "book"],
+    ["party", "", "party"],
+  ]) {
+    assert.ok(
+      CSV_COLUMNS[sheet].some((c) => c.key === "party"),
+      `${view}/${grain} neither splits nor names the party`
+    );
+  }
+});
+
+test("item wise, split, is one row per item per party", () => {
+  const invoices = [
+    invoice({ invoiceNo: 1, customer: { name: "Acme", gstin: "07AAA" } }),
+    invoice({ invoiceNo: 2, customer: { name: "Beta", gstin: "07BBB" } }),
+  ];
+  const plain = itemWise({ invoices, side: "Sale" });
+  const split = itemWise({ invoices, side: "Sale", byParty: true });
+
+  // One item, two parties: one row before, two after -- and the money is the
+  // same money, which is the invariant that matters.
+  assert.equal(plain.length, 1);
+  assert.equal(split.length, 2);
+  assert.deepEqual(split.map((r) => r.party).sort(), ["Acme", "Beta"]);
+  assert.equal(
+    split.reduce((t, r) => t + r.taxable, 0),
+    plain[0].taxable,
+    "splitting changed the figures"
+  );
+  // The GSTIN rides along, as it does on the party-wise book.
+  assert.equal(split.find((r) => r.party === "Acme").gstin, "07AAA");
+  // Unsplit rows carry no party at all, rather than an empty one.
+  assert.equal("party" in plain[0], false);
+});
+
+test("a bill with no party is filed under (not named), not dropped", () => {
+  const rows = itemWise({
+    invoices: [invoice({ invoiceNo: 1, customer: { name: "" } })],
+    side: "Sale",
+    byParty: true,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].party, NO_PARTY);
+});
+
+test("an item name holding the separator cannot merge two rows", () => {
+  // The same NUL the period sheet joins on, and the same reason: with a
+  // plain separator "A" + "B C" and "A B" + "C" would be one key.
+  const rows = itemWise({
+    invoices: [
+      invoice({ invoiceNo: 1, customer: { name: "B C" }, items: [line({ name: "A" })] }),
+      invoice({ invoiceNo: 2, customer: { name: "C" }, items: [line({ name: "A B" })] }),
+    ],
+    side: "Sale",
+    byParty: true,
+  });
+  assert.equal(rows.length, 2);
+});
+
+test("the item total counts items, not rows", () => {
+  // Split, one item appears once per party. Counting rows would report four
+  // items for a sheet holding two -- the mistake the period sheet's own
+  // count had to be fixed for.
+  const invoices = [
+    invoice({ invoiceNo: 1, customer: { name: "Acme" } }),
+    invoice({ invoiceNo: 2, customer: { name: "Beta" } }),
+  ];
+  const split = itemTotals(itemWise({ invoices, side: "Sale", byParty: true }));
+  assert.equal(split.items, 1, "one item, billed to two parties");
+  assert.equal(split.parties, 2);
+  // And the figures are unchanged by the split.
+  const plain = itemTotals(itemWise({ invoices, side: "Sale" }));
+  assert.equal(split.taxable, plain.taxable);
+  assert.equal(split.total, plain.total);
+  assert.equal(plain.parties, 0, "an unsplit sheet counts no parties");
+});
+
+test("the split item sheet downloads with the party on it", () => {
+  const columns = CSV_COLUMNS.itemParty;
+  assert.ok(columns, "there is no itemParty column set");
+  assert.deepEqual(
+    columns.map((c) => c.key).slice(0, 5),
+    ["item", "hsn", "unit", "party", "gstin"],
+    "the name qualifies the item, so it follows it"
+  );
+  // The figures are the item sheet's own, unchanged -- a split must not
+  // quietly add or drop a money column.
+  const words = new Set(["item", "hsn", "unit", "party", "gstin"]);
+  const figures = (set) => set.map((c) => c.key).filter((k) => !words.has(k));
+  assert.deepEqual(figures(CSV_COLUMNS.itemParty), figures(CSV_COLUMNS.item));
+});
+
+test("the workbook knows the split sheet from the plain one", () => {
+  assert.equal(salesSheetKind({ view: "item", byParty: true }), "itemParty");
+  assert.equal(salesSheetKind({ view: "item", byParty: false }), "item");
+  // Party Wise has nothing to split, whatever the flag says.
+  assert.equal(salesSheetKind({ view: "party", byParty: true }), "party");
+  assert.equal(salesSheetKind({ view: "book", grain: "document", byParty: true }), "book");
+});
+
+test("the route and the screen both defer to the one rule", () => {
+  const route = read("../app/api/sales-report/route.js");
+  assert.match(route, /canSplitByParty\(view, grain\)/, "the route decides for itself");
+  assert.match(route, /itemWise\(\{[^}]*byParty: splitByParty/s, "the item sheet ignores it");
+  const page = read("../app/sales-report/page.js");
+  assert.match(page, /canSplitByParty\(view, grain\)/, "the screen decides for itself");
+  // The toggle is no longer locked inside the book's own block.
+  assert.doesNotMatch(page, /byParty && view === 'book' && grain !== 'document'/);
+});
+
+test("the book opens with the party on it, and can be turned back off", () => {
+  // A book grouped by month is one row per month and names nobody. It opens
+  // split now; the toggle is what gets the plain period totals back.
+  assert.equal(REPORT_QUERIES.salesReport.byparty.default, true);
+  // The screen opens in the schema's state rather than its own copy of it.
+  const page = read("../app/sales-report/page.js");
+  assert.match(page, /REPORT_QUERIES\.salesReport\.byparty\.default/);
+  assert.doesNotMatch(page, /link\.byparty \?\? false/, "the screen keeps a second default");
+
+  // Turning it OFF has to survive being shared. A value equal to the default
+  // is left out of the URL, so with the default flipped it is the plain book
+  // that now carries `byparty=0` -- and that has to read back as false, not
+  // as absent-and-therefore-split.
+  const off = parseReportQuery(REPORT_QUERIES.salesReport, "byparty=0&from=2026-10-01&to=2026-10-31");
+  assert.equal(off.values.byparty, false);
+  const on = parseReportQuery(REPORT_QUERIES.salesReport, "byparty=1&from=2026-10-01&to=2026-10-31");
+  assert.equal(on.values.byparty, true);
+  // And a link that says nothing leaves the page on its default.
+  const silent = parseReportQuery(REPORT_QUERIES.salesReport, "from=2026-10-01&to=2026-10-31");
+  assert.equal(silent.values.byparty, undefined);
+});
+
+test("the item table draws the party column when it is split", () => {
+  const page = read("../app/sales-report/page.js");
+  // Heading, cell and the totals row's span -- all three, because two of
+  // them agreeing and the third not is a table whose columns slide.
+  assert.match(page, /\{split && <th>Party<\/th>\}/);
+  assert.match(page, /\{split && <td>\{r\.party \|\| '—'\}<\/td>\}/);
+  assert.match(page, /colSpan=\{split \? 5 : 3\}/);
+  // A row key that is unique once an item appears once per party.
+  assert.match(page, /key=\{split \? `\$\{r\.item\}/);
 });
 
 test("the module stays pure", () => {

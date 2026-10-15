@@ -9,6 +9,7 @@ import { salesReportSheets } from "@/lib/reportSheets.mjs";
 import {
   DEFAULT_GRAIN,
   DEFAULT_SCOPE,
+  canSplitByParty,
   documentsFor,
   isBookGrain,
   isDocScope,
@@ -141,12 +142,13 @@ async function handleGET(req, auth) {
       ...(view === "item" ? { items: 1 } : {}),
     }).lean();
 
-    // Only the book's period grains have anything to split: the bill-wise
-    // register is already one row per bill and names the party on each, and
-    // the party and item sheets are groupings in their own right. Resolved
-    // once, here, so the rows, the columns and the filename cannot disagree
-    // about whether this sheet is split.
-    const splitByParty = byParty && view === "book" && grain !== "document";
+    // Which sheets can be split, and which already name the party without
+    // one: `canSplitByParty` in lib/salesReports.mjs has the list and the
+    // reasons. ONE ANSWER, shared with the screen that offers the toggle --
+    // this used to name the book alone here and the item sheet ignored a
+    // parameter the screen had set. Resolved once, so the rows, the columns
+    // and the filename cannot disagree about whether this sheet is split.
+    const splitByParty = byParty && canSplitByParty(view, grain);
 
     const title = reportName(view, side);
     // Sigfa's own name for the chosen scope, so the sheet can print what it
@@ -187,7 +189,7 @@ async function handleGET(req, auth) {
     };
 
     if (view === "item") {
-      const rows = itemWise({ invoices, side, from, to, scope });
+      const rows = itemWise({ invoices, side, from, to, scope, byParty: splitByParty });
       return respond({ ...shell, rows, totals: itemTotals(rows) });
     }
 

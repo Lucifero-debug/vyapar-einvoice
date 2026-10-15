@@ -15,6 +15,7 @@ import {
   DOC_SCOPES,
   REPORT_SIDES,
   SALES_VIEWS,
+  canSplitByParty,
   csvFilename,
   reportName,
   scopeName,
@@ -91,10 +92,16 @@ function SalesReports() {
   const [view, setView] = useState(link.view ?? 'book');
   const [scope, setScope] = useState(link.scope ?? DEFAULT_SCOPE);
   const [grain, setGrain] = useState(link.grain ?? DEFAULT_GRAIN);
-  // The book's period rows, split one per party -- what puts a NAME on a
-  // month's figures. Only the period grains have anything to split, so the
-  // toggle hides on Bill Wise, which already names the party on every row.
-  const [byParty, setByParty] = useState(link.byparty ?? false);
+  // The period and item rows, split one per party -- what puts a NAME on a
+  // month's figures, and on an item's. `canSplitByParty` says which sheets
+  // have anything to split; the toggle hides on Bill Wise and Party Wise,
+  // which name the party already.
+  // On unless the link says otherwise -- the default lives on the query
+  // schema, so the state the page opens in and the value a shared URL leaves
+  // out are the same one thing rather than two that can drift apart.
+  const [byParty, setByParty] = useState(
+    link.byparty ?? REPORT_QUERIES.salesReport.byparty.default
+  );
   // Set only by clicking a month row, and cleared by every other control:
   // it is a position inside the book, not a filter the user set.
   // A month zoom only means anything on the book's date grain, which is how
@@ -116,7 +123,7 @@ function SalesReports() {
     const qs = new URLSearchParams({ view, side, from, to, scope, grain });
     // Sent only where it applies, so a link off the item sheet does not
     // carry a flag that sheet has no use for.
-    if (byParty && view === 'book' && grain !== 'document') qs.set('byparty', '1');
+    if (byParty && canSplitByParty(view, grain)) qs.set('byparty', '1');
     if (zoomMonth) qs.set('month', zoomMonth);
     return qs;
   }, [view, side, from, to, scope, grain, byParty, zoomMonth]);
@@ -166,8 +173,16 @@ function SalesReports() {
   const isPeriod = view === 'book' && grain !== 'document';
   // The split, as it actually applies -- the state alone is not enough: the
   // toggle stays set while Bill Wise is showing, which has no split.
-  const split = isPeriod && byParty;
-  const csvView = isPeriod ? (split ? 'periodParty' : 'period') : view;
+  // `canSplitByParty` is the route's own rule, so the columns the screen
+  // draws cannot disagree with the rows the route sent.
+  const split = byParty && canSplitByParty(view, grain);
+  const csvView = isPeriod
+    ? split
+      ? 'periodParty'
+      : 'period'
+    : view === 'item' && split
+      ? 'itemParty'
+      : view;
 
   /** Any control other than a month row leaves the zoom. */
   const reset = (fn) => (value) => {
@@ -254,26 +269,37 @@ function SalesReports() {
           </div>
         )}
 
-        {/* The book's grain. Sigfa opens on the month and zooms to the date. */}
-        {view === 'book' && (
+        {/* The book's grain, and the party split. Sigfa opens on the month
+            and zooms to the date; the split is this app's own addition.
+
+            The row shows whenever there is something on it: the grains for
+            the book, the split for any sheet that can take one. It used to
+            render only on the book, which left the item sheet with no way to
+            put a name on its rows at all. */}
+        {(view === 'book' || canSplitByParty(view, grain)) && (
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <span className="field-label">Grouped by</span>
-            {BOOK_GRAINS.map((g) => (
-              <button
-                key={g}
-                type="button"
-                className={`btn btn-sm ${grain === g && !zoomMonth ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => reset(setGrain)(g)}
-              >
-                {GRAIN_LABELS[g]}
-              </button>
-            ))}
+            {view === 'book' && (
+              <>
+                <span className="field-label">Grouped by</span>
+                {BOOK_GRAINS.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    className={`btn btn-sm ${grain === g && !zoomMonth ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => reset(setGrain)(g)}
+                  >
+                    {GRAIN_LABELS[g]}
+                  </button>
+                ))}
+              </>
+            )}
             {/* Deliberately NOT wrapped in reset(): the split is a column on
                 the sheet, not a filter on it, so turning it on inside a
                 zoomed month should keep you in that month. */}
-            {grain !== 'document' && (
+            {canSplitByParty(view, grain) && (
               <>
-                <span className="mx-1 h-5 w-px bg-border" />
+                {view === 'book' && <span className="mx-1 h-5 w-px bg-border" />}
+                {view !== 'book' && <span className="field-label">Split</span>}
                 <button
                   type="button"
                   className={`btn btn-sm ${byParty ? 'btn-primary' : 'btn-ghost'}`}
@@ -395,6 +421,10 @@ function SalesReports() {
                 <th>Item</th>
                 <th>HSN</th>
                 <th>Unit</th>
+                {/* Who bought it. The item sheet is one row per item until
+                    the split turns it into one row per item per party. */}
+                {split && <th>Party</th>}
+                {split && <th>GSTIN</th>}
                 <th className="num">Bills</th>
                 <th className="num">Quantity</th>
                 <th className="num">Avg Rate</th>
@@ -494,10 +524,14 @@ function SalesReports() {
             {!busy &&
               view === 'item' &&
               rows.map((r) => (
-                <tr key={r.item}>
+                // Split, one item appears once per party, so the name alone
+                // is not a key. The same NUL the rows were grouped under.
+                <tr key={split ? `${r.item}\u0000${r.party}` : r.item}>
                   <td className="font-medium">{r.item}</td>
                   <td>{r.hsn || '—'}</td>
                   <td>{r.unit || '—'}</td>
+                  {split && <td>{r.party || '—'}</td>}
+                  {split && <td>{r.gstin || '—'}</td>}
                   <td className="num">{r.documents}</td>
                   <td className="num">{qty(r.quantity)}</td>
                   <td className="num">{r.rate === null ? '—' : money(r.rate)}</td>
@@ -555,7 +589,13 @@ function SalesReports() {
               )}
               {view === 'item' && (
                 <tr>
-                  <td colSpan={3}>TOTAL&nbsp;&nbsp;:- {totals.items} items</td>
+                  {/* Two more columns to span when the party is shown. The
+                      count is DISTINCT items either way -- split, there are
+                      more rows than items. */}
+                  <td colSpan={split ? 5 : 3}>
+                    TOTAL&nbsp;&nbsp;:- {totals.items} item{totals.items === 1 ? '' : 's'}
+                    {split && totals.parties > 0 && ` across ${totals.parties} part${totals.parties === 1 ? 'y' : 'ies'}`}
+                  </td>
                   <td />
                   <td className="num font-medium">{qty(totals.quantity)}</td>
                   <td />
@@ -578,6 +618,10 @@ function SalesReports() {
           ' Party wise splits each period into one row per party, biggest first; a bill saved' +
             ' without a party is filed under (not named). Bill Wise names the party on every' +
             ' row already.'}
+        {view === 'item' &&
+          ' Party wise splits each item into one row per party, so a line appears once for' +
+            ' every party that bought it; a bill saved without a party is filed under (not' +
+            ' named). The total counts items, not rows.'}
       </p>
     </div>
   );
