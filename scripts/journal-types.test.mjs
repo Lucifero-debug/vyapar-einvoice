@@ -217,14 +217,27 @@ test("an unknown place of supply is refused, and says what to fix", () => {
   assert.match(problems[0], /Set the state on this party and on your own firm/);
 });
 
-test("a nil-rated expense needs no place of supply and no bill", () => {
+test("a nil-rated expense needs no place of supply and no GSTIN", () => {
   // There is no credit to claim, so asking for the paperwork behind one would
   // refuse a perfectly good entry.
   const problems = expenseProblems(
-    expense({ gstRate: 0, supplierGstin: "", billNo: "", billDate: "" }),
+    expense({ gstRate: 0, supplierGstin: "" }),
     { taxType: null }
   );
   assert.deepEqual(problems, []);
+});
+
+test("every expense needs the supplier's bill number and date, nil-rated or not", () => {
+  // The firm's rule: an expense is traced to the bill it was booked from.
+  for (const gstRate of [0, 18]) {
+    for (const [field, pattern] of [
+      ["billNo", /bill number/],
+      ["billDate", /bill date/],
+    ]) {
+      const problems = expenseProblems(expense({ gstRate, [field]: "" }), { taxType: "local" });
+      assert.match(problems.join(" | "), pattern, `${field} at ${gstRate}%`);
+    }
+  }
 });
 
 test("a credit cannot be claimed without the supplier's document", () => {

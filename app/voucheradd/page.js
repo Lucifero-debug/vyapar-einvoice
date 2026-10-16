@@ -720,7 +720,7 @@ const AddVoucher = () => {
                 </div>
 
                 <div className="field">
-                  <label className="field-label mb-1 block">Their bill no</label>
+                  <label className="field-label mb-1 block">Their bill no *</label>
                   <input
                     className="field-input"
                     value={expense.billNo}
@@ -729,7 +729,7 @@ const AddVoucher = () => {
                 </div>
 
                 <div className="field">
-                  <label className="field-label mb-1 block">Their bill date</label>
+                  <label className="field-label mb-1 block">Their bill date *</label>
                   <input
                     type="date"
                     className="field-input"
