@@ -1074,16 +1074,17 @@ const saveItem = (e) => {
         // post the bill twice.
         if (saving) return;
 
-        // A purchase M.R.I. needs the supplier's bill number and date. The
-        // route refuses it too (lib/invoiceInput.mjs); said here first so it
-        // is a message beside the form, not a round trip.
+        // A purchase M.R.I. needs its Invoice No and Date -- the two boxes at
+        // the top. The route refuses a blank one too (lib/invoiceInput.mjs);
+        // said here first so it is a message beside the form. A series bill
+        // is numbered by its series, so only an unnumbered one can be blank.
         if (takesMri && mri.on) {
-            if (!String(partyBillNo || '').trim()) {
-                notify.error("An M.R.I. needs the supplier's bill number. Enter it in Supplier Bill No.");
+            if (!chosenSeries && !String(invoiceNo ?? '').trim()) {
+                notify.error('An M.R.I. needs an Invoice No. Enter it at the top of the bill.');
                 return;
             }
-            if (!partyBillDate) {
-                notify.error("An M.R.I. needs the supplier's bill date. Enter it in Supplier Bill Date.");
+            if (!date) {
+                notify.error('An M.R.I. needs a Date. Enter it at the top of the bill.');
                 return;
             }
         }
@@ -1712,7 +1713,7 @@ const handleDispatchSave = () => {
                         </p>
                     </div>
                     <div className='field w-44'>
-                        <label className='field-label mb-1'>Invoice No</label>
+                        <label className='field-label mb-1'>Invoice No{takesMri && mri.on ? <span className="ml-0.5 text-base font-bold text-destructive" title="Required on an M.R.I.">*</span> : null}</label>
                         {chosenSeries ? (
                             // NOT a box to type in. Within a series the
                             // numbering has to be consecutive, so the number
@@ -1741,7 +1742,7 @@ const handleDispatchSave = () => {
                         </p>
                     </div>
                     <div className='field w-48'>
-                        <label className='field-label mb-1'>Date</label>
+                        <label className='field-label mb-1'>Date{takesMri && mri.on ? <span className="ml-0.5 text-base font-bold text-destructive" title="Required on an M.R.I.">*</span> : null}</label>
                         <input 
                             type='date' 
                             className='field-input' 
@@ -2144,7 +2145,6 @@ const handleDispatchSave = () => {
                     <div className="flex flex-col">
                         <label className="field-label mb-1">
                             {config.type === 'Purchase' ? 'Supplier Bill No' : 'Their Bill No'}
-                            {takesMri && mri.on ? ' *' : ''}
                         </label>
                         <input
                             type="text"
@@ -2157,7 +2157,6 @@ const handleDispatchSave = () => {
                     <div className="flex flex-col">
                         <label className="field-label mb-1">
                             {config.type === 'Purchase' ? 'Supplier Bill Date' : 'Their Bill Date'}
-                            {takesMri && mri.on ? ' *' : ''}
                         </label>
                         <input
                             type="date"

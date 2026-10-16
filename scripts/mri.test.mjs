@@ -70,6 +70,8 @@ const PURCHASE = {
   // Required on an M.R.I.: the supplier's bill it was received against.
   partyBillNo: "ST/4417",
   partyBillDate: "2026-10-11",
+  // An M.R.I. needs its own number.
+  invoiceNo: 108,
 };
 
 const CHALLAN = {
@@ -81,6 +83,8 @@ const CHALLAN = {
   // Required on an M.R.I.: the supplier's challan it came with.
   partyChallanNo: "DC/88",
   partyChallanDate: "2026-10-11",
+  // An M.R.I. needs its own number (the date is above).
+  challanNo: 5,
 };
 
 const doc = (over) => ({
@@ -556,35 +560,50 @@ test("the bill route keeps a typed challan quantity only on an M.R.I.", () => {
   assert.equal(shortQty(bare.invoice.items[0]), 0);
 });
 
-console.log("\n--- the supplier's paper is required on an M.R.I. ---");
+console.log("\n--- an M.R.I. needs its own number and date ---");
 
-test("a purchase bill M.R.I. needs the supplier's bill number and date", () => {
-  const ok = prepareInvoiceInput(PURCHASE, { now: NOW });
-  assert.equal(ok.ok, true, ok.error);
-  assert.equal(ok.invoice.partyBillNo, "ST/4417");
-  assert.ok(ok.invoice.partyBillDate instanceof Date, "the date is kept");
-
-  assert.match(prepareInvoiceInput({ ...PURCHASE, partyBillNo: "" }, { now: NOW }).error, /supplier's bill number/);
-  assert.match(prepareInvoiceInput({ ...PURCHASE, partyBillDate: "" }, { now: NOW }).error, /supplier's bill date/);
-
-  // Not an M.R.I.: neither is required, as before.
+test("a purchase bill M.R.I. needs its Invoice No, unless a series numbers it", () => {
+  assert.equal(prepareInvoiceInput({ ...PURCHASE, invoiceNo: 112 }, { now: NOW }).ok, true);
+  assert.match(prepareInvoiceInput({ ...PURCHASE, invoiceNo: "" }, { now: NOW }).error, /needs an Invoice No/);
+  // A series gives the number itself.
+  assert.equal(prepareInvoiceInput({ ...PURCHASE, invoiceNo: "", series: "MI" }, { now: NOW }).ok, true);
+  // The date is required on every bill, as it always was.
+  assert.ok(prepareInvoiceInput({ ...PURCHASE, invoiceNo: 112, date: "" }, { now: NOW }).error);
+  // The supplier's bill number and date are NOT required.
+  const r = prepareInvoiceInput({ ...PURCHASE, invoiceNo: 112, partyBillNo: "", partyBillDate: "" }, { now: NOW });
+  assert.equal(r.ok, true, r.error);
+  // Not an M.R.I.: a blank number is still given the next one.
   const plain = prepareInvoiceInput(
-    { ...PURCHASE, mri: undefined, partyBillNo: "", partyBillDate: "", items: [{ name: "MS Angle", quantity: 80, cost: 50, gstRate: 18 }] },
+    { ...PURCHASE, mri: undefined, invoiceNo: "", items: [{ name: "MS Angle", quantity: 80, cost: 50, gstRate: 18 }] },
     { now: NOW }
   );
   assert.equal(plain.ok, true, plain.error);
 });
 
-test("a purchase challan M.R.I. needs the supplier's challan number and date", () => {
-  assert.equal(prepareChallanInput(CHALLAN, { now: NOW }).partyChallanNo, "DC/88");
-  assert.throws(() => prepareChallanInput({ ...CHALLAN, partyChallanNo: "" }, { now: NOW }), /supplier's challan number/);
-  assert.throws(() => prepareChallanInput({ ...CHALLAN, partyChallanDate: "" }, { now: NOW }), /supplier's challan date/);
-  // Not an M.R.I.: not required.
+test("a purchase challan M.R.I. needs its Challan No. and Challan Date", () => {
+  assert.equal(prepareChallanInput({ ...CHALLAN, challanNo: 7 }, { now: NOW }).challanNo, 7);
+  assert.throws(() => prepareChallanInput({ ...CHALLAN, challanNo: "" }, { now: NOW }), /needs a Challan No/);
+  assert.throws(() => prepareChallanInput({ ...CHALLAN, challanNo: 7, date: "" }, { now: NOW }), /needs a Challan Date/);
+  // The supplier's challan number and date are NOT required.
+  assert.equal(prepareChallanInput({ ...CHALLAN, challanNo: 7, partyChallanNo: "", partyChallanDate: "" }, { now: NOW }).partyChallanNo, "");
+  // Not an M.R.I.: blank number and date are filled in as before.
   const plain = prepareChallanInput(
-    { ...CHALLAN, mri: undefined, partyChallanNo: "", partyChallanDate: "", items: [{ name: "MS Angle", quantity: "80", cost: "50", gstRate: 18 }] },
+    { ...CHALLAN, mri: undefined, challanNo: "", date: "", items: [{ name: "MS Angle", quantity: "80", cost: "50", gstRate: 18 }] },
     { now: NOW }
   );
-  assert.equal(plain.partyChallanNo, "");
+  assert.equal(plain.challanNo, null);
+});
+
+test("the M.R.I. screens star the top number and date, not the supplier's", () => {
+  const bill = read("../components/billing/BillingScreen.jsx");
+  assert.match(bill, /Invoice No\{takesMri && mri\.on \? <span[^>]*text-destructive/);
+  assert.match(bill, /'field-label mb-1'>Date\{takesMri && mri\.on \? <span[^>]*text-destructive/);
+  assert.doesNotMatch(bill, /Supplier Bill (No|Date)'\}\s*\{takesMri/, "a supplier field is still starred");
+  assert.match(bill, /if \(!chosenSeries && !String\(invoiceNo \?\? ''\)\.trim\(\)\)/);
+  const challan = read("../app/challanadd/page.js");
+  assert.match(challan, /Challan No\.\{showMri \? <span[^>]*text-destructive/);
+  assert.match(challan, /Challan Date\{showMri \? <span[^>]*text-destructive/);
+  assert.doesNotMatch(challan, /challan (No\.|date)\{showMri/, "a supplier field is still starred");
 });
 
 test("the supplier's bill date is stored, sent, reloaded and written on an edit", () => {
@@ -596,7 +615,6 @@ test("the supplier's bill date is stored, sent, reloaded and written on an edit"
   assert.match(read("../app/api/sale-alter/route.js"), /partyBillDate: invoiceData\.partyBillDate \?\? null,/);
   const screen = read("../components/billing/BillingScreen.jsx");
   assert.match(screen, /setPartyBillDate\(data\.partyBillDate \? formatDate\(data\.partyBillDate\) : ''\)/);
-  assert.match(screen, /if \(takesMri && mri\.on\) \{\s*if \(!String\(partyBillNo/);
 });
 
 test("a whole register row opens its bill or challan, not only the Document link", () => {

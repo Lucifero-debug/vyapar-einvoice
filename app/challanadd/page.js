@@ -226,10 +226,10 @@ function ChallanForm() {
     setError('');
     if (!partyName) return setError(`Pick a ${partyLabel.toLowerCase()}.`);
     if (!lines.length) return setError('A challan needs at least one item.');
-    // A purchase M.R.I. needs the supplier's challan number and date; the
-    // route refuses it too (lib/challanInput.mjs).
-    if (showMri && !partyChallanNo.trim()) return setError("An M.R.I. needs the supplier's challan number.");
-    if (showMri && !partyChallanDate) return setError("An M.R.I. needs the supplier's challan date.");
+    // A purchase M.R.I. needs its Challan No. and Challan Date; the route
+    // refuses a blank one too (lib/challanInput.mjs).
+    if (showMri && !String(challanNo ?? '').trim()) return setError('An M.R.I. needs a Challan No.');
+    if (showMri && !date) return setError('An M.R.I. needs a Challan Date.');
     setSaving(true);
     const body = {
       type,
@@ -337,11 +337,11 @@ function ChallanForm() {
         </div>
         <div className="panel-body grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="field">
-            <label className="field-label">Challan No.</label>
+            <label className="field-label">Challan No.{showMri ? <span className="ml-0.5 text-base font-bold text-destructive" title="Required on an M.R.I.">*</span> : null}</label>
             <input className="field-input num" value={challanNo} onChange={(e) => setChallanNo(e.target.value)} disabled={Boolean(editingNo)} />
           </div>
           <div className="field">
-            <label className="field-label">Challan Date</label>
+            <label className="field-label">Challan Date{showMri ? <span className="ml-0.5 text-base font-bold text-destructive" title="Required on an M.R.I.">*</span> : null}</label>
             <input type="date" className="field-input" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
           <div className="field lg:col-span-2">
@@ -376,11 +376,11 @@ function ChallanForm() {
           {isPurchase && (
             <>
               <div className="field">
-                <label className="field-label">Supplier&apos;s challan No.{showMri ? ' *' : ''}</label>
+                <label className="field-label">Supplier&apos;s challan No.</label>
                 <input className="field-input" value={partyChallanNo} onChange={(e) => setPartyChallanNo(e.target.value)} />
               </div>
               <div className="field">
-                <label className="field-label">Supplier&apos;s challan date{showMri ? ' *' : ''}</label>
+                <label className="field-label">Supplier&apos;s challan date</label>
                 <input type="date" className="field-input" value={partyChallanDate} onChange={(e) => setPartyChallanDate(e.target.value)} />
               </div>
             </>
