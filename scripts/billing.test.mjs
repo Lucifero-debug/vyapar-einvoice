@@ -221,9 +221,11 @@ test("the frozen list is the 31 keys the pages sent, plus the two added since", 
   // somebody meant to make, which is the point of asserting it.
   //
   // And `mri` since that: the purchase M.R.I. block (lib/mri.mjs), sent by
-  // the purchase screen only. Then `series`. Three deliberate additions,
-  // so 34.
-  assert.equal(PAYLOAD_KEYS.length, 34);
+  // the purchase screen only. Then `series`. Then `partyBillDate`, the
+  // date on the supplier's bill, required with its number on a purchase
+  // M.R.I. Four deliberate additions, so 35.
+  assert.equal(PAYLOAD_KEYS.length, 35);
+  assert.ok(PAYLOAD_KEYS.includes("partyBillDate"));
   assert.ok(PAYLOAD_KEYS.includes("partyBillNo"));
   assert.ok(PAYLOAD_KEYS.includes("mri"));
   // The contract grew by one more: Sigfa's Series Master code for this

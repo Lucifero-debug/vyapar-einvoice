@@ -265,6 +265,8 @@ customer: {
     // Declared, or Mongoose strict mode drops it -- and a dropped supplier
     // bill number is a purchase you cannot find again when they chase it.
     partyBillNo: { type: String, trim: true },
+    // The date on that bill. Required with the number on a purchase M.R.I.
+    partyBillDate: { type: Date },
     // === Purchase M.R.I. (SIGFA's MRINo / MRI Remark / Ag. MRI No.) ===
     // Its own series, shared with purchase challans and reserved by the
     // server (lib/mriSave.mjs). `againstMriNo` makes this a Re-MRI of an

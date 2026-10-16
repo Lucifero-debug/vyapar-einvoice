@@ -408,6 +408,7 @@ async function handlePOST(req, auth) {
             ewayBillNo: input.ewayBillNo,
             ewayBillDate: input.ewayBillDate,
             partyBillNo: input.partyBillNo,
+            partyBillDate: input.partyBillDate,
             // Purchase M.R.I. -- set only when it is one (lib/mriSave.mjs).
             mriNo: mriData.mriNo || undefined,
             mriRemark: mriData.mriNo ? mriData.mriRemark : undefined,

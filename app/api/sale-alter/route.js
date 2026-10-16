@@ -366,6 +366,11 @@ async function handlePOST(req, auth) {
         // writing them would blank what the bill was saved with.
         {
           invoiceNo: nextNo,
+          // The supplier's bill number and date ARE written on an edit: the
+          // edit screen reloads both, and a purchase M.R.I. requires them,
+          // so an edit that left them out would keep a stale or blank pair.
+          partyBillNo: invoiceData.partyBillNo,
+          partyBillDate: invoiceData.partyBillDate ?? null,
           // Written on an edit, unlike `shippedTo` and the two beside it: the
           // edit screen DOES reload the series, so leaving it out would blank
           // the label every time a bill was corrected.

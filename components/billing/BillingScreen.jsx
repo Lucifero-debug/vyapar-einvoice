@@ -131,6 +131,8 @@ const [ewayBillNo, setEwayBillNo] = useState('');
     // supplier printed on the bill they sent. Not `invoiceNo`, which is this
     // firm's own sequence. See models/invoiceModel.js.
     const [partyBillNo, setPartyBillNo] = useState('');
+    // The date on the supplier's bill. Required with the number on an M.R.I.
+    const [partyBillDate, setPartyBillDate] = useState('');
     // Sigfa's Series Master, for this screen's own document type. A label on
     // the bill and nothing more -- it does not choose the invoice number.
     const [series, setSeries] = useState('');
@@ -343,6 +345,7 @@ useEffect(() => {
                 setWeight(data.weight || '');
                 setEwayBillNo(data.ewayBillNo || '');
                 setPartyBillNo(data.partyBillNo || '');
+                setPartyBillDate(data.partyBillDate ? formatDate(data.partyBillDate) : '');
                 // Normalized because the box is a <select> and its options
                 // are. A bill saved before the master existed carries no
                 // series at all and simply comes back on "None".
@@ -1071,6 +1074,20 @@ const saveItem = (e) => {
         // post the bill twice.
         if (saving) return;
 
+        // A purchase M.R.I. needs the supplier's bill number and date. The
+        // route refuses it too (lib/invoiceInput.mjs); said here first so it
+        // is a message beside the form, not a round trip.
+        if (takesMri && mri.on) {
+            if (!String(partyBillNo || '').trim()) {
+                notify.error("An M.R.I. needs the supplier's bill number. Enter it in Supplier Bill No.");
+                return;
+            }
+            if (!partyBillDate) {
+                notify.error("An M.R.I. needs the supplier's bill date. Enter it in Supplier Bill Date.");
+                return;
+            }
+        }
+
 
         // === The request body ===
         //
@@ -1130,6 +1147,7 @@ const saveItem = (e) => {
                 orderDate,
                 orderNo,
                 partyBillNo,
+                partyBillDate,
                 mri: takesMri ? mri : undefined,
                 series: chosenSeries,
             },
@@ -2126,6 +2144,7 @@ const handleDispatchSave = () => {
                     <div className="flex flex-col">
                         <label className="field-label mb-1">
                             {config.type === 'Purchase' ? 'Supplier Bill No' : 'Their Bill No'}
+                            {takesMri && mri.on ? ' *' : ''}
                         </label>
                         <input
                             type="text"
@@ -2133,6 +2152,18 @@ const handleDispatchSave = () => {
                             value={partyBillNo}
                             onChange={(e) => setPartyBillNo(e.target.value)}
                             placeholder="BS/2026-27/4417"
+                        />
+                    </div>
+                    <div className="flex flex-col">
+                        <label className="field-label mb-1">
+                            {config.type === 'Purchase' ? 'Supplier Bill Date' : 'Their Bill Date'}
+                            {takesMri && mri.on ? ' *' : ''}
+                        </label>
+                        <input
+                            type="date"
+                            className="field-input"
+                            value={partyBillDate}
+                            onChange={(e) => setPartyBillDate(e.target.value)}
                         />
                     </div>
                     <div className="flex flex-col">

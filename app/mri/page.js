@@ -3,7 +3,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'reac
 import { useRouter, useSearchParams } from 'next/navigation';
 import { readResponse } from '@/lib/apiResponse.mjs';
 import { trim } from '@/lib/orderStatus.mjs';
-import { MRI_LABEL, MRI_STATUS_LABELS, MRI_VIEWS, MRI_VIEW_LABELS, isMriView } from '@/lib/mri.mjs';
+import { MRI_LABEL, MRI_SOURCES, MRI_STATUS_LABELS, MRI_VIEWS, MRI_VIEW_LABELS, isMriView } from '@/lib/mri.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,6 +33,27 @@ function docHref(row) {
   return row.source === 'challan'
     ? `/challanadd?type=Purchase&challanNo=${row.documentNo}`
     : `/purchaseadd?value=${row.documentNo}`;
+}
+
+/**
+ * A whole register row opens its bill or challan for editing -- not only the
+ * Document link. Keyboard too: Tab to the row, Enter to open it.
+ */
+function rowOpener(router, row) {
+  const open = () => router.push(docHref(row));
+  return {
+    onClick: open,
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    },
+    tabIndex: 0,
+    role: 'link',
+    title: `Open ${MRI_SOURCES[row.source]?.label || 'document'} ${row.documentNo} to edit`,
+    className: 'cursor-pointer hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:outline-none',
+  };
 }
 
 function MriRegister() {
@@ -157,14 +178,22 @@ function MriRegister() {
             <tbody>
               <Empty rows={rows} cols={9} what={view === 'pending' ? 'pending MRIs' : 'MRIs'} />
               {list.map((r) => (
-                <tr key={r.mriNo}>
+                <tr key={r.mriNo} {...rowOpener(router, r)}>
                   <td className="font-medium">
                     {r.mriNo}
                     {r.againstMriNo ? <div className="text-xs text-muted-foreground">Re-MRI of {r.againstMriNo}</div> : null}
                   </td>
                   <td>{asDate(r.date)}</td>
                   <td>
-                    <button type="button" className="link" onClick={() => router.push(docHref(r))}>
+                    {/* The row opens it as well; this stays as the visible cue. */}
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        router.push(docHref(r));
+                      }}
+                    >
                       {r.documentLabel} {r.documentNo}
                     </button>
                     {r.partyBillNo ? <div className="text-xs text-muted-foreground">Supplier&apos;s No. {r.partyBillNo}</div> : null}
@@ -204,7 +233,7 @@ function MriRegister() {
             <tbody>
               <Empty rows={rows} cols={10} what="rejected material" />
               {list.map((r, i) => (
-                <tr key={`${r.mriNo}-${r.item}-${i}`}>
+                <tr key={`${r.mriNo}-${r.item}-${i}`} {...rowOpener(router, r)}>
                   <td>{r.mriNo}</td>
                   <td>{asDate(r.date)}</td>
                   <td>{r.party}</td>

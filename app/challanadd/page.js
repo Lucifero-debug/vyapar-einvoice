@@ -226,6 +226,10 @@ function ChallanForm() {
     setError('');
     if (!partyName) return setError(`Pick a ${partyLabel.toLowerCase()}.`);
     if (!lines.length) return setError('A challan needs at least one item.');
+    // A purchase M.R.I. needs the supplier's challan number and date; the
+    // route refuses it too (lib/challanInput.mjs).
+    if (showMri && !partyChallanNo.trim()) return setError("An M.R.I. needs the supplier's challan number.");
+    if (showMri && !partyChallanDate) return setError("An M.R.I. needs the supplier's challan date.");
     setSaving(true);
     const body = {
       type,
@@ -372,11 +376,11 @@ function ChallanForm() {
           {isPurchase && (
             <>
               <div className="field">
-                <label className="field-label">Supplier&apos;s challan No.</label>
+                <label className="field-label">Supplier&apos;s challan No.{showMri ? ' *' : ''}</label>
                 <input className="field-input" value={partyChallanNo} onChange={(e) => setPartyChallanNo(e.target.value)} />
               </div>
               <div className="field">
-                <label className="field-label">Supplier&apos;s challan date</label>
+                <label className="field-label">Supplier&apos;s challan date{showMri ? ' *' : ''}</label>
                 <input type="date" className="field-input" value={partyChallanDate} onChange={(e) => setPartyChallanDate(e.target.value)} />
               </div>
             </>

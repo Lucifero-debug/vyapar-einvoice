@@ -67,6 +67,9 @@ const PURCHASE = {
   received: 0,
   items: [{ name: "MS Angle", quantity: 80, receivedQty: 100, cost: 50, gstRate: 18 }],
   mri: { on: true, remark: "20 bent", againstMriNo: null },
+  // Required on an M.R.I.: the supplier's bill it was received against.
+  partyBillNo: "ST/4417",
+  partyBillDate: "2026-10-11",
 };
 
 const CHALLAN = {
@@ -75,6 +78,9 @@ const CHALLAN = {
   customer: { name: "Steel Traders" },
   items: [{ name: "MS Angle", quantity: "80", receivedQty: "100", cost: "50", gstRate: 18 }],
   mri: { on: true, remark: "" },
+  // Required on an M.R.I.: the supplier's challan it came with.
+  partyChallanNo: "DC/88",
+  partyChallanDate: "2026-10-11",
 };
 
 const doc = (over) => ({
@@ -548,6 +554,59 @@ test("the bill route keeps a typed challan quantity only on an M.R.I.", () => {
   const bare = prepareInvoiceInput(PURCHASE, { now: NOW });
   assert.equal(bare.invoice.items[0].challanQty, undefined);
   assert.equal(shortQty(bare.invoice.items[0]), 0);
+});
+
+console.log("\n--- the supplier's paper is required on an M.R.I. ---");
+
+test("a purchase bill M.R.I. needs the supplier's bill number and date", () => {
+  const ok = prepareInvoiceInput(PURCHASE, { now: NOW });
+  assert.equal(ok.ok, true, ok.error);
+  assert.equal(ok.invoice.partyBillNo, "ST/4417");
+  assert.ok(ok.invoice.partyBillDate instanceof Date, "the date is kept");
+
+  assert.match(prepareInvoiceInput({ ...PURCHASE, partyBillNo: "" }, { now: NOW }).error, /supplier's bill number/);
+  assert.match(prepareInvoiceInput({ ...PURCHASE, partyBillDate: "" }, { now: NOW }).error, /supplier's bill date/);
+
+  // Not an M.R.I.: neither is required, as before.
+  const plain = prepareInvoiceInput(
+    { ...PURCHASE, mri: undefined, partyBillNo: "", partyBillDate: "", items: [{ name: "MS Angle", quantity: 80, cost: 50, gstRate: 18 }] },
+    { now: NOW }
+  );
+  assert.equal(plain.ok, true, plain.error);
+});
+
+test("a purchase challan M.R.I. needs the supplier's challan number and date", () => {
+  assert.equal(prepareChallanInput(CHALLAN, { now: NOW }).partyChallanNo, "DC/88");
+  assert.throws(() => prepareChallanInput({ ...CHALLAN, partyChallanNo: "" }, { now: NOW }), /supplier's challan number/);
+  assert.throws(() => prepareChallanInput({ ...CHALLAN, partyChallanDate: "" }, { now: NOW }), /supplier's challan date/);
+  // Not an M.R.I.: not required.
+  const plain = prepareChallanInput(
+    { ...CHALLAN, mri: undefined, partyChallanNo: "", partyChallanDate: "", items: [{ name: "MS Angle", quantity: "80", cost: "50", gstRate: 18 }] },
+    { now: NOW }
+  );
+  assert.equal(plain.partyChallanNo, "");
+});
+
+test("the supplier's bill date is stored, sent, reloaded and written on an edit", () => {
+  assert.match(read("../models/invoiceModel.js"), /partyBillDate: \{ type: Date \}/);
+  const math = read("../lib/billingMath.mjs");
+  assert.match(math, /"partyBillDate",/);
+  assert.match(math, /partyBillDate: form\.partyBillDate,/);
+  assert.match(read("../app/api/save-invoice/route.js"), /partyBillDate: input\.partyBillDate,/);
+  assert.match(read("../app/api/sale-alter/route.js"), /partyBillDate: invoiceData\.partyBillDate \?\? null,/);
+  const screen = read("../components/billing/BillingScreen.jsx");
+  assert.match(screen, /setPartyBillDate\(data\.partyBillDate \? formatDate\(data\.partyBillDate\) : ''\)/);
+  assert.match(screen, /if \(takesMri && mri\.on\) \{\s*if \(!String\(partyBillNo/);
+});
+
+test("a whole register row opens its bill or challan, not only the Document link", () => {
+  const page = read("../app/mri/page.js");
+  assert.match(page, /<tr key=\{r\.mriNo\} \{\.\.\.rowOpener\(router, r\)\}>/, "the M.R.I. register row");
+  assert.match(page, /<tr key=\{`\$\{r\.mriNo\}-\$\{r\.item\}-\$\{i\}`\} \{\.\.\.rowOpener\(router, r\)\}>/, "the rejected material row");
+  // Reachable by keyboard, and the link inside does not open it twice.
+  assert.match(page, /e\.key === 'Enter'/);
+  assert.match(page, /tabIndex: 0/);
+  assert.match(page, /e\.stopPropagation\(\);\s*router\.push\(docHref\(r\)\)/);
 });
 
 console.log(`\n  ${passed} checks passed\n`);

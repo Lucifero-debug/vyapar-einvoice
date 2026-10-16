@@ -1129,9 +1129,16 @@ test("sale-alter writes no figure from the request", () => {
   const update = callAt(ALTER, ALTER.indexOf("Invoice.findOneAndUpdate("));
   assert.doesNotMatch(update, /\|\| 0|\|\| ""|Number\(invoiceData/, "a figure is still coerced from the raw request");
   // The fields the edit screen does not reload stay untouched, as before.
-  for (const field of ["shippedTo", "dispatchFrom", "partyBillNo", "companyId", "irn", "emailLog"]) {
+  for (const field of ["shippedTo", "dispatchFrom", "companyId", "irn", "emailLog"]) {
     assert.doesNotMatch(update, new RegExp(`\\b${field}:`), `${field} is now overwritten by an edit`);
   }
+  // The supplier's bill number and date ARE written -- a purchase M.R.I.
+  // requires them -- and that is safe only because the edit screen reloads
+  // both. If it ever stops, this edit would blank them.
+  assert.match(update, /partyBillNo: invoiceData\.partyBillNo,/);
+  const screen = fs.readFileSync(new URL("../components/billing/BillingScreen.jsx", import.meta.url), "utf8");
+  assert.match(screen, /setPartyBillNo\(data\.partyBillNo \|\| ''\)/, "the edit screen no longer reloads the bill number");
+  assert.match(screen, /setPartyBillDate\(data\.partyBillDate/, "the edit screen no longer reloads the bill date");
 });
 
 console.log(`\n${passed} checks passed.\n`);
