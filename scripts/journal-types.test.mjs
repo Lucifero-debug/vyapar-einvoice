@@ -368,4 +368,25 @@ test("a journal line takes paise", () => {
   assert.match(src, /name="credit"[\s\S]{0,300}step="0\.01"/);
 });
 
+console.log("\n--- the supplier's GSTIN comes from their master ---");
+
+test("the server takes the GSTIN off the party master when the form sent none", () => {
+  const src = code("../lib/expenseVoucher.mjs");
+  assert.match(src, /\{ name: 1, state: 1, stateCode: 1, gstIn: 1 \}/, "the master's GSTIN is not read");
+  assert.match(
+    src,
+    /if \(!draft\.supplierGstin && supplier\?\.gstIn\) \{\s*draft = normalizeExpense\(\{ \.\.\.draft, supplierGstin: supplier\.gstIn \}\);/
+  );
+  // Before the check that refuses a missing one, or the fallback is too late.
+  assert.ok(src.indexOf("supplier?.gstIn") < src.indexOf("expenseProblems(draft"));
+});
+
+test("the screen fills it on picking the supplier, and sends it", () => {
+  const src = code("../app/voucheradd/page.js");
+  assert.match(src, /customers\.find\(\(c\) => c\.name === name\)\?\.gstIn/);
+  assert.match(src, /supplierGstin: masterGstin\(e\.target\.value\) \|\| expense\.supplierGstin/);
+  assert.match(src, /expenseProblems\(expenseToSend\(\), \{ taxType: stated \}\)/);
+  assert.match(src, /\{ expense: expenseToSend\(\) \}/);
+});
+
 console.log(`\n  ${passed} checks passed\n`);

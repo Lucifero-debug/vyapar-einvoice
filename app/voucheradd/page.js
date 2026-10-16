@@ -92,6 +92,20 @@ const AddVoucher = () => {
   const [expense, setExpense] = useState(EXPENSE_DEFAULTS);
   const isExpense = kind === "JOURNAL" && isExpenseJournal(journalType);
 
+  /*
+    The supplier's GSTIN as saved on their party master (Setup). The expense
+    box used to start blank and ignore it, so an expense from a party whose
+    GSTIN was already on file was refused as "GSTIN missing". Picking the
+    supplier now fills it; the box still wins when something is typed, and
+    the server falls back to the master too (lib/expenseVoucher.mjs).
+  */
+  const masterGstin = (name) =>
+    String(customers.find((c) => c.name === name)?.gstIn || "").trim().toUpperCase();
+  const expenseToSend = () => ({
+    ...expense,
+    supplierGstin: String(expense.supplierGstin || "").trim() || masterGstin(expense.party),
+  });
+
   // Which line's bill picker is open, by index. Sigfa's "Against Bill" is a
   // per-line thing: one voucher can settle two parties' bills at once.
   const [adjusting, setAdjusting] = useState(null);
@@ -406,7 +420,7 @@ const AddVoucher = () => {
           expense.taxType === "local" || expense.taxType === "central"
             ? expense.taxType
             : "local";
-        const problems = expenseProblems(expense, { taxType: stated });
+        const problems = expenseProblems(expenseToSend(), { taxType: stated });
         if (problems.length) {
           notify.error(problems[0]);
           return;
@@ -437,7 +451,7 @@ const AddVoucher = () => {
           // Only a journal carries a type. Sending one on a receipt would
           // store a field the kind has no meaning for.
           ...(kind === "JOURNAL" ? { journalType } : {}),
-          ...(isExpense ? { expense } : {}),
+          ...(isExpense ? { expense: expenseToSend() } : {}),
           ...(voucherParams.value && { id: voucherParams.value }),
         }),
       });
@@ -597,7 +611,15 @@ const AddVoucher = () => {
                     className="field-select"
                     data-master-field="party"
                     value={expense.party}
-                    onChange={(e) => setExpense({ ...expense, party: e.target.value })}
+                    onChange={(e) =>
+                      setExpense({
+                        ...expense,
+                        party: e.target.value,
+                        // The master's GSTIN when it has one; otherwise keep
+                        // whatever was typed.
+                        supplierGstin: masterGstin(e.target.value) || expense.supplierGstin,
+                      })
+                    }
                   >
                     <option value="">Select…</option>
                     {customers.map((c) => (
@@ -685,10 +707,16 @@ const AddVoucher = () => {
                   <input
                     className="field-input uppercase"
                     value={expense.supplierGstin}
+                    placeholder={masterGstin(expense.party) || ""}
                     onChange={(e) =>
                       setExpense({ ...expense, supplierGstin: e.target.value })
                     }
                   />
+                  {expense.party && !masterGstin(expense.party) && (
+                    <p className="field-hint mt-1">
+                      Not on this party&apos;s master. Type it, or add it in Setup.
+                    </p>
+                  )}
                 </div>
 
                 <div className="field">
