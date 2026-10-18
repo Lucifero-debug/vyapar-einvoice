@@ -669,7 +669,10 @@ function ProductionScreen() {
           </div>
 
           <div className="field">
-            <label className="field-label mb-1.5 block">Produced</label>
+            {/* "Quantity", to match the column it fills in the register
+                below -- the field and the column were two names for the
+                same number. */}
+            <label className="field-label mb-1.5 block">Quantity</label>
             <input
               className="field-input"
               type="number"
