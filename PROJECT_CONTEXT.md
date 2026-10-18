@@ -7,7 +7,7 @@ rules that must not be broken, the UI vocabulary, and the known landmines.
 
 Paste the whole file, or paste §1–§6 plus the section relevant to your task.
 
-**Last verified: 14 October 2026.** When you change the shape of the data, the
+**Last verified: 16 October 2026.** When you change the shape of the data, the
 posting rules, the auth or tenancy rules, or the page conventions, update this
 file in the same commit. A stale context file is worse than none — it will
 confidently mislead.
@@ -326,7 +326,8 @@ lib/                     ← THE DOMAIN LAYER. Read §6 before touching any of i
   cashAccount.mjs        Resolve the cash/bank account   (imports Mongoose)
   paymentType.mjs        Cash vs bank decision (pure)
   withTransaction.mjs    MongoDB transaction wrapper
-  getNextInvoiceNo.js    Atomic invoice-number reservation
+  getNextInvoiceNo.js    Atomic invoice-number reservation, and getNextSeriesNo
+                         (the per-series, per-FY count — §6.42)
   getNextOrderNo.js      …and for orders
   getNextProductionNo.js …and for each stock-voucher kind (§6.20)
   istDate.mjs            IST calendar days. TWO day numbers — read §6.16
@@ -372,6 +373,13 @@ lib/                     ← THE DOMAIN LAYER. Read §6 before touching any of i
                          block, Re-MRI rules, the registers (§6.41). Pure
   mriSave.mjs            The MRI number series, the Ag. MRI No. check, the
                          Re-MRI lock and delete guard  (imports Mongoose)
+
+  series.mjs             Series Master: doc types, codes, FY tag, voucherNo,
+                         alterNumberProblem (§6.42). Pure, no imports
+  voucherKinds.mjs       Receipt / Payment / Journal / Contra rules (§6.43). Pure
+  journalTypes.mjs       Journal Type; Expense With GST rules and legs (§6.43). Pure
+  expenseVoucher.mjs     Resolves an expense: supplier state + GSTIN, Input
+                         heads, legs  (imports Mongoose)
 
   bom.mjs                Bill of Material: nested explosion, wastage, by-product
   bomSave.mjs            BOM persistence                (imports Mongoose)
@@ -565,6 +573,19 @@ One document per sale / purchase / return.
   real invoice when it parsed and wrote `NaN` into a required field when it did
   not. A String because a bill number carries a series prefix, a financial
   year and slashes, the same reasoning `custModel` gives for `phone`
+- `partyBillDate` — the date printed on that bill (a Date). Optional, like
+  `partyBillNo`; both are written by `save-invoice` AND by `sale-alter` (the
+  edit screen reloads both)
+- Series (§6.42): `series` (the Series Master code, "" for none), `seriesNo`
+  (the running count inside that series and financial year), `finYear` (the
+  start year of that FY, e.g. 2026), `voucherNo` (the composed number that
+  prints, "26-27/1") and `seriesSnapshot` (the master's settings as they were
+  when the bill was saved). `invoiceNo` is unchanged: the firm's own unique
+  sequence, the key every lookup joins on, never shown when a `voucherNo`
+  exists
+- Per line `challanQty` — what the supplier's challan said was sent, for the
+  M.R.I.'s Short figure. Copied from the challan on a line drawn from one;
+  TYPED on a keyed-in purchase M.R.I. line; refused off an M.R.I. (§6.41)
 - `partyTaxes[]` — extra overheads `{ name, rate, Amount, total }`
 - `emailLog[]` — `{ to[], cc[], messageId, by, at }`, **append-only**, one row
   per mail the bill was sent in. Written by `/api/send-email` with `$push`
@@ -587,11 +608,21 @@ One document per sale / purchase / return.
 `date`, `typeOfVoucher`, `partyName`, `receiptQuantity`, `issueQuantity`,
 `balanceQuantity`.
 
-### `Voucher` (`models/voucherModel.js`) — receipts and payments
+### `Voucher` (`models/voucherModel.js`) — receipts, payments, journals, contras
 
-`acName` (the account money moved through), `date`, `paymentType`, `narration`,
-`againstBill`, `acType`, and `customers[]` of
+`kind` (RECEIPT | PAYMENT | JOURNAL | CONTRA, §6.43; absent on old rows and
+read off the figures by `kindOf`), `acName` (the account money moved through —
+absent on a journal), `date`, `paymentType`, `narration`, `againstBill`,
+`acType`, and `customers[]` of
 `{ name, debit, credit, custId, narration, allocations[] }`.
+
+A journal also carries `journalType` (GENERAL | EXPENSE_GST, absent = GENERAL)
+and, for `Expense With GST`, an `expense` block — `party, expenseAccount,
+taxable, gstRate, taxType, cgst, sgst, igst, total, supplierGstin, billNo,
+billDate (a "YYYY-MM-DD" String), sac` — FROZEN at save: the tax is what was
+claimed, never recomputed from the party's current state. The legs it posts
+are ordinary `customers[]` lines, so the ledger and the delete path know
+nothing about expenses.
 
 `allocations[]` is SIGFA's **Against Bill**: `{ invoiceNo, invoiceType,
 invoiceDate, amount }`, saying which open bills this line settles and by how
@@ -1933,13 +1964,38 @@ Read out of `SIGFA105.exe`: an MRI is not a document of its own but a Purchase I
 - **Rules** `lib/mri.mjs` (pure, `scripts/mri.test.mjs`). **DB half** `lib/mriSave.mjs`: the number series (counter `mriNo`, ONE series across bills and challans, nudged past the highest used on either; its queries run one after another — a transaction's session takes one operation at a time), the Ag. MRI No. check (exists, same supplier, has a rejection, not already re-MRI'd, not itself), and the guards.
 - **Posting is unchanged.** `quantity` on the line stays the ACCEPTED quantity — billed, taxed and stocked exactly as before — and `receivedQty` is stored beside it. Rejected = received − accepted, never negative.
 - **Zero accepted.** A lot rejected outright is a line at quantity 0, allowed on an MRI only and only when something was received; `invoiceStockLines` skips such a line. A **bill** must still accept something on at least one line ("Nothing was accepted, so there is nothing to bill") — a delivery rejected outright is recorded as a **purchase challan** MRI, which bills nothing.
-- **Fields.** Invoice and challan headers: `mriNo`, `mriRemark`, `againstMriNo`, `mriLock`; lines: `receivedQty` (§5). Unique partial indexes per firm on `mriNo` and on `againstMriNo` in each collection. The request carries `mri: { on, remark, againstMriNo }` — one more key in the frozen billing contract (`PAYLOAD_KEYS`, now **33**: the 31 originals, `partyBillNo`, `mri`) — never the number. A received figure on a document that is not an MRI is refused, so the screens drop them when the tick is cleared.
+- **Fields.** Invoice and challan headers: `mriNo`, `mriRemark`, `againstMriNo`, `mriLock`; lines: `receivedQty`, `challanQty` (§5). Unique partial indexes per firm on `mriNo` and on `againstMriNo` in each collection. The request carries `mri: { on, remark, againstMriNo }` — one more key in the frozen billing contract (`PAYLOAD_KEYS`, now **35**: the 31 originals, `partyBillNo`, `mri`, `series`, `partyBillDate`) — never the number. A received figure on a document that is not an MRI is refused, so the screens drop them when the tick is cleared.
+- **Required on an M.R.I. (the client's rule, 16 Oct 2026).** A purchase bill M.R.I. needs its own **Invoice No** (unless a series numbers it) and **Date**; a purchase challan M.R.I. needs its **Challan No.** and **Challan Date**. Both screens show a red star on those two boxes while M.R.I. is ticked and refuse a blank one before the request; `lib/invoiceInput.mjs` / `lib/challanInput.mjs` refuse it too. Off an M.R.I. a blank number is still given the next one. The SUPPLIER'S bill/challan number and date are optional — that was a misreading of the request and was reverted.
+- **Challan Qty.** Three quantities per line: `challanQty` (what the supplier's paper said), `receivedQty`, `quantity` (accepted). Short = challan − received; Rejected = received − accepted; they are separate arguments with a supplier and are never rolled together. On the purchase bill the Challan Qty cell is a read-only copy on a line drawn from a recorded challan, and a box on a keyed-in line (the supplier's paper is in hand, as on the purchase challan screen). Blank stays blank — no paper is not a promise of nothing. Switching M.R.I. off drops typed figures (`changeMri` in BillingScreen).
+- **Altering and deleting an M.R.I.** There is no M.R.I. document to alter: alter the purchase bill or challan it sits on. From the `/mri` register, clicking ANY part of a row (not only the Document link) opens that bill or challan for editing — also by keyboard (Tab to the row, Enter). Delete goes through Purchase Invoice / Purchase Challan → Delete; refused while a Re-MRI points at it. The home-page M.R.I. menu has no Alter/Delete items of its own (offered, not built).
 - **A blank Received means "received what was accepted"** and is stored as the accepted figure. On reload the screens show a received figure equal to the accepted one as blank again, so raising the accepted quantity on an edit is not refused against a stale copy.
 - **Re-MRI guards.** A Re-MRI writes `mriLock` on the MRI it re-inspects inside its transaction, so two Re-MRIs at once — or a Re-MRI racing an alter/delete of that MRI — conflict and only one commits (backed by the unique `againstMriNo` index within each collection). An MRI that a Re-MRI points at cannot be switched off, moved to another supplier, edited to reject nothing, or deleted (`assertMriDeletable`).
 - **Routes.** `save-invoice`, `sale-alter`, `challan-add`/`challan-alter` (via `lib/challanSave.mjs`) call `mriFields({ session, mri, previous, party, items })` inside their transaction; `delete-invoice` and `delete-challan` call `assertMriDeletable`. `/api/mri?view=register|pending|rejected|party&party=&from=&to=` (read-only, `invoice:read`; the date range is IST days via `istDayWindow`, applied to the MRIs AFTER Re-MRIs are matched); `/api/next-mri-no` (peek, `invoice:write`).
 - **Screens.** `components/billing/MriPanel.jsx` on the purchase bill and the purchase challan form (tick M.R.I., number peek, remark, Ag. MRI No. from the supplier's pending list — cleared when the supplier changes); Received and Rejected columns appear on the lines. `/mri` — the four registers, printable; a table is only drawn from rows fetched for the view now chosen. Home page: "Purchase M.R.I." row in the Purchases section after Purchase Challan (create on a bill `/purchaseadd?mri=1` / on a challan `/challanadd?type=Purchase&mri=1`, register, pending, rejected, party wise) with the pending count. The bill and challan prints show the MRI No., received/accepted/rejected and the rejected lines.
 - **Not done (SIGFA has them)**: the automatic Debit Note for (bill amount − accepted purchase) — there is no debit note voucher yet; `rejectedValue` is the figure it would use. The M.R.O. slip on the sales side. Receipt Slip & M.R.I. (store receipts outside a purchase). A separate MRI date (the document's date is used).
 
+
+### 6.42 Series Master, and the two numbers on a bill
+
+Sigfa's **Series Master** (`lib/series.mjs`, pure, `scripts/series.test.mjs`; model `models/seriesModel.js`; routes `series-add`, `series-update`, `delete-series`, `get-series`; Setup carries the master). A series belongs to exactly ONE document type (Sigfa's radio list). Each series counts on its own, per financial year: TAX's first bill of the year and RETAIL's first bill are both `26-27/1` (confirmed against Sigfa 15 Oct 2026). The printed number is the FY tag, a slash and the running count; the series code is NOT in it; `fillLeftSpaceWithZero` pads the count.
+
+- **Two numbers.** `seriesNo`/`finYear` is the per-series per-FY counter (`getNextSeriesNo`), and `voucherNo = voucherNoFor(seriesNo, seriesRow, date)` is what prints and what GST needs consecutive. `invoiceNo` stays the firm-wide unique key that every lookup, allocation and link joins on. **Show `voucherNo`, join on `invoiceNo`.** Every list, picker, report row and CSV that names a bill shows `bill.voucherNo || bill.invoiceNo` (dashboard pickers via `billLabel`, `openBills`, Today's Orders, order reports, sales book, invoice range, Bill Adjust) and still opens/links it by `invoiceNo`. A screen that shows `invoiceNo` for a series bill disagrees with the bill itself — that was a reported bug.
+- **Alter rules — Sigfa's, read out of SIGFA105.exe.** A saved bill keeps its series: Sigfa refuses with "Can't Change Series !" or, when the two series differ on stock, "Changing Series Would Disturb Effect In Stock !". Sigfa keeps one data file per FY, so a bill cannot be re-dated into another year either. `alterNumberProblem({ before, after, beforeRow, afterRow })` in `lib/series.mjs` returns the message (or ""); `sale-alter` calls it before anything is written and aborts with 409. The bill screen disables the Series box on a saved bill ("Fixed on a saved bill"). An edit therefore keeps its `seriesNo`; `getNextSeriesNo` on an alter is only for a series bill saved before series numbers existed.
+- **Stored, not yet acted on.** The print fields and `effectInStock` / `lockVoucher` are carried on the record and snapshotted on each bill, but most do not yet change what prints or moves (see the module header for which).
+- **Sigfa does that this app does NOT (yet):** (1) the invoice number is editable on alter after "Want To Change Invoice No. ?", with a "Duplicate Voucher No" check — here a series number is fixed; (2) next number = `Max(RVoucher)+1` per series, so deleting the last bill frees its number — here a counter leaves a gap. Both offered to the client, not built.
+
+### 6.43 The four money vouchers, and the Journal's Type
+
+`lib/voucherKinds.mjs` (pure, `scripts/voucher-kinds.test.mjs`): **Receipt, Payment, Journal, Contra** — this app's names, not Sigfa's (Sigfa splits money vouchers only by Cash/Bank MKEY). The kind fixes the direction (a receipt credits the party, a payment debits it), a journal has NO cash/bank account (`acName` blank), a contra moves money between two of our own cash/bank accounts. `voucherProblems()` is the one validator; `voucher-add` and `voucher-alter` both run it. A reversal on edit/delete uses the STORED kind, not the incoming one.
+
+**Journal Type** (`lib/journalTypes.mjs`, pure, `scripts/journal-types.test.mjs`; DB half `lib/expenseVoucher.mjs`). From a screenshot of Sigfa's Journal screen: a `Type` field — `Journal` (GENERAL, the default) or **`Expense With GST`** — and Sigfa's rule "Only One Entry Per Voucher".
+
+- **Expense With GST** replaces the lines grid with ONE expense: supplier, expense account, amount before tax, GST %, place of supply, SAC, supplier GSTIN, their bill no, their bill date, narration. The LEGS are derived on the server (`resolveExpenseVoucher`, inside the transaction): Dr expense head, Dr Input CGST + Input SGST or Input IGST (created on demand by `resolveGlAccounts`), Cr supplier. A nil-rated expense writes two legs, not four with zeros.
+- **Place of supply** comes from the supplier's master state vs the firm's (`expenseTaxType`); the form's "Place of supply" box is used ONLY when either state is unknown, and with neither the entry is refused — never defaulted to local.
+- **Supplier GSTIN** fills from the party master (`custModel.gstIn`) when the supplier is picked, and the server falls back to the master if the form sent none; a typed GSTIN wins. GSTIN, bill no and bill date are required only when GST > 0 (`expenseProblems`) — the credit has to be claimable against a document.
+- The expense block is frozen on the voucher (§5); an edit re-derives the legs from the edited expense exactly as a new one does.
+- **Screen landmine (fixed 15 Oct 2026):** the general lines grid stays in the `<form>` but is hidden for an expense. A hidden control is still validated by the browser, which then refuses the submit SILENTLY ("Update Voucher" did nothing). For an expense the grid's controls are `disabled` (not validated, not sent), and debit/credit inputs take `step="0.01"` (the default step of 1 refuses 45.90). Any future hidden section inside a form needs the same treatment.
+- **Dashboard pickers landmine (fixed 15 Oct 2026):** `isNamed()` in `app/page.js` decides whether a section's Alter/Delete picker lists entries by name and opens them by id. Journal and Contra were missing, so they fell through to the BILL branch (named and opened by `invoiceNo`, which no voucher has): every journal showed as a blank row that opened nothing. Any new non-bill section must be added to `isNamed`.
 
 ## 7. API routes
 
@@ -1970,7 +2026,9 @@ Most mutations are `POST`, including deletes (id in the query string).
 ### Vouchers
 `voucher-add` (POST), `voucher-alter` (POST), `delete-voucher` (POST `?id`),
 `voucher` (POST, lookup), `get-voucher` (GET, all). All transactional; all
-derive their balance deltas from `buildVoucherBalanceDeltas()`.
+derive their balance deltas from `buildVoucherBalanceDeltas()`. An `Expense
+With GST` journal arrives as `{ journalType, expense }` with no lines; both
+write routes derive the lines via `resolveExpenseVoucher` (§6.43).
 
 ### Orders
 | Route | Method | Notes |
@@ -2256,8 +2314,8 @@ Two things about how it was made, which matter if you touch it:
   arithmetic: it decides what prints on a GST return.
 - `PAYLOAD_KEYS` in `billingMath.mjs` is the **frozen list of fields** the save
   request carries — 31 extracted mechanically from the four pages before
-  anything moved, plus `partyBillNo` and `mri` added deliberately since (§5,
-  §6.41) — 33 in all. The server
+  anything moved, plus `partyBillNo`, `mri`, `series` and `partyBillDate`
+  added deliberately since (§5, §6.41, §6.42) — 35 in all. The server
   derives what it must (§6.5), but adding a key here changes what four screens
   send — check the route reads it, and remember Mongoose strict mode silently
   drops an undeclared field (§9.18).
@@ -2602,6 +2660,21 @@ return, so fixing it is a decision with the client, not a tidy-up.
     need one end-to-end run (create an MRI with a rejection, a Re-MRI against
     it, try a second Re-MRI and a delete) after `npm run sync:indexes` on a
     development database.
+
+31. **Series and per-series numbering have not been exercised end to end on
+    a real database** with two series in one FY and an FY boundary. The rules
+    are unit-tested (§6.42); the counter and the `alterNumberProblem` refusal
+    need one run each.
+32. **The Vercel deployment lags the local tree.** Changes are written to
+    `C:\Vs Code\SAAS Project\vyapaar-einvoice` and are not live on
+    `vyapar-einvoice-ph2z.vercel.app` until pushed and redeployed — the client
+    has twice reported a "missing" change that was only undeployed.
+33. **The sandbox's test copy is partial.** When these suites are run from a
+    copy that lacks some routes/models, a fixed set of tests fails with
+    ENOENT or stale-regex errors (series model/route tests, challans route
+    tests, billing item-picker tests, the GSTR-3B ITC query test). Judge a
+    change by "same failures before and after", and run the full suites on
+    the real tree before release.
 
 **E-invoicing is built but not exercised**
 
@@ -2964,6 +3037,8 @@ other firm. `npm test` fails if the plugin is missing.
 > only ever suggested). For challans and purchase M.R.I., read §6.39 and §6.41:
 > on an MRI line `quantity` is the ACCEPTED quantity and `receivedQty` sits
 > beside it.
+> For anything showing a bill's number, read §6.42: show `voucherNo`, join on
+> `invoiceNo`. For vouchers and journals, §6.43.
 >
 > Constraints: **JavaScript, not TypeScript. React 18. Mongoose. Tailwind plus
 > the component classes in §8.1 — do not hand-roll styling or hard-code

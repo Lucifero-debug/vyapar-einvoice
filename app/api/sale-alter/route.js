@@ -550,6 +550,10 @@ async function handlePOST(req, auth) {
 
       const rows = buildInvoiceLedgerRows({
         type: invoiceData.type,
+        // Names the rows SALE_INVOICE or SALE_RETURN. An edit rewrites every
+        // row, so a bill saved before this existed gets its document name
+        // the first time anybody touches it.
+        isReturn: invoiceData.return,
         customerName: invoiceData.customer.name,
         cashAccountName: payAccount?.name,
         invoiceNo: updatedInvoice.invoiceNo,

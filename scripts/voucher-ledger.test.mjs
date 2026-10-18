@@ -5,7 +5,8 @@
  */
 
 import assert from "node:assert/strict";
-import { buildVoucherLedgerRows } from "../lib/voucherLedger.mjs";
+import { accountContra, buildVoucherLedgerRows } from "../lib/voucherLedger.mjs";
+import { VOUCHER_KINDS } from "../lib/voucherKinds.mjs";
 
 let passed = 0;
 const test = (name, fn) => {
@@ -163,6 +164,90 @@ test("an edit that changes a side is reflected, not silently flipped", () => {
   assert.equal(edited[0].debit, 2000);
   assert.equal(edited[0].credit, 0);
   assert.equal(mainRow(edited).credit, 2000);
+});
+
+console.log("\n--- credit and debit notes ---");
+
+/* A note books against a head, not a till: acName is set, paymentType is not. */
+const NOTE = {
+  acName: "Discount Allowed",
+  date: "2026-10-18",
+  paymentType: "",
+  narration: "Rate difference on bill 12",
+  voucherId: "cn1",
+  customers: [{ name: "A A ENTERPRISES", debit: 0, credit: 500 }],
+};
+
+const note = (over = {}) =>
+  buildVoucherLedgerRows({ kind: "CREDIT_NOTE", ...NOTE, ...over });
+
+test("a credit note credits the party and debits the head", () => {
+  const rows = note();
+  assert.equal(rows.length, 2, "a party row and the account row");
+
+  const [party, account] = rows;
+  assert.equal(party.customerName, "A A ENTERPRISES");
+  assert.equal(party.credit, 500, "the party was not credited");
+  assert.equal(party.debit, 0);
+  assert.equal(party.account, "Discount Allowed", "the party row names the wrong contra");
+
+  assert.equal(account.customerName, "Discount Allowed");
+  assert.equal(account.debit, 500, "the head was not debited");
+  assert.equal(account.credit, 0);
+});
+
+test("a debit note is the same entry the other way up", () => {
+  const rows = buildVoucherLedgerRows({
+    kind: "DEBIT_NOTE",
+    ...NOTE,
+    acName: "Rejected Material",
+    customers: [{ name: "SUPPLIER LTD", debit: 500, credit: 0 }],
+  });
+  const [party, account] = rows;
+  assert.equal(party.debit, 500, "the party was not debited");
+  assert.equal(account.credit, 500, "the head was not credited");
+});
+
+test("a note posts no cash leg at all", () => {
+  // The whole point of splitting needsAccount from needsPaymentType: a
+  // note that wrote a cash row would move money that never moved.
+  for (const row of note()) {
+    assert.notEqual(row.paymentType, "Cash");
+    assert.notEqual(row.paymentType, "Bank");
+    assert.equal(row.paymentType, "Credit Note", "the row should say what it is");
+  }
+});
+
+test("a note nets to zero, like every other kind", () => {
+  const rows = note();
+  const debit = rows.reduce((s, r) => s + r.debit, 0);
+  const credit = rows.reduce((s, r) => s + r.credit, 0);
+  assert.equal(debit, credit, `out by ${debit - credit}`);
+});
+
+test("every row of a note says which kind wrote it", () => {
+  for (const row of note()) assert.equal(row.voucherKind, "CREDIT_NOTE");
+});
+
+test("the account row names the party it was raised against", () => {
+  // A receipt's account row shows the instrument. A note has none, so the
+  // useful answer is who it was for.
+  assert.equal(note()[1].account, "A A ENTERPRISES");
+
+  // With more than one party there is no single answer, and naming one of
+  // them would be the ledger asserting something nobody entered.
+  const many = note({
+    customers: [
+      { name: "A", credit: 100 },
+      { name: "B", credit: 100 },
+    ],
+  });
+  assert.equal(many[many.length - 1].account, "Credit Note");
+});
+
+test("the three that move money still book against their instrument", () => {
+  assert.equal(accountContra(VOUCHER_KINDS.RECEIPT, [{ name: "A" }], "Cash"), "Cash");
+  assert.equal(accountContra(VOUCHER_KINDS.CONTRA, [{ name: "A" }], "Bank"), "Bank");
 });
 
 console.log(

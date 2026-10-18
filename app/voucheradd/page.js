@@ -41,6 +41,18 @@ const todayIst = () => istToday();
 const customersInGroups = (customers = [], groups = []) =>
   customers.filter((c) => groups.includes(String(c?.group || "").toLowerCase()));
 
+/**
+ * The other side of that filter, for the credit and debit notes.
+ *
+ * A note books against a head like Discount Allowed or Rejected Material --
+ * anything EXCEPT the till. Offering cash and bank there would let somebody
+ * raise a credit note that takes money out of the drawer, which is a
+ * payment wearing a note's name, exactly as the comment above says of a
+ * contra.
+ */
+const customersNotInGroups = (customers = [], groups = []) =>
+  customers.filter((c) => !groups.includes(String(c?.group || "").toLowerCase()));
+
 const AddVoucher = () => {
   const [voucherParams, setVoucherParams] = useState({ type: "", value: "", kind: "" });
 
@@ -117,6 +129,24 @@ const AddVoucher = () => {
     ? customersInGroups(customers, ["cash", "bank"])
     : customers;
 
+  /*
+    The account absorbing the other side, and what to call it.
+
+    Three kinds reach it through an instrument, so the list is that
+    instrument's group and the label says so. A note has no instrument: it
+    books against a head, so the list is everything that is NOT cash or
+    bank. lib/voucherKinds.mjs on why those are two different questions.
+  */
+  const accountChoices = spec.needsPaymentType
+    ? customersInGroups(customers, [instrument.toLowerCase()])
+    : customersNotInGroups(customers, ["cash", "bank"]);
+
+  const accountLabel = !spec.needsPaymentType
+    ? "Booked to"
+    : spec.code === "CONTRA"
+      ? `Moved into (${instrument})`
+      : `${instrument} A/c`;
+
   /** What the lines come to, for the journal's own balance check. */
   const totals = lineTotals(
     entries.map((e) => ({ debit: parseFloat(e.debit) || 0, credit: parseFloat(e.credit) || 0 }))
@@ -159,6 +189,9 @@ const AddVoucher = () => {
   const changeKind = (next) => {
     if (!isVoucherKind(next)) return;
     const to = VOUCHER_KINDS[next];
+    // The kind being left, for the fields that are only safe to keep when
+    // the new kind wants them from the same place.
+    const from = spec;
     setKind(next);
 
     setEntries((prev) => {
@@ -181,8 +214,12 @@ const AddVoucher = () => {
     // journal nor a contra has.
     setForm((prev) => ({
       ...prev,
-      acName: to.needsAccount ? prev.acName : "",
-      acType: to.needsAccount ? prev.acType : "",
+      // Kept only while the new kind draws its account from the same place.
+      // Switching a receipt to a credit note otherwise leaves "Cash" in a
+      // box that no longer offers it -- a head the note would then be
+      // booked to, and the one account it must never touch.
+      acName: to.needsAccount && to.needsPaymentType === from.needsPaymentType ? prev.acName : "",
+      acType: to.needsAccount && to.needsPaymentType === from.needsPaymentType ? prev.acType : "",
       againstBill: to.needsAccount && !to.ownAccounts ? prev.againstBill : false,
     }));
   };
@@ -401,7 +438,9 @@ const AddVoucher = () => {
       // kind decides whether there is an account at all, and sending one
       // would have the route refuse the voucher.
       const acName = spec.needsAccount ? form.acName : "";
-      const paymentType = spec.needsAccount ? instrument : "";
+      // Only the kinds that move money through cash or bank carry one. A
+      // note sends none, and the routes refuse it if it does.
+      const paymentType = spec.needsPaymentType ? instrument : "";
 
       // The same rules the routes apply, run here first so a refusal is a
       // message beside the form rather than a round trip. The routes' copy
@@ -497,14 +536,14 @@ const AddVoucher = () => {
         <div className="page-header items-start">
           <div>
             <h1 className="page-title">{voucherTitle(kind)}</h1>
-            <p className="page-subtitle">
-              {spec.blurb} Date: {form.date}
-            </p>
+            {/* The date used to be printed here because there was nowhere
+                to change it. There is now a proper field for it below. */}
+            <p className="page-subtitle">{spec.blurb}</p>
           </div>
           <div className="space-y-1 text-right text-sm text-muted-foreground">
             {spec.needsAccount && (
               <p>
-                {spec.code === "CONTRA" ? "Into" : `${instrument} A/c`}:{" "}
+                {spec.code === "CONTRA" ? "Into" : accountLabel}:{" "}
                 <span className="font-semibold">
                   {form.acName || "Select Account"}
                 </span>
@@ -567,7 +606,9 @@ const AddVoucher = () => {
             </button>
           ))}
 
-          {spec.needsAccount && (
+          {/* Cash or bank, for the three kinds that move money through one.
+              A note has no instrument, so the toggle goes with it. */}
+          {spec.needsPaymentType && (
             <>
               <span className="mx-1 h-5 w-px bg-border" />
               {["Cash", "Bank"].map((option) => (
@@ -594,6 +635,43 @@ const AddVoucher = () => {
 
         {/* --- VOUCHER FORM --- */}
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/*
+            The voucher's own date.
+
+            It was always in `form.date` and always sent, but there was no
+            way to set it: it started at today and the header printed it as
+            text. So nothing could be backdated -- a receipt entered on
+            Monday for cash taken on Saturday was booked on Monday, and the
+            ledger, the cash book and every balance as-at date agreed with
+            each other and with nothing that happened.
+
+            Outside the account panel on purpose: a journal has no such
+            panel, and the date belongs to all six kinds equally.
+
+            Defaults to today IN INDIA, not on the server -- lib/istDate.mjs
+            is in this file already for exactly that reason.
+          */}
+          <div className="panel panel-body flex flex-wrap items-end gap-x-6 gap-y-3">
+            <div className="field">
+              <label className="field-label mb-1 block" htmlFor="voucher-date">
+                Voucher date
+              </label>
+              <input
+                id="voucher-date"
+                type="date"
+                name="date"
+                className="field-input w-48"
+                value={form.date}
+                onChange={handleFormChange}
+                required
+              />
+            </div>
+            <p className="max-w-[46ch] text-xs leading-relaxed text-muted-foreground">
+              The date this entry is posted on. The ledger, the cash book and
+              every balance as at a date read it, so backdating moves the
+              entry in all of them.
+            </p>
+          </div>
           {/* === ONE expense, instead of the lines grid ===
 
               The legs are NOT typed here. The tax has to split by place of
@@ -1011,9 +1089,7 @@ const AddVoucher = () => {
           {spec.needsAccount && (
             <div className="panel panel-body grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
               <div>
-                <label className="field-label">
-                  {spec.code === "CONTRA" ? `Moved into (${instrument})` : `${instrument} A/c`}
-                </label>
+                <label className="field-label">{accountLabel}</label>
                 <select
                   name="acName"
                   value={form.acName}
@@ -1022,9 +1098,11 @@ const AddVoucher = () => {
                   className="field-select mt-1.5"
                 >
                   <option value="" disabled>
-                    Select {instrument} Account
+                    {spec.needsPaymentType
+                      ? `Select ${instrument} Account`
+                      : "Select the account to book it to"}
                   </option>
-                  {customersInGroups(customers, [instrument.toLowerCase()]).map((cust, i) => (
+                  {accountChoices.map((cust, i) => (
                     <option key={i} value={cust.name}>
                       {cust.name}
                     </option>

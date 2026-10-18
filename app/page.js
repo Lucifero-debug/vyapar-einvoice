@@ -32,8 +32,11 @@ import {
   BookOpen,
   ArrowLeftRight,
   Hash,
+  FileMinus,
+  FilePlus,
 } from 'lucide-react';
 import { kindOf } from '@/lib/voucherKinds.mjs';
+import { voucherPickerLabel } from '@/lib/voucherLabels.mjs';
 import { Button } from '../components/ui/button';
 import {
   DropdownMenu,
@@ -111,6 +114,8 @@ const Page = () => {
   // accounts. lib/voucherKinds.mjs.
   const [journal, setJournal] = useState([]);
   const [contra, setContra] = useState([]);
+  const [creditNotes, setCreditNotes] = useState([]);
+  const [debitNotes, setDebitNotes] = useState([]);
   const [alter, setAlter] = useState(false);
   const [del, setDel] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -244,34 +249,61 @@ const Page = () => {
         */
         const codeOf = (v) => kindOf(v).code;
 
+        /*
+          Named by what makes each voucher ITSELF -- its date, amount and
+          narration -- not by the account it moved through.
+
+          Every bank voucher of a firm with one bank has the same `acName`,
+          so listing by it produced four rows all reading "BANK OF BARODA"
+          with no way to tell which was which, and four cmdk items sharing a
+          `value`. Cash and Contra had it too; Journal had been given
+          narration once without noticing the other three. One function for
+          all four now -- lib/voucherLabels.mjs.
+        */
         setBank(
           vouchers.filter(v => v.paymentType === 'Bank' && codeOf(v) !== 'CONTRA').map(v => ({
             id: v._id,
-            name: v.acName || v.accountName || v._id
+            name: voucherPickerLabel(v)
           }))
         );
 
         setCash(
           vouchers.filter(v => v.paymentType === 'Cash' && codeOf(v) !== 'CONTRA').map(v => ({
             id: v._id,
-            name: v.acName || v.accountName || v._id
+            name: voucherPickerLabel(v)
           }))
         );
 
         setJournal(
           vouchers.filter(v => codeOf(v) === 'JOURNAL').map(v => ({
             id: v._id,
-            // A journal has no acName to be named after, so it is named by
-            // what it was for -- its narration, or the first account it
-            // touched.
-            name: v.narration || v.customers?.[0]?.name || v._id
+            name: voucherPickerLabel(v)
           }))
         );
 
         setContra(
           vouchers.filter(v => codeOf(v) === 'CONTRA').map(v => ({
             id: v._id,
-            name: v.acName || v.accountName || v._id
+            name: voucherPickerLabel(v)
+          }))
+        );
+
+        /*
+          The two notes. They carry no paymentType at all, so they cannot
+          fall into the Bank or Cash lists above the way a contra could --
+          those filter on the instrument, and a note has none.
+        */
+        setCreditNotes(
+          vouchers.filter(v => codeOf(v) === 'CREDIT_NOTE').map(v => ({
+            id: v._id,
+            name: voucherPickerLabel(v)
+          }))
+        );
+
+        setDebitNotes(
+          vouchers.filter(v => codeOf(v) === 'DEBIT_NOTE').map(v => ({
+            id: v._id,
+            name: voucherPickerLabel(v)
           }))
         );
 
@@ -447,6 +479,8 @@ const Page = () => {
         // the URL's own only when there is no voucher to read.
         case 'Journal':
         case 'Contra':
+        case 'CreditNote':
+        case 'DebitNote':
           router.push(`/voucheradd?value=${newValue}`);
           break;
         default:
@@ -503,6 +537,8 @@ const Page = () => {
       // the only thing that can undo what was posted.
       case 'Journal':
       case 'Contra':
+      case 'CreditNote':
+      case 'DebitNote':
         endpoint = `/api/delete-voucher?id=${currentValue}`;
         break;
       default:
@@ -568,6 +604,8 @@ const Page = () => {
       case 'Cash': return cash;
       case 'Journal': return journal;
       case 'Contra': return contra;
+      case 'CreditNote': return creditNotes;
+      case 'DebitNote': return debitNotes;
       case 'SaleInvoice': return saleInvoices;
       case 'PurchaseInvoice': return purchaseInvoices;
       case 'SaleReturn': return saleReturns;
@@ -591,7 +629,9 @@ const Page = () => {
     // every journal (an Expense With GST one included) showed as a blank row
     // that opened nothing.
     sectionName === 'Journal' ||
-    sectionName === 'Contra';
+    sectionName === 'Contra' ||
+    sectionName === 'CreditNote' ||
+    sectionName === 'DebitNote';
 
   /**
    * How a bill is named in the Alter / Delete pickers: the number printed on
@@ -1282,6 +1322,30 @@ const Page = () => {
               icon: ArrowLeftRight,
               count: contra.length,
               onCreate: () => router.push('/voucheradd?kind=CONTRA&type=Bank'),
+            })}
+            {/* The two notes, which adjust what a party owes without any
+                money moving: a discount or rebate allowed (credit note), or
+                a charge back to a supplier for rejected material (debit
+                note). No ?type= -- a note has no cash or bank leg to name.
+
+                These are BOOK adjustments and reach no GST return. A
+                taxable adjustment to a supply is a sale or purchase return,
+                which is a document with lines and tax; lib/voucherKinds.mjs
+                sets out why putting tax on these as well would file the
+                same adjustment twice. */}
+            {renderModuleRow({
+              section: "CreditNote",
+              label: "Credit Note",
+              icon: FileMinus,
+              count: creditNotes.length,
+              onCreate: () => router.push('/voucheradd?kind=CREDIT_NOTE'),
+            })}
+            {renderModuleRow({
+              section: "DebitNote",
+              label: "Debit Note",
+              icon: FilePlus,
+              count: debitNotes.length,
+              onCreate: () => router.push('/voucheradd?kind=DEBIT_NOTE'),
             })}
 
             {/* The three stock vouchers. Sigfa keeps them in one table,

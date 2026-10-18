@@ -451,6 +451,9 @@ async function handlePOST(req, auth) {
       // same place, and lets the balance moves come from the rows themselves.
       const rows = buildInvoiceLedgerRows({
         type: input.type,
+        // Names the rows SALE_INVOICE or SALE_RETURN; the figures were
+        // already decided by `deltas`, built from the same flag above.
+        isReturn: input.return,
         customerName: customer.name,
         cashAccountName: payAccountName,
         invoiceNo,

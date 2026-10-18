@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 
 import React, { Suspense, useEffect, useState } from "react";
 import { companyAddress } from '@/lib/company.mjs';
+import { ledgerRowType } from '@/lib/ledgerTypes.mjs';
 import { useCompany } from '@/context/CompanyContext';
 import LedgerSearchParams from "../../components/LedgerSuspense";
 
@@ -152,6 +153,9 @@ if (data.all) {
         balance: Math.abs(openingBalance),
         mode: openingBalance >= 0 ? "Dr" : "Cr",
         isOpening: true,
+        // An opening balance is a position, not a document. Nothing raised
+        // it, so its Type cell stays empty rather than borrowing a code.
+        type: { short: "", label: "", inferred: false },
       },
       ...inside.map((e) => {
         const debit = e.debit || 0;
@@ -167,6 +171,10 @@ if (data.all) {
           credit,
           balance: Math.abs(runningBalance),
           mode: runningBalance >= 0 ? "Dr" : "Cr",
+          // Which document raised the row, off the row itself --
+          // lib/ledgerTypes.mjs. Resolved once here rather than in the cell,
+          // so a re-render does not redo it for every row on the page.
+          type: ledgerRowType(e),
         };
       }),
     ];
@@ -311,11 +319,12 @@ if (data.all) {
               <span className="chip">({acct.entryCount} Entries)</span>
             </div>
 
-            <div className="overflow-x-auto"><table className="data-table report-table min-w-[560px]">
+            <div className="overflow-x-auto"><table className="data-table report-table min-w-[640px]">
               <thead>
                 <tr>
-                  <th className="w-[15%]">DATE</th>
-                  <th className="w-[45%]">DESCRIPTION</th>
+                  <th className="w-[13%]">DATE</th>
+                  <th className="w-[7%]">TYPE</th>
+                  <th className="w-[40%]">DESCRIPTION</th>
                   <th className="w-[10%] text-right">DEBIT</th>
                   <th className="w-[10%] text-right">CREDIT</th>
                   <th className="w-[20%] text-right">BALANCE</th>
@@ -326,6 +335,21 @@ if (data.all) {
                   <tr key={i} className={entry.isOpening ? "row-opening" : ""}>
                     <td className="">
                       {entry.date ? new Date(entry.date).toLocaleDateString("en-IN") : "N/A"}
+                    </td>
+                    {/* The full name lives in the tooltip: four letters in a
+                        column this narrow is all there is room for, and a
+                        reading rather than a stored value says so there. */}
+                    <td
+                      className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                      title={
+                        entry.type.label
+                          ? entry.type.inferred
+                            ? `${entry.type.label} (read from the entry)`
+                            : entry.type.label
+                          : undefined
+                      }
+                    >
+                      {entry.type.short}
                     </td>
                     <td className="">{entry.description}</td>
                     <td className="money-dr">
@@ -342,7 +366,7 @@ if (data.all) {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan="2" className="num">TOTAL:</td>
+                  <td colSpan="3" className="num">TOTAL:</td>
                   <td className="num">{formatAmount(acct.totalDebit)}</td>
                   <td className="num">{formatAmount(acct.totalCredit)}</td>
                   <td className="num">

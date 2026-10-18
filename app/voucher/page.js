@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useCompany } from '@/context/CompanyContext';
-import { VOUCHER_KINDS } from '@/lib/voucherKinds.mjs';
+import { ledgerRowType } from '@/lib/ledgerTypes.mjs';
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const formatAmount = (n = 0) => round2(n).toFixed(2);
@@ -87,12 +87,28 @@ export default function VoucherPage() {
         key,
         date: rows[0].date,
         narration: rows[0].narration || '',
-        // Which money voucher wrote these rows, copied onto them when they
-        // were written (models/ledgerModel.js). Blank for an invoice's rows,
-        // which have no voucher, and for voucher rows written before the
-        // kinds existed -- a day book should say nothing rather than guess,
-        // so there is deliberately no fallback here.
-        kind: VOUCHER_KINDS[rows[0].voucherKind]?.label || '',
+        /*
+          What raised this entry -- a receipt, a payment, a sales invoice, a
+          purchase return (lib/ledgerTypes.mjs).
+
+          This used to read `voucherKind` alone, and said so: blank for an
+          invoice, because "a day book should say nothing rather than
+          guess". That was right at the time -- an invoice's rows carried
+          nothing to name them. They now carry `docType`, stamped when they
+          are written, so naming an invoice entry is no longer a guess and
+          the register can finally say which kind of bill it was looking at.
+
+          For rows written before that field existed it IS still a reading,
+          and `inferred` says so rather than letting a day book present a
+          deduction as a record.
+
+          Taken from the first row that yields one rather than from rows[0]:
+          a GL contra row sorting first would otherwise leave a whole
+          invoice unnamed.
+        */
+        type:
+          rows.map(ledgerRowType).find((t) => t.short) ||
+          { short: '', label: '', inferred: false },
         lines,
         debit,
         credit,
@@ -131,9 +147,25 @@ export default function VoucherPage() {
                   {entry.date
                     ? new Date(entry.date).toLocaleDateString('en-IN')
                     : '—'}
-                  {/* Receipt or Payment, which the figures alone do not say
-                      to somebody reading a day book. */}
-                  {entry.kind && <span className="chip">{entry.kind}</span>}
+                  {/* Receipt, Payment, Sales Invoice -- which the figures
+                      alone do not say to somebody reading a day book. The
+                      full name, not the ledger's two letters: there is room
+                      for it here. */}
+                  {entry.type.label && (
+                    <span
+                      className="chip"
+                      title={
+                        entry.type.inferred
+                          ? `${entry.type.label} (read from the entry)`
+                          : entry.type.label
+                      }
+                    >
+                      {entry.type.label}
+                      {entry.type.inferred && (
+                        <span className="ml-1 opacity-60" aria-hidden="true">?</span>
+                      )}
+                    </span>
+                  )}
                 </h3>
                 <span className="chip">{entry.narration}</span>
               </div>

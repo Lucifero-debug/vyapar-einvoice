@@ -1,5 +1,6 @@
 /**
- * The four money vouchers: Receipt, Payment, Journal and Contra.
+ * The six vouchers: Receipt, Payment, Journal, Contra, Credit Note and
+ * Debit Note.
  *
  *   node scripts/voucher-kinds.test.mjs
  *
@@ -94,14 +95,98 @@ const journal = (over = {}) => ({
   ...over,
 });
 
-console.log("\n--- the four kinds ---");
+console.log("\n--- the six kinds ---");
 
-test("there are four, in the order a menu should offer them", () => {
-  assert.deepEqual(VOUCHER_KIND_CODES, ["RECEIPT", "PAYMENT", "JOURNAL", "CONTRA"]);
+test("there are six, in the order a menu should offer them", () => {
+  assert.deepEqual(VOUCHER_KIND_CODES, [
+    "RECEIPT",
+    "PAYMENT",
+    "JOURNAL",
+    "CONTRA",
+    "CREDIT_NOTE",
+    "DEBIT_NOTE",
+  ]);
   for (const code of VOUCHER_KIND_CODES) {
     assert.equal(VOUCHER_KINDS[code].code, code, `${code} disagrees with its key`);
     assert.ok(VOUCHER_KINDS[code].label, `${code} has no label`);
   }
+});
+
+test("a note has an account but no cash or bank leg", () => {
+  // The distinction the two flags exist for. A note books against a head
+  // like Discount Allowed; nothing is paid, so there is no instrument.
+  for (const code of ["CREDIT_NOTE", "DEBIT_NOTE"]) {
+    const spec = VOUCHER_KINDS[code];
+    assert.equal(spec.needsAccount, true, `${code} has nothing to post against`);
+    assert.equal(spec.needsPaymentType, false, `${code} is asking for cash or bank`);
+    assert.equal(spec.mustBalance, false, `${code} should be absorbed by its account`);
+    assert.equal(spec.ownAccounts, false, `${code} names a party, not our own accounts`);
+  }
+  // And the three that DO move money still want both.
+  for (const code of ["RECEIPT", "PAYMENT", "CONTRA"]) {
+    assert.equal(VOUCHER_KINDS[code].needsPaymentType, true, `${code} lost its instrument`);
+  }
+  // A journal has neither.
+  assert.equal(VOUCHER_KINDS.JOURNAL.needsAccount, false);
+  assert.equal(VOUCHER_KINDS.JOURNAL.needsPaymentType, false);
+});
+
+test("the notes move the party opposite ways", () => {
+  // A credit note reduces what the party owes; a debit note increases it.
+  // Backwards here would move every balance the wrong way and still look
+  // like a correct entry afterwards -- the reason Receipt and Payment were
+  // split in the first place.
+  assert.equal(VOUCHER_KINDS.CREDIT_NOTE.side, "credit");
+  assert.equal(VOUCHER_KINDS.DEBIT_NOTE.side, "debit");
+});
+
+test("a note is refused a cash or bank account", () => {
+  const problems = voucherProblems({
+    kind: "CREDIT_NOTE",
+    acName: "Discount Allowed",
+    paymentType: "Cash",
+    customers: [{ name: "A", credit: 100 }],
+  });
+  assert.match(problems.join(" "), /not paid by cash or bank/);
+});
+
+test("a note still needs the account it books against", () => {
+  const problems = voucherProblems({
+    kind: "DEBIT_NOTE",
+    acName: "",
+    customers: [{ name: "A", debit: 100 }],
+  });
+  assert.match(problems.join(" "), /needs an account/);
+});
+
+test("a clean note has nothing wrong with it", () => {
+  assert.deepEqual(
+    voucherProblems({
+      kind: "CREDIT_NOTE",
+      acName: "Discount Allowed",
+      paymentType: "",
+      customers: [{ name: "A A ENTERPRISES", credit: 500 }],
+    }),
+    []
+  );
+  assert.deepEqual(
+    voucherProblems({
+      kind: "DEBIT_NOTE",
+      acName: "Rejected Material",
+      paymentType: "",
+      customers: [{ name: "SUPPLIER LTD", debit: 500 }],
+    }),
+    []
+  );
+});
+
+test("a note put on the wrong side is caught", () => {
+  const problems = voucherProblems({
+    kind: "CREDIT_NOTE",
+    acName: "Discount Allowed",
+    customers: [{ name: "A", debit: 500 }],
+  });
+  assert.match(problems.join(" "), /credit note credits the account/i);
 });
 
 test("anything else is refused, not defaulted", () => {
@@ -492,7 +577,7 @@ test("the model keeps the kind optional and the account conditional", () => {
   assert.ok(/return this\.kind !== "JOURNAL"/.test(src));
 });
 
-test("the form offers the four, and enforces the direction", () => {
+test("the form offers them all, and enforces the direction", () => {
   const src = read("../app/voucheradd/page.js");
   // The list comes from the module, so the screen cannot offer a kind the
   // routes would refuse.
@@ -500,8 +585,13 @@ test("the form offers the four, and enforces the direction", () => {
   assert.ok(/voucherTitle\(kind\)/.test(src), "the heading is not built from the kind");
   // The direction is the kind's: the column the kind forbids is disabled
   // rather than left open for somebody to type a receipt into as a payment.
-  assert.ok(/disabled=\{spec\.side === "credit"\}/.test(src));
-  assert.ok(/disabled=\{spec\.side === "debit"\}/.test(src));
+  //
+  // Matched loosely, because the condition has since grown another term --
+  // an Expense With GST journal fills both columns itself, so its cells are
+  // disabled too. Pinning the whole expression made this test fail the day
+  // that landed, for a reason that had nothing to do with the direction.
+  assert.ok(/disabled=\{[^}]*spec\.side === "credit"\}/.test(src));
+  assert.ok(/disabled=\{[^}]*spec\.side === "debit"\}/.test(src));
   // Cash-or-bank is settable on the form. It used to come only from the URL,
   // so opening /voucheradd without one left it blank -- which the new
   // validation refuses, with nothing on screen to fix it with.
@@ -510,7 +600,12 @@ test("the form offers the four, and enforces the direction", () => {
   // is blank for it.
   assert.ok(/\{spec\.needsAccount && \(/.test(src));
   assert.ok(/const acName = spec\.needsAccount \? form\.acName : ""/.test(src));
-  assert.ok(/const paymentType = spec\.needsAccount \? instrument : ""/.test(src));
+  // The INSTRUMENT follows the narrower flag, not that one. A credit note
+  // has an account but no cash or bank leg, so sending one would have the
+  // route refuse it -- and the Cash/Bank toggle has to go with it, or the
+  // form shows a choice that does nothing.
+  assert.ok(/const paymentType = spec\.needsPaymentType \? instrument : ""/.test(src));
+  assert.ok(/\{spec\.needsPaymentType && \(/.test(src), "the instrument toggle is not gated");
   // And the kind reaches the server.
   assert.ok(/body: JSON\.stringify\(\{\s*kind,/.test(src), "the kind is not sent");
 });
@@ -531,8 +626,48 @@ test("changing the kind moves the figures rather than stranding them", () => {
   assert.ok(/to\.side === "debit" \? String\(amount/.test(src));
   // The adjustments DO go: the direction decides which bills are eligible.
   assert.ok(/allocations: \[\]/.test(src));
-  // And a journal cannot keep a cash account it no longer has a leg for.
-  assert.ok(/acName: to\.needsAccount \? prev\.acName : ""/.test(src));
+  // And an account is kept only while the new kind draws one from the same
+  // place: a journal has no leg at all, and switching a receipt to a credit
+  // note would otherwise leave "Cash" as the head the note books against.
+  assert.ok(
+    /acName: to\.needsAccount && to\.needsPaymentType === from\.needsPaymentType \? prev\.acName : ""/.test(src),
+    "an account survives a switch between kinds that choose it differently"
+  );
+  assert.ok(/const from = spec;/.test(src), "the kind being left is not read");
+});
+
+test("the voucher's date can be set, on every kind", () => {
+  const src = read("../app/voucheradd/page.js");
+
+  // It was always held in `form.date` and always sent -- there was simply
+  // no control for it, so every entry was dated the day it was typed and
+  // nothing could be backdated.
+  assert.ok(/id="voucher-date"/.test(src), "there is no date field");
+  assert.ok(/type="date"[\s\S]{0,120}name="date"/.test(src), "it is not a date input");
+  assert.ok(/value=\{form\.date\}/.test(src), "the field is not bound to the form");
+  assert.ok(/date: form\.date/.test(src), "the chosen date is not sent");
+
+  // Today IN INDIA. A host in UTC would date an evening voucher yesterday
+  // -- lib/istDate.mjs exists for that.
+  assert.ok(/date: todayIst\(\)/.test(src), "the default is not read in IST");
+
+  // Not gated by the kind: a journal has no account panel, so a date field
+  // tucked inside one would be missing from the entry that most often
+  // needs backdating.
+  const at = src.indexOf('id="voucher-date"');
+  const around = src.slice(Math.max(0, at - 400), at + 200);
+  assert.doesNotMatch(around, /spec\./, "the date field is hidden for some kinds");
+
+  // And a voucher opened for editing shows its own date, not today's.
+  assert.ok(/date:\s*\n?\s*voucher\.date\?\.slice\(0, 10\)/.test(src), "a loaded date is not kept");
+});
+
+test("a note picks its head from everything except the till", () => {
+  const src = read("../app/voucheradd/page.js");
+  // Offering cash or bank there would let a credit note take money out of
+  // the drawer, which is a payment wearing a note's name.
+  assert.ok(/customersNotInGroups\(customers, \["cash", "bank"\]\)/.test(src));
+  assert.ok(/const accountChoices = spec\.needsPaymentType/.test(src));
 });
 
 test("a loaded voucher keeps its own kind", () => {
@@ -550,11 +685,22 @@ test("the day book can say which kind wrote a row", () => {
   // onto the row -- and has to be declared, or strict mode drops it.
   assert.ok(/voucherKind: \{/.test(read("../models/ledgerModel.js")));
   assert.ok(/voucherKind: spec\.code/.test(read("../lib/voucherLedger.mjs")));
+
+  // The register used to read VOUCHER_KINDS itself, which named the four
+  // money vouchers and left every invoice blank. It now goes through
+  // lib/ledgerTypes.mjs, which reads the same `voucherKind` first and falls
+  // back to the invoice's `docType` -- so a receipt is still named a
+  // Receipt, and a sales invoice is named too. The invoice half of that is
+  // tested in scripts/ledger-types.test.mjs; what matters here is that the
+  // kind written above still reaches the page.
   const page = read("../app/voucher/page.js");
-  assert.ok(/VOUCHER_KINDS\[rows\[0\]\.voucherKind\]\?\.label \|\| ''/.test(page));
-  // An invoice's rows have no voucher behind them, so a day book says
-  // nothing there rather than guessing a kind.
+  assert.ok(/ledgerRowType/.test(page), "the day book no longer names the kind at all");
+  assert.ok(/entry\.type\.label/.test(page), "the kind is read but never shown");
+
+  // Still never a guessed kind presented as a stored one: a reading is
+  // marked as a reading.
   assert.doesNotMatch(page, /voucherKind.*\?\?\s*'RECEIPT'/, "a guessed kind in the day book");
+  assert.ok(/entry\.type\.inferred/.test(page), "a reading is not marked as one");
 });
 
 test("all four are reachable from the dashboard, and counted once", () => {
