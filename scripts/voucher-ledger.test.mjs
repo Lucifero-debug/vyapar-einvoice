@@ -84,10 +84,39 @@ test("main row is booked against the payment method", () => {
 });
 
 test("main row totals sit on the opposite side", () => {
-  const row = mainRow(build());
-  assert.equal(row.debit, 2000, "total credits become the debit");
-  assert.equal(row.credit, 500, "total debits become the credit");
+  // Single-sided vouchers, which is all the app can produce for a kind whose
+  // column is locked: total credits become the account's debit, total debits
+  // become its credit. This is what the fixture below used to prove in one
+  // case by feeding BOTH sides at once.
+  const received = mainRow(build({ customers: [{ name: "A", debit: 0, credit: 2000 }] }));
+  assert.equal(received.debit, 2000, "total credits become the debit");
+  assert.equal(received.credit, 0, "and nothing on the other side");
+
+  const paid = mainRow(build({ customers: [{ name: "A", debit: 500, credit: 0 }] }));
+  assert.equal(paid.credit, 500, "total debits become the credit");
+  assert.equal(paid.debit, 0);
 });
+
+test("a voucher with lines on both sides nets onto one side", () => {
+  /*
+    The fixture at the top has lines in BOTH columns -- a voucher saved
+    before the kinds existed, which nothing validates on the way in because
+    nothing re-posts it. The two notes can be entered this way on purpose
+    (lib/voucherKinds.mjs), so this shape is reachable again rather than
+    merely historical.
+
+    This asserted Dr 2000 / Cr 500 -- the two totals written as a PAIR --
+    and that is what the builder did while every kind with an account was
+    locked to one column, where one total was always zero and the pair and
+    the net were the same figures. A row carrying a debit AND a credit of
+    its own is not an entry anybody can read, and it is not what the account
+    absorbed. It absorbed the difference.
+  */
+  const row = mainRow(build());
+  assert.equal(row.debit, 1500, "Cr 2000 less Dr 500, as a debit");
+  assert.equal(row.credit, 0, "one side, not both");
+});
+
 
 test("the voucher balances: total debits equal total credits", () => {
   const rows = build();
@@ -115,16 +144,20 @@ test("a blank main narration falls back", () => {
 console.log("\n--- numbers ---");
 
 test("string amounts are coerced, not concatenated", () => {
+  // Both lines on the SAME side on purpose. The totals are what this is
+  // really about, and two figures on one side is the shape a concatenation
+  // bug survives: "100" + "50.5" is "10050.5", which rounds to itself and
+  // reaches the ledger looking like a number.
   const rows = build({
     customers: [
-      { name: "A", debit: "100", credit: "" },
+      { name: "A", debit: "", credit: "100" },
       { name: "B", debit: "", credit: "50.5" },
     ],
   });
-  assert.equal(rows[0].debit, 100);
-  assert.equal(rows[0].credit, 0);
-  assert.equal(mainRow(rows).credit, 100);
-  assert.equal(mainRow(rows).debit, 50.5);
+  assert.equal(rows[0].credit, 100, "the line itself was not coerced");
+  assert.equal(rows[0].debit, 0);
+  assert.equal(mainRow(rows).debit, 150.5, "the totals were joined, not added");
+  assert.equal(mainRow(rows).credit, 0);
 });
 
 test("fractional totals do not drift", () => {
@@ -194,6 +227,39 @@ test("a credit note credits the party and debits the head", () => {
   assert.equal(account.customerName, "Discount Allowed");
   assert.equal(account.debit, 500, "the head was not debited");
   assert.equal(account.credit, 0);
+});
+
+test("a two-sided note posts the head's net", () => {
+  /*
+    Why the notes are free-sided at all: an adjustment honestly has both
+    sides -- part discount and part rate difference, or a balance moved from
+    one party to another. Both notes were locked to a single column when they
+    were added and the screen refused figures that were not mistakes
+    (lib/voucherKinds.mjs).
+
+    The head takes what is left over, on ONE side. The pair this replaced
+    would have written Dr 500 and Cr 300 onto the same row.
+  */
+  const rows = note({
+    customers: [
+      { name: "A A ENTERPRISES", debit: 0, credit: 500 },
+      { name: "B B TRADERS", debit: 300, credit: 0 },
+    ],
+  });
+
+  const account = mainRow(rows);
+  assert.equal(account.customerName, "Discount Allowed");
+  assert.equal(account.debit, 200, "Cr 500 less Dr 300");
+  assert.equal(account.credit, 0, "one side, not both");
+
+  // Each party keeps the side it was entered on.
+  assert.equal(rows[0].credit, 500);
+  assert.equal(rows[1].debit, 300);
+
+  // And it still nets to zero across every row it wrote, which is the only
+  // thing the trial balance asks of it.
+  const out = rows.reduce((sum, r) => sum + r.debit - r.credit, 0);
+  assert.equal(Math.round(out * 100) / 100, 0);
 });
 
 test("a debit note is the same entry the other way up", () => {

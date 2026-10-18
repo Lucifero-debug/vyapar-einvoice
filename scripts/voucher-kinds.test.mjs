@@ -131,14 +131,41 @@ test("a note has an account but no cash or bank leg", () => {
   assert.equal(VOUCHER_KINDS.JOURNAL.needsPaymentType, false);
 });
 
-test("the notes move the party opposite ways", () => {
-  // A credit note reduces what the party owes; a debit note increases it.
-  // Backwards here would move every balance the wrong way and still look
-  // like a correct entry afterwards -- the reason Receipt and Payment were
-  // split in the first place.
-  assert.equal(VOUCHER_KINDS.CREDIT_NOTE.side, "credit");
-  assert.equal(VOUCHER_KINDS.DEBIT_NOTE.side, "debit");
+test("a note takes a figure in either column", () => {
+  // The notes were locked to one side when they were added, exactly as a
+  // receipt is. That was wrong, and holding it open is what this test is
+  // for: a note moves no money, so its direction is not a fact about the
+  // kind the way a receipt's is, and an adjustment with both sides -- part
+  // discount and part rate difference, or a balance moved between two
+  // parties -- is an ordinary entry rather than a mistake.
+  assert.equal(VOUCHER_KINDS.CREDIT_NOTE.side, null);
+  assert.equal(VOUCHER_KINDS.DEBIT_NOTE.side, null);
+
+  // Not merely the flag: neither column is refused by the validator the
+  // routes themselves call.
+  for (const kind of ["CREDIT_NOTE", "DEBIT_NOTE"]) {
+    assert.equal(lineProblem({ name: "A", credit: 100 }, kind), null, `${kind} refused a credit`);
+    assert.equal(lineProblem({ name: "A", debit: 100 }, kind), null, `${kind} refused a debit`);
+
+    for (const line of [{ name: "A", credit: 100 }, { name: "A", debit: 100 }]) {
+      assert.deepEqual(
+        voucherProblems({ kind, acName: "Discount Allowed", customers: [line] }),
+        [],
+        `${kind} refused a whole voucher on one of the two sides`
+      );
+    }
+  }
+
+  // One figure per LINE is still the rule. Both columns of a single line is
+  // a half-corrected mistake; a two-sided adjustment is two lines.
+  assert.match(
+    lineProblem({ name: "A", debit: 100, credit: 100 }, "CREDIT_NOTE") || "",
+    /one column, not both/
+  );
 });
+
+// What a two-sided note POSTS is pinned next door, in
+// scripts/voucher-ledger.test.mjs, where the row builder's fixtures live.
 
 test("a note is refused a cash or bank account", () => {
   const problems = voucherProblems({
@@ -180,14 +207,15 @@ test("a clean note has nothing wrong with it", () => {
   );
 });
 
-test("a note put on the wrong side is caught", () => {
-  const problems = voucherProblems({
-    kind: "CREDIT_NOTE",
-    acName: "Discount Allowed",
-    customers: [{ name: "A", debit: 500 }],
-  });
-  assert.match(problems.join(" "), /credit note credits the account/i);
-});
+/*
+  "a note put on the wrong side is caught" stood here and asserted that a
+  debit on a credit note was refused. There is no wrong side on a note any
+  more, so the test is gone rather than loosened -- "a note takes a figure in
+  either column" above is its replacement and asserts the opposite.
+
+  The side rule itself is untouched and still pinned, on the kinds whose
+  direction is a fact: see the receipt and payment cases below.
+*/
 
 test("anything else is refused, not defaulted", () => {
   assert.equal(isVoucherKind("RECEIPT"), true);
