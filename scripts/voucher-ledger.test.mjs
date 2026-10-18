@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { accountContra, buildVoucherLedgerRows } from "../lib/voucherLedger.mjs";
+import { accountContra, buildVoucherBalanceDeltas, buildVoucherLedgerRows } from "../lib/voucherLedger.mjs";
 import { VOUCHER_KINDS } from "../lib/voucherKinds.mjs";
 
 let passed = 0;
@@ -201,7 +201,12 @@ test("an edit that changes a side is reflected, not silently flipped", () => {
 
 console.log("\n--- credit and debit notes ---");
 
-/* A note books against a head, not a till: acName is set, paymentType is not. */
+/*
+  A note SAVED WHILE "Booked to" EXISTED: acName is set, paymentType is not.
+  New notes have no acName (the box was removed on 18 Oct 2026) and are
+  pinned further down; these fixtures stay because those old notes still
+  post, edit and delete against their stored head.
+*/
 const NOTE = {
   acName: "Discount Allowed",
   date: "2026-10-18",
@@ -309,6 +314,52 @@ test("the account row names the party it was raised against", () => {
     ],
   });
   assert.equal(many[many.length - 1].account, "Credit Note");
+});
+
+test("a new note posts its lines and nothing else, like a journal", () => {
+  const rows = buildVoucherLedgerRows({
+    kind: "CREDIT_NOTE",
+    ...NOTE,
+    acName: "",
+    customers: [
+      { name: "A A ENTERPRISES", debit: 0, credit: 500 },
+      { name: "Discount Allowed", debit: 500, credit: 0 },
+    ],
+  });
+  assert.equal(rows.length, 2, "two lines, and no account row");
+  // Each line names the other, exactly as a two-line journal does.
+  assert.equal(rows[0].account, "Discount Allowed");
+  assert.equal(rows[1].account, "A A ENTERPRISES");
+  assert.ok(rows.every((r) => r.customerName), "a row with no account name was written");
+  assert.ok(rows.every((r) => r.voucherKind === "CREDIT_NOTE"));
+  const out = rows.reduce((sum, r) => sum + r.debit - r.credit, 0);
+  assert.equal(Math.round(out * 100) / 100, 0);
+});
+
+test("an old note is reversed against its stored head, a new one is not", () => {
+  // Delete and alter rebuild the deltas from the STORED voucher. An old note
+  // must give its head back what it took; a new one has no head to touch.
+  const old = buildVoucherBalanceDeltas({
+    kind: "DEBIT_NOTE",
+    acName: "Rejected Material",
+    customers: [{ name: "SUPPLIER LTD", debit: 500, credit: 0 }],
+  });
+  assert.deepEqual(old, [
+    { name: "SUPPLIER LTD", delta: 500 },
+    { name: "Rejected Material", delta: -500 },
+  ]);
+  const fresh = buildVoucherBalanceDeltas({
+    kind: "DEBIT_NOTE",
+    acName: "",
+    customers: [
+      { name: "SUPPLIER LTD", debit: 500, credit: 0 },
+      { name: "Rejected Material", debit: 0, credit: 500 },
+    ],
+  });
+  assert.deepEqual(fresh, [
+    { name: "SUPPLIER LTD", delta: 500 },
+    { name: "Rejected Material", delta: -500 },
+  ]);
 });
 
 test("the three that move money still book against their instrument", () => {

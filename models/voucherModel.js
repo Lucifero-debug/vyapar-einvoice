@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import { tenantPlugin } from "../lib/tenantPlugin.mjs";
-import { VOUCHER_KIND_CODES } from "../lib/voucherKinds.mjs";
+import { VOUCHER_KINDS, VOUCHER_KIND_CODES } from "../lib/voucherKinds.mjs";
 import { JOURNAL_TYPE_CODES } from "../lib/journalTypes.mjs";
 
 const voucherSchema = new mongoose.Schema({
@@ -22,12 +22,18 @@ const voucherSchema = new mongoose.Schema({
     kinds that move money and absent for a journal, which moves none -- a
     journal carrying one would post a cash leg for an adjustment that never
     touched cash.
+
+    Not required for the two notes either, since their "Booked to" box was
+    removed (18 Oct 2026): the head is one of the lines. Old notes keep the
+    one they were saved with. An absent kind is an entry from before kinds
+    existed -- always a receipt or a payment -- so it is still required.
   */
   acName: {
     type: String,
     required: [
       function () {
-        return this.kind !== "JOURNAL";
+        const spec = VOUCHER_KINDS[this.kind];
+        return spec ? spec.needsAccount : true;
       },
       "Please provide an Ac Name",
     ],

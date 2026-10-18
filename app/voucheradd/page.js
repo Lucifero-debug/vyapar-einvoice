@@ -124,28 +124,30 @@ const AddVoucher = () => {
 
   const spec = VOUCHER_KINDS[kind] ?? VOUCHER_KINDS.RECEIPT;
 
-  /** The accounts a line may name: our own cash and bank for a contra. */
+  /*
+    The accounts a line may name: our own cash and bank for a contra, and
+    everything EXCEPT cash and bank for a note.
+
+    A note used to keep the till out of its Booked-to box. That box went on
+    18 Oct 2026 and the head became one of the lines, so the same rule moves
+    to the lines: a credit note naming Cash would take money out of the
+    drawer, which is a payment wearing a note's name.
+  */
   const lineAccounts = spec.ownAccounts
     ? customersInGroups(customers, ["cash", "bank"])
-    : customers;
+    : spec.storedAccountPosts
+      ? customersNotInGroups(customers, ["cash", "bank"])
+      : customers;
 
   /*
-    The account absorbing the other side, and what to call it.
-
-    Three kinds reach it through an instrument, so the list is that
-    instrument's group and the label says so. A note has no instrument: it
-    books against a head, so the list is everything that is NOT cash or
-    bank. lib/voucherKinds.mjs on why those are two different questions.
+    The account absorbing the other side, and what to call it. Only the three
+    kinds that move money have one now, each reached through an instrument,
+    so the list is that instrument's group.
   */
-  const accountChoices = spec.needsPaymentType
-    ? customersInGroups(customers, [instrument.toLowerCase()])
-    : customersNotInGroups(customers, ["cash", "bank"]);
+  const accountChoices = customersInGroups(customers, [instrument.toLowerCase()]);
 
-  const accountLabel = !spec.needsPaymentType
-    ? "Booked to"
-    : spec.code === "CONTRA"
-      ? `Moved into (${instrument})`
-      : `${instrument} A/c`;
+  const accountLabel =
+    spec.code === "CONTRA" ? `Moved into (${instrument})` : `${instrument} A/c`;
 
   /** What the lines come to, for the journal's own balance check. */
   const totals = lineTotals(
@@ -220,7 +222,7 @@ const AddVoucher = () => {
       // booked to, and the one account it must never touch.
       acName: to.needsAccount && to.needsPaymentType === from.needsPaymentType ? prev.acName : "",
       acType: to.needsAccount && to.needsPaymentType === from.needsPaymentType ? prev.acType : "",
-      againstBill: to.needsAccount && !to.ownAccounts ? prev.againstBill : false,
+      againstBill: to.billAdjustable ? prev.againstBill : false,
     }));
   };
 
@@ -867,12 +869,13 @@ const AddVoucher = () => {
               account fields, so ticking it changed something off-screen above
               and read as having done nothing at all. */}
           <div className={`flex flex-wrap items-center justify-between gap-3 ${isExpense ? "hidden" : ""}`}>
-            {/* Only a receipt or a payment has bills to settle. A journal
-                moves no money and a contra moves it between our own
-                accounts, so neither has an invoice to adjust against. */}
+            {/* A receipt, a payment and the two notes have a party with bills
+                to settle. A journal moves no money and a contra moves it
+                between our own accounts, so neither has an invoice to adjust
+                against. lib/voucherKinds.mjs, billAdjustable. */}
             <label
               className={`flex items-center gap-2 text-sm font-medium text-foreground ${
-                spec.needsAccount && !spec.ownAccounts ? "cursor-pointer" : "opacity-50"
+                spec.billAdjustable ? "cursor-pointer" : "opacity-50"
               }`}
             >
               <input
@@ -880,7 +883,7 @@ const AddVoucher = () => {
                 name="againstBill"
                 checked={form.againstBill}
                 onChange={handleFormChange}
-                disabled={!spec.needsAccount || spec.ownAccounts}
+                disabled={!spec.billAdjustable}
                 className="field-check"
               />
               <span className="whitespace-nowrap">Against Bill</span>

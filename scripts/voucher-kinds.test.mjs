@@ -44,6 +44,7 @@ import {
   kindOf,
   lineProblem,
   lineTotals,
+  postsAccount,
   voucherProblems,
   voucherTitle,
 } from "../lib/voucherKinds.mjs";
@@ -112,23 +113,30 @@ test("there are six, in the order a menu should offer them", () => {
   }
 });
 
-test("a note has an account but no cash or bank leg", () => {
-  // The distinction the two flags exist for. A note books against a head
-  // like Discount Allowed; nothing is paid, so there is no instrument.
+test("a note has no account of its own, and balances like a journal", () => {
+  // Until 18 Oct 2026 a note carried a "Booked to" head that absorbed the
+  // net of its lines. The user asked for that box to go, so the head is now
+  // one of the lines and the lines balance -- the rule this test pins.
   for (const code of ["CREDIT_NOTE", "DEBIT_NOTE"]) {
     const spec = VOUCHER_KINDS[code];
-    assert.equal(spec.needsAccount, true, `${code} has nothing to post against`);
+    assert.equal(spec.needsAccount, false, `${code} still asks for a "Booked to" account`);
     assert.equal(spec.needsPaymentType, false, `${code} is asking for cash or bank`);
-    assert.equal(spec.mustBalance, false, `${code} should be absorbed by its account`);
+    assert.equal(spec.mustBalance, true, `${code} has nothing else to balance it`);
     assert.equal(spec.ownAccounts, false, `${code} names a party, not our own accounts`);
+    assert.equal(spec.billAdjustable, true, `${code} lost "Against Bill"`);
+    // A note saved while the box existed still posts against its head.
+    assert.equal(postsAccount(spec, "Discount Allowed"), true);
+    assert.equal(postsAccount(spec, ""), false);
   }
   // And the three that DO move money still want both.
   for (const code of ["RECEIPT", "PAYMENT", "CONTRA"]) {
     assert.equal(VOUCHER_KINDS[code].needsPaymentType, true, `${code} lost its instrument`);
+    assert.equal(postsAccount(VOUCHER_KINDS[code], ""), true, `${code} stopped posting its account`);
   }
-  // A journal has neither.
+  // A journal has neither, and never posts an account even if one arrives.
   assert.equal(VOUCHER_KINDS.JOURNAL.needsAccount, false);
   assert.equal(VOUCHER_KINDS.JOURNAL.needsPaymentType, false);
+  assert.equal(postsAccount(VOUCHER_KINDS.JOURNAL, "Cash"), false);
 });
 
 test("a note takes a figure in either column", () => {
@@ -147,9 +155,13 @@ test("a note takes a figure in either column", () => {
     assert.equal(lineProblem({ name: "A", credit: 100 }, kind), null, `${kind} refused a credit`);
     assert.equal(lineProblem({ name: "A", debit: 100 }, kind), null, `${kind} refused a debit`);
 
-    for (const line of [{ name: "A", credit: 100 }, { name: "A", debit: 100 }]) {
+    // The party on either side, the head on the other: both are fine.
+    for (const lines of [
+      [{ name: "A", credit: 100 }, { name: "Discount Allowed", debit: 100 }],
+      [{ name: "A", debit: 100 }, { name: "Discount Allowed", credit: 100 }],
+    ]) {
       assert.deepEqual(
-        voucherProblems({ kind, acName: "Discount Allowed", customers: [line] }),
+        voucherProblems({ kind, customers: lines }),
         [],
         `${kind} refused a whole voucher on one of the two sides`
       );
@@ -170,38 +182,66 @@ test("a note takes a figure in either column", () => {
 test("a note is refused a cash or bank account", () => {
   const problems = voucherProblems({
     kind: "CREDIT_NOTE",
-    acName: "Discount Allowed",
     paymentType: "Cash",
-    customers: [{ name: "A", credit: 100 }],
+    customers: [
+      { name: "A", credit: 100 },
+      { name: "Discount Allowed", debit: 100 },
+    ],
   });
   assert.match(problems.join(" "), /not paid by cash or bank/);
 });
 
-test("a note still needs the account it books against", () => {
-  const problems = voucherProblems({
+test("a new note is refused a Booked-to account, and must balance instead", () => {
+  // The box is gone from the screen; the routes refuse one arriving anyway,
+  // or it would absorb the net and let the lines go unbalanced.
+  assert.match(
+    voucherProblems({
+      kind: "DEBIT_NOTE",
+      acName: "Rejected Material",
+      customers: [
+        { name: "SUPPLIER LTD", debit: 500 },
+        { name: "Rejected Material", credit: 500 },
+      ],
+    }).join(" "),
+    /no account of its own/
+  );
+  const unbalanced = voucherProblems({
     kind: "DEBIT_NOTE",
-    acName: "",
-    customers: [{ name: "A", debit: 100 }],
-  });
-  assert.match(problems.join(" "), /needs an account/);
+    customers: [
+      { name: "SUPPLIER LTD", debit: 500 },
+      { name: "Rejected Material", credit: 400 },
+    ],
+  }).join(" ");
+  assert.match(unbalanced, /A debit note must balance/);
+  assert.match(unbalanced, /out by 100\.00/);
+  assert.match(
+    voucherProblems({ kind: "CREDIT_NOTE", customers: [{ name: "A", credit: 100 }] }).join(" "),
+    /at least two lines/
+  );
 });
 
 test("a clean note has nothing wrong with it", () => {
   assert.deepEqual(
     voucherProblems({
       kind: "CREDIT_NOTE",
-      acName: "Discount Allowed",
+      acName: "",
       paymentType: "",
-      customers: [{ name: "A A ENTERPRISES", credit: 500 }],
+      customers: [
+        { name: "A A ENTERPRISES", credit: 500 },
+        { name: "Discount Allowed", debit: 500 },
+      ],
     }),
     []
   );
   assert.deepEqual(
     voucherProblems({
       kind: "DEBIT_NOTE",
-      acName: "Rejected Material",
+      acName: "",
       paymentType: "",
-      customers: [{ name: "SUPPLIER LTD", debit: 500 }],
+      customers: [
+        { name: "SUPPLIER LTD", debit: 500 },
+        { name: "Rejected Material", credit: 500 },
+      ],
     }),
     []
   );
@@ -229,13 +269,15 @@ test("anything else is refused, not defaulted", () => {
   ]);
 });
 
-test("only the journal has no account, and only it must balance", () => {
+test("only the journal and the notes have no account, and they must balance", () => {
   assert.equal(VOUCHER_KINDS.RECEIPT.needsAccount, true);
   assert.equal(VOUCHER_KINDS.PAYMENT.needsAccount, true);
   assert.equal(VOUCHER_KINDS.CONTRA.needsAccount, true);
   assert.equal(VOUCHER_KINDS.JOURNAL.needsAccount, false);
 
   assert.equal(VOUCHER_KINDS.JOURNAL.mustBalance, true);
+  assert.equal(VOUCHER_KINDS.CREDIT_NOTE.mustBalance, true);
+  assert.equal(VOUCHER_KINDS.DEBIT_NOTE.mustBalance, true);
   for (const code of ["RECEIPT", "PAYMENT", "CONTRA"]) {
     assert.equal(VOUCHER_KINDS[code].mustBalance, false, `${code} balances via its account`);
   }
@@ -601,8 +643,11 @@ test("the model keeps the kind optional and the account conditional", () => {
   assert.ok(/enum: VOUCHER_KIND_CODES/.test(src), "the enum must come from the module");
   assert.doesNotMatch(src, /kind: \{[^}]*default:/s, "a default would invent a kind");
   // acName is required for the three kinds that move money, absent for a
-  // journal -- so it cannot be a bare `required: true` any more.
-  assert.ok(/return this\.kind !== "JOURNAL"/.test(src));
+  // journal and the two notes -- so it cannot be a bare `required: true`.
+  // It follows needsAccount, and an entry with no kind (an old receipt or
+  // payment) still needs one.
+  assert.ok(/return spec \? spec\.needsAccount : true/.test(src));
+  assert.doesNotMatch(src, /acName: \{[^}]*required: true/s);
 });
 
 test("the form offers them all, and enforces the direction", () => {
@@ -690,12 +735,17 @@ test("the voucher's date can be set, on every kind", () => {
   assert.ok(/date:\s*\n?\s*voucher\.date\?\.slice\(0, 10\)/.test(src), "a loaded date is not kept");
 });
 
-test("a note picks its head from everything except the till", () => {
+test("a note's lines are offered everything except the till", () => {
   const src = read("../app/voucheradd/page.js");
   // Offering cash or bank there would let a credit note take money out of
-  // the drawer, which is a payment wearing a note's name.
-  assert.ok(/customersNotInGroups\(customers, \["cash", "bank"\]\)/.test(src));
-  assert.ok(/const accountChoices = spec\.needsPaymentType/.test(src));
+  // the drawer, which is a payment wearing a note's name. With "Booked to"
+  // gone the head is a line, so the rule is on the lines now.
+  assert.match(
+    src,
+    /spec\.storedAccountPosts\s*\?\s*customersNotInGroups\(customers, \["cash", "bank"\]\)/
+  );
+  // And the screen no longer offers a Booked-to box at all.
+  assert.doesNotMatch(src, /"Booked to"/);
 });
 
 test("a loaded voucher keeps its own kind", () => {
