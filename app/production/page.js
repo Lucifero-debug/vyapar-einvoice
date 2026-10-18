@@ -768,8 +768,18 @@ function ProductionScreen() {
 
           <div className="panel mb-4">
             <div className="panel-head">
+              {/* A formula says what it is making and what that needs. A
+                  goods slip is making nothing: it has no output item and no
+                  formula, so the same sentence came out as "1  of  needs" --
+                  two blanks and a verb with nothing to attach to. */}
               <div className="panel-title">
-                {qty(form.quantity)} {plan.bom.outputUnit} of {plan.bom.outputItem} needs
+                {config.usesFormula ? (
+                  <>
+                    {qty(form.quantity)} {plan.bom.outputUnit} of {plan.bom.outputItem} needs
+                  </>
+                ) : (
+                  `Items on this ${config.slipTitle.toLowerCase()}`
+                )}
               </div>
             </div>
             <div className="table-wrap">
@@ -894,30 +904,54 @@ function ProductionScreen() {
             </div>
           </div>
 
-          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-4">
-            <div className="stat-card">
-              <div className="stat-label">Material</div>
-              <div className="stat-value">₹ {money(plan.costing.materialValue)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Wastage</div>
-              <div className="stat-value">₹ {money(plan.costing.wastageValue)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">By-products recovered</div>
-              <div className="stat-value">− ₹ {money(plan.costing.byproductValue)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Cost per {plan.bom.outputUnit || 'unit'}</div>
-              <div className="stat-value">₹ {money(plan.costing.costPerUnit)}</div>
-            </div>
-          </div>
+          {/*
+            What a production cost: material in, wastage, what the by-products
+            gave back, and what one unit came to.
 
-          {plan.costing.missingCosts.length > 0 && (
-            <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
-              Costed on {plan.costing.costedLines} of {plan.costing.totalLines} lines. No cost
-              in the item master for: {plan.costing.missingCosts.join(', ')}.
-            </div>
+            NOT a goods slip's, and that is what this guard is for. Picking
+            the first item on an Issue or Receipt Slip sets a PLACEHOLDER plan
+            -- there is no formula to explode, and the only reason a plan
+            exists at all is to open the panel below -- so its `costing` is
+            deliberately null. These four cards read straight through it, and
+            `plan.costing.materialValue` on null threw during render, which
+            unmounts the tree and leaves a blank screen. From the outside that
+            is "the page does not load when I select anything".
+
+            Gated on the KIND and not only on `costing` being present:
+            reopening a saved goods slip to edit it builds a costing object
+            out of fields that slip never had, so these would come back
+            reading zero instead of crashing, which is worse -- a figure
+            nobody entered, presented as this slip's cost. A slip's own money
+            is the Total ruled off under its grid.
+          */}
+          {config.usesFormula && plan.costing && (
+            <>
+              <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-4">
+                <div className="stat-card">
+                  <div className="stat-label">Material</div>
+                  <div className="stat-value">₹ {money(plan.costing.materialValue)}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Wastage</div>
+                  <div className="stat-value">₹ {money(plan.costing.wastageValue)}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">By-products recovered</div>
+                  <div className="stat-value">− ₹ {money(plan.costing.byproductValue)}</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Cost per {plan.bom.outputUnit || 'unit'}</div>
+                  <div className="stat-value">₹ {money(plan.costing.costPerUnit)}</div>
+                </div>
+              </div>
+
+              {(plan.costing.missingCosts || []).length > 0 && (
+                <div className="mb-4 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
+                  Costed on {plan.costing.costedLines} of {plan.costing.totalLines} lines. No
+                  cost in the item master for: {plan.costing.missingCosts.join(', ')}.
+                </div>
+              )}
+            </>
           )}
 
           <div className="mb-8 flex flex-wrap justify-end gap-2">
